@@ -166,6 +166,9 @@ def _pump_client_to_server(
 
             # Real tool call — emit start, track for end/error.
             req_id = req.get("id")
+            # TODO: MCP also permits a top-level `_meta` on the request envelope;
+            # we currently only capture `params._meta`. Revisit if a vendor runtime
+            # surfaces correlation ids at the request level instead.
             runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
             try:
                 with pending_lock:

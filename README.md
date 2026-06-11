@@ -77,7 +77,7 @@ If any of the first four are missing, **emission is disabled** and the proxy sti
 - **Fail-open.** Console outage, network issue, or instrumentation bug never breaks the MCP pipe. Tested by `tests/test_emitter.py::test_stop_is_clean_when_console_dead` and `tests/test_injection.py`.
 - **Outbound-only.** The proxy never accepts inbound connections. Events POST out to the configured Console URL; that's the only network surface.
 - **No deps.** Pure stdlib. No pydantic, no httpx, no third-party runtime requirements.
-- **Sub-ms hot path.** Event emission is enqueued onto a background thread; the proxy I/O pump does not wait for the POST.
+- **Emission off the hot path.** Event emission is enqueued onto a background thread; the proxy I/O pump does not wait for the POST. End-to-end overhead measurement pending.
 
 ## How it works
 
