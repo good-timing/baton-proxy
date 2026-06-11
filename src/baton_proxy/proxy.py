@@ -27,6 +27,7 @@ import os
 import subprocess
 import sys
 import threading
+from collections.abc import Mapping
 from typing import Any
 
 from baton_proxy.config import Config
@@ -266,6 +267,11 @@ def _pump_server_to_client(
             logger.exception("baton-proxy: forward to client failed")
 
 
+def _child_env(parent_env: Mapping[str, str]) -> dict[str, str]:
+    """Return parent env with all BATON_* keys filtered out (least privilege)."""
+    return {k: v for k, v in parent_env.items() if not k.startswith("BATON_")}
+
+
 def _configure_logging(log_file: str | None) -> None:
     """Route proxy logs to stderr by default, optionally tee to a file.
 
@@ -314,7 +320,7 @@ def run_proxy(argv: list[str]) -> int:
             stderr=sys.stderr,
             text=True,
             bufsize=1,
-            env=os.environ.copy(),
+            env=_child_env(os.environ),
         )
     except (FileNotFoundError, PermissionError) as e:
         logger.error("baton-proxy: cannot spawn upstream %r: %s", argv, e)

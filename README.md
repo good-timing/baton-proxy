@@ -79,6 +79,8 @@ If any of the first four are missing, **emission is disabled** and the proxy sti
 - **No deps.** Pure stdlib. No pydantic, no httpx, no third-party runtime requirements.
 - **Emission off the hot path.** Event emission is enqueued onto a background thread; the proxy I/O pump does not wait for the POST. End-to-end overhead measurement pending.
 
+**Trust model.** baton-proxy and the wrapped MCP server run in the same trust domain (same user, vendor's own MCP server). The proxy filters `BATON_*` from the upstream subprocess env as a least-privilege measure — the upstream has no need for Baton credentials, and accidental leakage paths (debug logging, crash-report env dumps, future plugins) shouldn't see them. This is not a cross-process trust boundary; don't use baton-proxy to instrument an MCP server you don't trust — that's not the threat model the proxy is designed for.
+
 ## How it works
 
 Two unidirectional pumps:
