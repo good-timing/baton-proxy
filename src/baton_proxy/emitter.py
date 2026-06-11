@@ -164,6 +164,33 @@ class Emitter:
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
         )
 
+    def enqueue_annotation(
+        self,
+        *,
+        signal_type: str | None,
+        intent: str | None,
+        suggested_improvement: str | None,
+        expected_outcome: str | None = None,
+        workflow: str | None = None,
+        context: Mapping[str, Any] | None = None,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Annotation event per SPEC §11.4; nullable keys omitted when None."""
+        candidates: dict[str, Any] = {
+            "signal_type": signal_type,
+            "intent": intent,
+            "suggested_improvement": suggested_improvement,
+            "expected_outcome": expected_outcome,
+            "workflow": workflow,
+            "context": dict(context) if context is not None else None,
+        }
+        payload = {k: v for k, v in candidates.items() if v is not None}
+        self._enqueue(
+            event_type="annotation",
+            payload=payload,
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
     def _enqueue(
         self,
         *,

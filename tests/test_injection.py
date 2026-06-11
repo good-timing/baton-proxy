@@ -12,6 +12,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -133,3 +136,85 @@ def test_upstream_tool_error_passes_through() -> None:
     assert boom is not None
     assert "error" in boom
     assert boom["error"]["code"] == -32000
+
+
+class _StubIngest(BaseHTTPRequestHandler):
+    received: list[dict] = []
+
+    def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        try:
+            self.received.append(json.loads(body))
+        except json.JSONDecodeError:
+            self.received.append({"_raw": body})
+        self.send_response(201)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"status":"accepted"}')
+
+    def log_message(self, *_args, **_kwargs) -> None:
+        return
+
+
+def test_vendor_annotate_emits_annotation_event_end_to_end() -> None:
+    """Run the proxy with BATON_* env vars and verify the annotation event
+    is POSTed to the console after vendor_annotate is called."""
+    _StubIngest.received = []
+    server = HTTPServer(("127.0.0.1", 0), _StubIngest)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    console_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
+        env.update(
+            {
+                "PYTHONPATH": str(REPO / "src"),
+                "BATON_CONSOLE_URL": console_url,
+                "BATON_TENANT_ID": "t",
+                "BATON_API_KEY": "k",
+                "BATON_CONSENT_TOKEN": "c",
+            }
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "baton_proxy", "--", sys.executable, str(FIXTURE)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert proc.stdin is not None
+        for req in REQUESTS:
+            proc.stdin.write(json.dumps(req) + "\n")
+            proc.stdin.flush()
+        proc.stdin.close()
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+
+        # Belt-and-suspenders: communicate() returns only after the proxy exits,
+        # which drains the queue; still wait briefly in case the OS scheduler
+        # hasn't completed the in-flight POSTs.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if any(ev.get("event_type") == "annotation" for ev in _StubIngest.received):
+                break
+            time.sleep(0.02)
+    finally:
+        server.shutdown()
+
+    annotations = [ev for ev in _StubIngest.received if ev.get("event_type") == "annotation"]
+    assert len(annotations) == 1, f"expected 1 annotation, got {len(annotations)}"
+    ann = annotations[0]
+    assert ann["payload"] == {
+        "signal_type": "failure",
+        "intent": "test",
+        "suggested_improvement": "none",
+    }
+    assert ann["session_id"]
+    assert ann["tenant_id"] == "t"
+    assert ann["consent_token"] == "c"

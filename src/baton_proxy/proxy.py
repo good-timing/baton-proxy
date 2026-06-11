@@ -157,7 +157,24 @@ def _pump_client_to_server(
             params = req.get("params", {}) or {}
             tool_name = params.get("name")
             if tool_name == INJECTED_TOOL_NAME:
-                # The proxy owns this tool — don't forward.
+                # The proxy owns this tool — don't forward. Emit the annotation
+                # event before synthesising the response; that's the whole point
+                # of intercepting the call.
+                args = params.get("arguments", {}) or {}
+                ann_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+                ctx = args.get("context") if isinstance(args.get("context"), dict) else None
+                try:
+                    emitter.enqueue_annotation(
+                        signal_type=args.get("signal_type"),
+                        intent=args.get("intent"),
+                        suggested_improvement=args.get("suggested_improvement"),
+                        expected_outcome=args.get("expected_outcome"),
+                        workflow=args.get("workflow"),
+                        context=ctx,
+                        runtime_meta=ann_meta,
+                    )
+                except Exception:
+                    logger.exception("baton-proxy: enqueue annotation failed")
                 try:
                     _write_line(sys.stdout, _handle_injected_call(req))
                 except Exception:

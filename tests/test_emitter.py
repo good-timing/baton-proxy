@@ -115,6 +115,36 @@ def test_emits_tool_call_start_end_error() -> None:
     assert all(h == "Bearer k" for h in _StubConsole.auth_headers)
 
 
+def test_emits_annotation() -> None:
+    server, url = _start_stub()
+    try:
+        e = Emitter(_config_with(url))
+        e.start()
+        e.enqueue_annotation(
+            signal_type="failure",
+            intent="search for X",
+            suggested_improvement="distinguish 404 from transport error",
+            # expected_outcome and workflow left as None — must be omitted.
+        )
+        assert _wait_for(lambda: len(_StubConsole.received) >= 1)
+        e.stop()
+    finally:
+        server.shutdown()
+
+    ann = _StubConsole.received[0]
+    assert ann["event_type"] == "annotation"
+    assert ann["payload"] == {
+        "signal_type": "failure",
+        "intent": "search for X",
+        "suggested_improvement": "distinguish 404 from transport error",
+    }
+    # No None-valued keys leak into the wire payload.
+    assert all(v is not None for v in ann["payload"].values())
+    assert "expected_outcome" not in ann["payload"]
+    assert "workflow" not in ann["payload"]
+    assert "context" not in ann["payload"]
+
+
 def test_sequence_numbers_are_monotonic() -> None:
     server, url = _start_stub()
     try:
