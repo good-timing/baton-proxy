@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Register baton-proxy as a Claude Code MCP server, wrapping the in-repo
-# fixture upstream (tests/fixture_server.py). Defaults to a local file
-# sink — so after running this and driving a few tool calls in Claude,
-# `cat /tmp/baton-proxy-example.jsonl` shows the friction events.
+# fixture upstream (tests/fixture_server.py). Defaults to a file sink at
+# /tmp/baton-proxy-example.jsonl so this example can run alongside a
+# main install (which would default to /tmp/baton-proxy.jsonl) without
+# the two streams interleaving.
 #
-# To send events to a real Console instead (or in addition), set
-# BATON_EVENT_SINK before invoking. Examples:
-#   BATON_EVENT_SINK="https://console.example.com" ./setup.sh
-#   BATON_EVENT_SINK="stderr:,file:///tmp/events.jsonl" ./setup.sh
+# To send events somewhere else (or in addition), set BATON_EVENT_SINK
+# before invoking. Examples:
+#   BATON_EVENT_SINK="https://console.example.com" \
+#     BATON_API_KEY="..." BATON_TENANT_ID="acme" \
+#     BATON_CONSENT_TOKEN="real-uuid" ./setup.sh
+#   BATON_EVENT_SINK="stderr:,file:///tmp/baton-proxy-example.jsonl" ./setup.sh
 set -euo pipefail
 
 NAME="baton-proxy-example"
@@ -17,10 +20,6 @@ LOG_FILE="/tmp/${NAME}.log"
 EVENTS_FILE="/tmp/${NAME}.jsonl"
 
 EVENT_SINK="${BATON_EVENT_SINK:-file://$EVENTS_FILE}"
-TENANT_ID="${BATON_TENANT_ID:-example-tenant}"
-CONSENT_TOKEN="${BATON_CONSENT_TOKEN:-example-elicitation}"
-# api_key only matters if EVENT_SINK is http(s)://; harmless for file/stderr.
-API_KEY="${BATON_API_KEY:-dev-key}"
 
 if [ ! -x "$PYTHON" ]; then
   echo "error: $PYTHON not found." >&2
@@ -30,14 +29,24 @@ fi
 
 claude mcp remove "$NAME" -s user >/dev/null 2>&1 || true
 
+# Pass through any BATON_* env vars the operator set; otherwise the proxy
+# uses its zero-config defaults (tenant_id=local, consent_token=local) —
+# which are fine for the local file sink default and refused if the
+# operator opts up to an http(s) sink.
+ENV_ARGS=(
+  -e PYTHONPATH="$REPO/src"
+  -e BATON_EVENT_SINK="$EVENT_SINK"
+  -e BATON_VENDOR_ID="e2eproxy"
+  -e BATON_PROXY_LOG_FILE="$LOG_FILE"
+)
+for var in BATON_API_KEY BATON_TENANT_ID BATON_CONSENT_TOKEN; do
+  if [ -n "${!var:-}" ]; then
+    ENV_ARGS+=(-e "$var=${!var}")
+  fi
+done
+
 claude mcp add "$NAME" -s user \
-  -e PYTHONPATH="$REPO/src" \
-  -e BATON_EVENT_SINK="$EVENT_SINK" \
-  -e BATON_API_KEY="$API_KEY" \
-  -e BATON_TENANT_ID="$TENANT_ID" \
-  -e BATON_CONSENT_TOKEN="$CONSENT_TOKEN" \
-  -e BATON_VENDOR_ID="e2eproxy" \
-  -e BATON_PROXY_LOG_FILE="$LOG_FILE" \
+  "${ENV_ARGS[@]}" \
   -- "$PYTHON" -m baton_proxy -- "$PYTHON" "$REPO/tests/fixture_server.py"
 
 # Reset logs so each run starts clean.
@@ -51,7 +60,6 @@ cat <<EOF
 registered '$NAME' (user scope):
   proxy log:  $LOG_FILE
   event sink: $EVENT_SINK
-  tenant:     $TENANT_ID
   vendor:     e2eproxy -> tool 'e2eproxy_annotate'
 
 next:

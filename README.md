@@ -27,7 +27,15 @@ Replace your MCP server entry in Claude's config:
 // Before
 { "command": "npx", "args": ["@vendor/mcp-server"] }
 
-// After
+// After — zero-config: events go to stderr + /tmp/baton-proxy.jsonl
+{ "command": "baton-proxy", "args": ["--", "npx", "@vendor/mcp-server"] }
+```
+
+That's the entire install. Restart Claude, drive the wrapped server, then `cat /tmp/baton-proxy.jsonl` to see the friction events the proxy captured. No env vars, no backend, no credentials.
+
+To ship events to a Console instead (or in addition), add four env vars:
+
+```jsonc
 {
   "command": "baton-proxy",
   "args": ["--", "npx", "@vendor/mcp-server"],
@@ -40,7 +48,7 @@ Replace your MCP server entry in Claude's config:
 }
 ```
 
-That's the entire install. The proxy adds one tool (`vendor_annotate`) to the upstream server's tool list and emits a friction event per real tool call.
+The proxy adds one tool (`vendor_annotate`) to the upstream server's tool list and emits a friction event per real tool call.
 
 ## What gets emitted
 
@@ -58,40 +66,45 @@ The injected `vendor_annotate` tool itself is handled by the proxy; the upstream
 
 ## Configuration
 
-All knobs are environment variables:
+All knobs are environment variables. Every emission-related one has a default; the zero-config install (no env vars) writes events to stderr + `/tmp/baton-proxy.jsonl`.
 
-| Variable | Required | Purpose |
+| Variable | Default | Purpose |
 |---|---|---|
-| `BATON_EVENT_SINK`    | for emission | Where events go. URL scheme picks the sink: `https://console.example.com` POSTs to `{url}/v0/events`, `file:///tmp/events.jsonl` appends a JSON line per event, `stderr:` writes JSONL to stderr. Comma-separated values fan out to all of them (e.g. `stderr:,file:///tmp/events.jsonl` for live + persistent during dev). |
-| `BATON_TENANT_ID`     | for emission | Tenant identifier. |
-| `BATON_API_KEY`       | http sinks   | Bearer token. Required only when the sink scheme is `http(s)://`; file sinks ignore it. |
-| `BATON_CONSENT_TOKEN` | for emission | Per-process consent token. |
-| `BATON_VENDOR_ID`     | optional     | When set, the injected annotation tool is named `{vendor_id}_annotate` instead of `vendor_annotate`. Avoids colliding with an upstream tool of the same name. |
-| `BATON_PROXY_LOG_FILE`| optional     | Path to tee proxy logs to (default: stderr only). |
+| `BATON_EVENT_SINK`    | `stderr:,file:///tmp/baton-proxy.jsonl` | Where events go. URL scheme picks the sink: `https://console.example.com` POSTs to `{url}/v0/events`, `file:///tmp/events.jsonl` appends a JSON line per event, `stderr:` writes JSONL to stderr. Comma-separated values fan out to all of them. |
+| `BATON_TENANT_ID`     | `local` | Tenant identifier. Placeholder; replace when shipping to a Console. |
+| `BATON_CONSENT_TOKEN` | `local` | Per-process consent token. **Placeholder; you MUST replace this before pointing at an `http(s)://` sink** — the proxy refuses to start in that combination, so accidental remote leakage of placeholder-tagged events doesn't happen. |
+| `BATON_API_KEY`       | _(unset)_ | Bearer token. Required only when the sink scheme is `http(s)://`; `file://` and `stderr:` sinks ignore it. |
+| `BATON_VENDOR_ID`     | _(unset)_ | When set, the injected annotation tool is named `{vendor_id}_annotate` instead of `vendor_annotate`. Avoids colliding with an upstream tool of the same name. |
+| `BATON_PROXY_LOG_FILE`| _(unset)_ | Path to tee proxy logs to (default: stderr only). |
 
-If `BATON_EVENT_SINK`, `BATON_TENANT_ID`, or `BATON_CONSENT_TOKEN` is unset, **emission is disabled** and the proxy still injects + intercepts the annotation tool. This is the fail-open path: the proxy never breaks MCP traffic because of a Console outage or misconfiguration. Sink misconfig (e.g. an `https://` sink without `BATON_API_KEY`, or an unsupported scheme) fails loudly at proxy startup instead.
+### The three rungs
 
-### See it locally — file sink
+Pick the rung you need; the env-var deltas are the entire difference.
 
-The fastest way to see what the proxy does: point it at a `file://` sink, do some tool calls, then `cat` the file.
+| Rung | Sink | env additions |
+|---|---|---|
+| **1. Default (install-and-play)** | stderr + `/tmp/baton-proxy.jsonl` | _(none)_ |
+| **2. Custom local capture** | wherever you want | `BATON_EVENT_SINK=file:///path/to/your.jsonl` |
+| **3. Ship to a Console** | hosted | `BATON_EVENT_SINK=https://console.example.com` + `BATON_API_KEY=...` + `BATON_TENANT_ID=your-tenant` + `BATON_CONSENT_TOKEN=real-token` |
 
-```sh
-export BATON_EVENT_SINK="file:///tmp/baton-events.jsonl"
-export BATON_TENANT_ID="local"
-export BATON_CONSENT_TOKEN="local"
-: > /tmp/baton-events.jsonl   # reset between runs
-baton-proxy -- npx @vendor/mcp-server
-# ...drive the wrapped server, then:
-cat /tmp/baton-events.jsonl
-```
+### See it locally
 
-Common dev pattern is to tee events to stderr alongside the file, so you see them stream as you work:
+After installing (`{ "command": "baton-proxy", "args": ["--", "npx", "@vendor/mcp-server"] }` in your Claude config) and restarting Claude, drive a few tool calls and:
 
 ```sh
-export BATON_EVENT_SINK="stderr:,file:///tmp/baton-events.jsonl"
+cat /tmp/baton-proxy.jsonl | jq -c '{type: .event_type, payload}'
 ```
 
-See `examples/live-claude-invocation/` for a full walk-through against a real Claude Code session.
+You should see one event per real tool call. See `examples/live-claude-invocation/` for a guided walk-through that also covers the elicitation behaviour of the injected `annotate` tool.
+
+### Sink misconfig fails loudly
+
+The proxy refuses to start when:
+- an `http(s)://` sink is configured but `BATON_API_KEY` is unset
+- an `http(s)://` sink is configured but `BATON_CONSENT_TOKEN` is still the placeholder `"local"`
+- the sink URL has an unsupported scheme
+
+These are emitted as proxy startup errors so a misconfigured install never silently drops or silently mistags events.
 
 ## Trust properties
 
