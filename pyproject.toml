@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "baton-proxy"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Subprocess-wrap MCP proxy that injects an annotation tool and emits friction events."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -25,6 +25,9 @@ baton-proxy = "baton_proxy.__main__:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[tool.hatch.version]
+path = "src/baton_proxy/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/baton_proxy"]

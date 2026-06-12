@@ -6,4 +6,4 @@ and emits friction events to a baton-console.
 See README.md for usage.
 """
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"

@@ -18,7 +18,7 @@ Zero changes to the underlying MCP server. The proxy *is* the MCP server from Cl
 ## Quick start
 
 ```bash
-pip install baton-proxy  # (not yet on PyPI; for now: pip install -e . from a clone)
+pipx install baton-proxy  # or: pip install baton-proxy
 ```
 
 Replace your MCP server entry in Claude's config:
