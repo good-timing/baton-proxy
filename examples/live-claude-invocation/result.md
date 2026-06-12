@@ -58,5 +58,5 @@ attached to the error response itself, not just the server instructions.
   point requires a full Claude Code restart.
 - **`/v0/escalate` round-trip not exercised.** The `session=<uuid>` line
   for this run should still be in `/tmp/baton-proxy-example.log`; the curl
-  in step 5 can be run against it independently if a `BATON_CONSOLE_URL`
-  endpoint is available.
+  in step 5 can be run against it independently if a Console endpoint is
+  available via `BATON_EVENT_SINK=https://...`.

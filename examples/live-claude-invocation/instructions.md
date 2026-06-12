@@ -2,20 +2,29 @@
 
 **Goal:** prove a real Claude session — not a scripted JSON-RPC client —
 drives the proxy correctly, **and calls the injected annotation tool on its
-own** when an upstream tool errors.
+own** when an upstream tool errors. As a bonus, see the friction events
+the proxy emits land in a local JSONL file you can `cat`.
 
 This is the production-equivalent of the scripted test in `tests/`: the
 scripted test forces the annotation call; this manual procedure measures
 whether a real Claude session calls it organically after seeing an error
 from the upstream `boom` tool.
 
-## What the proxy injects
+## What the proxy does
 
-When you point Claude Code at `baton-proxy --` wrapping any MCP server, the
-proxy advertises one extra tool — `<vendor_id>_annotate` — to Claude, and
-appends a `MUST call this tool on friction` clause to the server's
-`instructions`. This procedure measures whether that nudge works in
-practice.
+When you point Claude Code at `baton-proxy --` wrapping any MCP server,
+the proxy:
+
+1. Injects an extra tool `<vendor_id>_annotate` into the upstream's
+   tools/list, advertised to Claude with a "MUST call on friction" nudge.
+2. Forwards every other tool call upstream verbatim.
+3. Emits structured friction events (`tool_call_start` /
+   `tool_call_end` / `tool_call_error` / `annotation`) to the configured
+   sink — by default here, a local JSONL file.
+
+This run measures whether the elicitation nudge works (does Claude call
+the annotate tool unprompted after an error?) **and** lets you see the
+event stream directly.
 
 ## Run
 
@@ -25,7 +34,11 @@ practice.
 bash examples/live-claude-invocation/setup.sh
 ```
 
-The proxy wraps `tests/fixture_server.py`, which exposes three tools:
+Defaults to emitting events to `file:///tmp/baton-proxy-example.jsonl`.
+To tee to stderr or POST to a real Console instead, pre-set
+`BATON_EVENT_SINK` (see comments in `setup.sh`).
+
+The proxy wraps `tests/fixture_server.py`, which exposes:
 - `echo` — returns its input (success path)
 - `boom` — always errors (error path)
 - `e2eproxy_annotate` — the proxy-injected annotation tool
@@ -53,32 +66,40 @@ Expect: error response. **Then watch what Claude does next.** Don't prompt
 for annotation — the point is to see whether it calls `e2eproxy_annotate`
 on its own.
 
-### 4. Capture session_id (optional — only if you wired up ingest)
-
-The proxy writes a `session=<uuid>` line every time it's spawned (including
-`claude mcp list` health checks). Grab the **most recent**:
+### 4. Inspect the event stream
 
 ```sh
-grep -oE 'session=[0-9a-f-]{36}' /tmp/baton-proxy-example.log | tail -1 | cut -d= -f2
+cat /tmp/baton-proxy-example.jsonl
 ```
 
-If you want to be sure you're reading the post-validation session, truncate
-the log after restarting Claude Code but before step 3:
+Each line is one event envelope. You should see:
+- `tool_call_start` + `tool_call_end` for the `echo` call (3b)
+- `tool_call_start` + `tool_call_error` for the `boom` call (3c)
+- `tool_call_start` + `annotation` for `e2eproxy_annotate` *if and only
+  if* Claude elicited it (3c — the key data point)
+
+Pretty-print with `jq`:
 
 ```sh
-: > /tmp/baton-proxy-example.log
+jq -c '{type: .event_type, payload}' /tmp/baton-proxy-example.jsonl
 ```
 
-### 5. Verify ingest round-trip (optional — only if BATON_CONSOLE_URL is set)
+If you set a tee sink (`BATON_EVENT_SINK="stderr:,file://..."`) you'll
+have also seen these stream in real time on the proxy's stderr — handy
+for live debugging.
+
+### 5. (Optional) Verify ingest round-trip against a Console
+
+If you set `BATON_EVENT_SINK=https://your-console/` instead of (or
+alongside) the file sink, you can also stitch a session id back to a
+ticket via the Console's escalation endpoint:
 
 ```sh
-SESSION_ID=<paste from step 4>
-curl -sS -X POST "$BATON_CONSOLE_URL/v0/escalate" \
+SESSION_ID=$(grep -oE 'session=[0-9a-f-]{36}' /tmp/baton-proxy-example.log | tail -1 | cut -d= -f2)
+curl -sS -X POST "$BATON_EVENT_SINK/v0/escalate" \
   -H "Authorization: Bearer $BATON_API_KEY" -H "Content-Type: application/json" \
   -d "{\"session_id\":\"$SESSION_ID\"}"
 ```
-
-Expect: HTTP 201, body `{"ticket_id": ..., "ticket_url": ...}`.
 
 ### 6. Unregister
 
@@ -94,9 +115,10 @@ Mark ✓ / ✗ + a one-line excerpt of Claude's actual output for each:
 - **forward success** — did `echo` round-trip?
 - **forward error** — did Claude see the upstream `boom` error?
 - **elicitation** — did Claude call `e2eproxy_annotate` without being asked? *(the key data point)*
+- **event stream** — does the JSONL file show the expected event sequence?
 - **session stitch** (if you ran step 5) — did `/v0/escalate` return a `ticket_id`?
 
-Also note any prompts you had to add beyond steps a/b/c (e.g. "did you mean
-to annotate?"). Manual prompting to get elicitation = elicitation failed.
+Manual prompting to get elicitation = elicitation failed. Note any prompts
+beyond steps a/b/c.
 
 See `result.md` for an example of one such run.
