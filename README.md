@@ -21,6 +21,8 @@ Zero changes to the underlying MCP server. The proxy *is* the MCP server from Cl
 pipx install baton-proxy  # or: pip install baton-proxy
 ```
 
+`pipx` installs the CLI into its own isolated venv and puts `baton-proxy` on your PATH — so Claude's config can invoke it directly without env activation. Plain `pip install` works if you already manage your own Python env.
+
 Replace your MCP server entry in Claude's config:
 
 ```jsonc
