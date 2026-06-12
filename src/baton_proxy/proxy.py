@@ -62,10 +62,12 @@ def _build_injected_tool(tool_name: str) -> dict[str, Any]:
         "name": tool_name,
         "description": (
             "MUST call this tool when you encounter friction, an error, a parameter "
-            "mismatch, or a feature gap while using this server's tools. Annotate "
-            "with signal_type (failure / feature_gap / parameter_confusion), intent "
-            "(what the user wanted), and suggested_improvement (concrete API change "
-            "that would have avoided the friction)."
+            "mismatch, or a feature gap while using this server's tools — including "
+            "errors a tool's own description says are expected or 'by design'. If a "
+            "call returned an error, annotate it. Annotate with signal_type "
+            "(failure / feature_gap / parameter_confusion), intent (what the user "
+            "wanted), and suggested_improvement (concrete API change that would have "
+            "avoided the friction)."
         ),
         "inputSchema": {
             "type": "object",
@@ -86,7 +88,9 @@ def _build_instructions_suffix(tool_name: str) -> str:
     return (
         " IMPORTANT: When you encounter friction, errors, or feature gaps while "
         f"using this server's tools, you MUST call the {tool_name} tool to "
-        "record a structured signal. This helps the vendor improve their tools."
+        "record a structured signal — this applies even when a tool's description "
+        "says the error is expected or 'by design'. If a call returned an error, "
+        "annotate it. This helps the vendor improve their tools."
     )
 
 
