@@ -223,6 +223,64 @@ def test_emits_to_file_sink(tmp_path: Path) -> None:
     assert start["payload"] == {"tool_name": "echo", "params": {"text": "hi"}}
 
 
+def test_http_sink_with_placeholder_consent_refuses_at_start() -> None:
+    """The zero-config install ships with consent_token='local'. Pointing
+    that install at a remote sink without first replacing the consent token
+    would leak placeholder-tagged events to the Console — refuse at start()
+    so the operator sees an actionable error rather than silently-mistagged
+    events later."""
+    config = Config(
+        session_id="test-session",
+        event_sink="https://console.example.com",
+        tenant_id="t",
+        api_key="k",
+        consent_token="local",  # the placeholder
+        vendor_id="v",
+        log_file=None,
+    )
+    e = Emitter(config)
+    with pytest.raises(ValueError, match="placeholder BATON_CONSENT_TOKEN"):
+        e.start()
+
+
+def test_local_sinks_with_placeholder_consent_are_fine(tmp_path: Path) -> None:
+    """file:// and stderr: sinks NEVER trigger the consent guard — the
+    placeholder is fine for purely local capture (the whole install-and-play
+    flow runs in this mode)."""
+    sink_path = tmp_path / "events.jsonl"
+    config = Config(
+        session_id="test-session",
+        event_sink=f"stderr:,file://{sink_path}",
+        tenant_id="local",
+        api_key=None,
+        consent_token="local",  # placeholder is OK for local sinks
+        vendor_id="v",
+        log_file=None,
+    )
+    e = Emitter(config)
+    e.start()  # no raise
+    e.enqueue_tool_call_start(tool_name="echo", params={})
+    assert _wait_for(lambda: sink_path.exists() and sink_path.stat().st_size > 0)
+    e.stop()
+
+
+def test_http_sink_with_real_consent_starts_normally() -> None:
+    """Smoke test for the inverse: once the operator sets a real
+    BATON_CONSENT_TOKEN, the http sink starts cleanly."""
+    config = Config(
+        session_id="test-session",
+        event_sink="http://127.0.0.1:1",  # unreachable; just need start() to succeed
+        tenant_id="acme",
+        api_key="k",
+        consent_token="real-uuid-not-the-placeholder",
+        vendor_id="v",
+        log_file=None,
+    )
+    e = Emitter(config)
+    e.start()  # no raise
+    e.stop(timeout=3.0)
+
+
 def test_misconfigured_sink_raises_at_start() -> None:
     """A bad BATON_EVENT_SINK (here: http without api_key) fails loudly at
     Emitter.start() rather than silently no-emitting events. The exact

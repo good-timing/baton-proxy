@@ -111,9 +111,29 @@ class Emitter:
         if self._thread is not None:
             return
         assert self._config.event_sink is not None  # emission_enabled gates this
+        self._guard_remote_consent()
         self._sink = make_sink(self._config.event_sink, api_key=self._config.api_key)
         self._thread = threading.Thread(target=self._drain, name="baton-proxy-emitter", daemon=True)
         self._thread.start()
+
+    def _guard_remote_consent(self) -> None:
+        """Refuse to ship events to a remote sink while the consent token is
+        still the install-time placeholder. Local file/stderr sinks are
+        always OK — the placeholder just marks "this install hasn't been
+        wired to a real Console yet". The check runs before sink
+        construction so a misconfigured install fails loudly at startup
+        instead of silently leaking placeholder-tagged events.
+        """
+        if not self._config.using_placeholder_consent:
+            return
+        assert self._config.event_sink is not None
+        parts = [p.strip() for p in self._config.event_sink.split(",") if p.strip()]
+        if any(p.startswith(("http://", "https://")) for p in parts):
+            raise ValueError(
+                "Refusing to ship events to an http(s) sink with placeholder "
+                "BATON_CONSENT_TOKEN='local' — set BATON_CONSENT_TOKEN to the "
+                "real per-install consent token before pointing at a Console."
+            )
 
     def stop(self, timeout: float = 2.0) -> None:
         if self._thread is None:
