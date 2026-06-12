@@ -20,11 +20,15 @@ class Config:
     # emits during this process shares this session_id.
     session_id: str
 
-    # Per-event-type emission target. None disables emission (fail-open path:
-    # the proxy still injects + intercepts the annotation tool, but no HTTP
-    # traffic leaves the process).
-    console_url: str | None
+    # Where emitted events go. A URL whose scheme selects the sink:
+    #   https://console.example.com  -> HTTP POST to {url}/v0/events
+    #   file:///tmp/events.jsonl     -> append-JSONL to the local path
+    # None disables emission (fail-open: the proxy still injects + intercepts
+    # the annotation tool, but no events leave the process).
+    event_sink: str | None
     tenant_id: str | None
+    # Only required for http(s) sinks; ignored for file sinks. The HTTP sink
+    # raises at startup if event_sink is http(s):// and this is None.
     api_key: str | None
     consent_token: str | None
 
@@ -38,17 +42,19 @@ class Config:
 
     @property
     def emission_enabled(self) -> bool:
-        """True when every field the emitter needs is populated."""
+        """True when the envelope-essential fields are populated. Sink-specific
+        validation (e.g. api_key for http) happens in the emitter at startup,
+        so a misconfigured sink fails loudly instead of silently no-emitting."""
         return all(
             v is not None
-            for v in (self.console_url, self.tenant_id, self.api_key, self.consent_token)
+            for v in (self.event_sink, self.tenant_id, self.consent_token)
         )
 
     @classmethod
     def from_env(cls) -> Config:
         return cls(
             session_id=str(uuid.uuid4()),
-            console_url=_env("BATON_CONSOLE_URL"),
+            event_sink=_env("BATON_EVENT_SINK"),
             tenant_id=_env("BATON_TENANT_ID"),
             api_key=_env("BATON_API_KEY"),
             consent_token=_env("BATON_CONSENT_TOKEN"),

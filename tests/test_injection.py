@@ -251,14 +251,14 @@ def test_vendor_annotate_emits_annotation_event_end_to_end() -> None:
     server = HTTPServer(("127.0.0.1", 0), _StubIngest)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
-    console_url = f"http://127.0.0.1:{server.server_address[1]}"
+    event_sink = f"http://127.0.0.1:{server.server_address[1]}"
 
     try:
         env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
         env.update(
             {
                 "PYTHONPATH": str(REPO / "src"),
-                "BATON_CONSOLE_URL": console_url,
+                "BATON_EVENT_SINK": event_sink,
                 "BATON_TENANT_ID": "t",
                 "BATON_API_KEY": "k",
                 "BATON_CONSENT_TOKEN": "c",

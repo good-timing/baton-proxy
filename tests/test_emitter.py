@@ -1,6 +1,6 @@
-"""Emitter tests — verify queued events POST to the configured Console with
-the IncomingEvent-compatible envelope. Uses an in-process http.server as the
-Console stand-in.
+"""Emitter tests — verify queued events reach the configured sink with the
+IncomingEvent-compatible envelope. HTTP sink uses an in-process http.server
+as the Console stand-in; file sink writes JSONL to a tmp path.
 """
 
 from __future__ import annotations
@@ -9,6 +9,9 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+import pytest
 
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter
@@ -46,12 +49,26 @@ def _start_stub() -> tuple[HTTPServer, str]:
     return server, url
 
 
-def _config_with(url: str | None) -> Config:
+def _config_http(url: str | None) -> Config:
     return Config(
         session_id="test-session",
-        console_url=url,
+        event_sink=url,
         tenant_id="t",
         api_key="k",
+        consent_token="c",
+        vendor_id="v",
+        log_file=None,
+    )
+
+
+def _config_file(path: str, *, api_key: str | None = None) -> Config:
+    """File-sink config — api_key defaults to None to exercise the path where
+    it's optional (HTTP sinks require it; file sinks ignore it)."""
+    return Config(
+        session_id="test-session",
+        event_sink=f"file://{path}",
+        tenant_id="t",
+        api_key=api_key,
         consent_token="c",
         vendor_id="v",
         log_file=None,
@@ -68,8 +85,8 @@ def _wait_for(predicate, timeout: float = 2.0) -> bool:
 
 
 def test_emission_disabled_when_config_incomplete() -> None:
-    """No console_url -> emitter is a no-op; start() doesn't spin a thread."""
-    e = Emitter(_config_with(None))
+    """No event_sink -> emitter is a no-op; start() doesn't spin a thread."""
+    e = Emitter(_config_http(None))
     e.start()
     e.enqueue_tool_call_start(tool_name="echo", params={"text": "x"})
     e.stop()
@@ -81,7 +98,7 @@ def test_emission_disabled_when_config_incomplete() -> None:
 def test_emits_tool_call_start_end_error() -> None:
     server, url = _start_stub()
     try:
-        e = Emitter(_config_with(url))
+        e = Emitter(_config_http(url))
         e.start()
         e.enqueue_tool_call_start(tool_name="echo", params={"text": "hi"})
         e.enqueue_tool_call_end(tool_name="echo", result={"ok": True}, duration_ms=42)
@@ -118,7 +135,7 @@ def test_emits_tool_call_start_end_error() -> None:
 def test_emits_annotation() -> None:
     server, url = _start_stub()
     try:
-        e = Emitter(_config_with(url))
+        e = Emitter(_config_http(url))
         e.start()
         e.enqueue_annotation(
             signal_type="failure",
@@ -148,7 +165,7 @@ def test_emits_annotation() -> None:
 def test_sequence_numbers_are_monotonic() -> None:
     server, url = _start_stub()
     try:
-        e = Emitter(_config_with(url))
+        e = Emitter(_config_http(url))
         e.start()
         for i in range(5):
             e.enqueue_tool_call_start(tool_name=f"t{i}", params={})
@@ -166,11 +183,63 @@ def test_sequence_numbers_are_monotonic() -> None:
 def test_stop_is_clean_when_console_dead() -> None:
     """If the console URL is unreachable, the background thread still
     drains and exits on stop() without blocking proxy shutdown."""
-    e = Emitter(_config_with("http://127.0.0.1:1"))  # nothing listening
+    e = Emitter(_config_http("http://127.0.0.1:1"))  # nothing listening
     e.start()
     e.enqueue_tool_call_start(tool_name="echo", params={})
     e.stop(timeout=3.0)
     assert e._thread is None  # noqa: SLF001
+
+
+def test_emits_to_file_sink(tmp_path: Path) -> None:
+    """End-to-end coverage that the Emitter routes events through whatever
+    sink make_sink() returns — FileSink in this case. Per-sink unit
+    coverage lives in test_sinks.py; this test is here to catch a
+    regression in the Emitter -> Sink wiring (e.g. forgetting to call
+    start() or stop() on the sink)."""
+    sink_path = tmp_path / "events.jsonl"
+    e = Emitter(_config_file(str(sink_path)))
+    e.start()
+    e.enqueue_tool_call_start(tool_name="echo", params={"text": "hi"})
+    e.enqueue_tool_call_end(tool_name="echo", result={"ok": True}, duration_ms=42)
+    e.enqueue_tool_call_error(
+        tool_name="boom", error_type="-32000", error_body="boom", duration_ms=11
+    )
+    assert _wait_for(
+        lambda: sink_path.exists() and len(sink_path.read_text().splitlines()) >= 3
+    )
+    e.stop()
+
+    events = [json.loads(line) for line in sink_path.read_text().splitlines()]
+    assert [ev["event_type"] for ev in events] == [
+        "tool_call_start",
+        "tool_call_end",
+        "tool_call_error",
+    ]
+    # Envelope is the same one the HTTP sink ships — Emitter is sink-agnostic.
+    start = events[0]
+    assert start["session_id"] == "test-session"
+    assert start["tenant_id"] == "t"
+    assert start["consent_token"] == "c"
+    assert start["payload"] == {"tool_name": "echo", "params": {"text": "hi"}}
+
+
+def test_misconfigured_sink_raises_at_start() -> None:
+    """A bad BATON_EVENT_SINK (here: http without api_key) fails loudly at
+    Emitter.start() rather than silently no-emitting events. The exact
+    error catalogue is exercised in test_sinks.py — this test pins the
+    propagation contract from sink construction up through start()."""
+    config = Config(
+        session_id="test-session",
+        event_sink="https://example.com",
+        tenant_id="t",
+        api_key=None,
+        consent_token="c",
+        vendor_id="v",
+        log_file=None,
+    )
+    e = Emitter(config)
+    with pytest.raises(ValueError, match="BATON_API_KEY"):
+        e.start()
 
 
 def test_stop_drains_when_queue_was_full() -> None:
@@ -179,7 +248,7 @@ def test_stop_drains_when_queue_was_full() -> None:
     drain thread would loop until daemon-killed at process exit."""
     server, url = _start_stub()
     try:
-        e = Emitter(_config_with(url))
+        e = Emitter(_config_http(url))
         # Shrink the queue so we can saturate it deterministically.
         e._queue = __import__("queue").Queue(maxsize=4)  # noqa: SLF001
         e.start()

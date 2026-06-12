@@ -13,7 +13,7 @@ def test_baton_keys_removed() -> None:
         "BATON_API_KEY": "secret",
         "BATON_CONSENT_TOKEN": "tok",
         "BATON_TENANT_ID": "t",
-        "BATON_CONSOLE_URL": "https://example.com",
+        "BATON_EVENT_SINK": "https://example.com",
         "BATON_VENDOR_ID": "v",
         "BATON_PROXY_LOG_FILE": "/tmp/x.log",
         "PATH": "/usr/bin",

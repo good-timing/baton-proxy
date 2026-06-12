@@ -1,26 +1,29 @@
 """Async friction-event emitter.
 
 The proxy intercepts MCP traffic on the hot path (every `tools/call`). Doing
-a synchronous POST to baton-console from that thread would add the full
-ingest round-trip (~50-200ms) to every tool call. Trust pattern: sub-ms
-overhead. So emission is queued and drained on a background thread; the
-hot path only pays an `enqueue()`.
+a synchronous network call from that thread would add the full ingest
+round-trip (~50-200ms) to every tool call. Trust pattern: sub-ms overhead.
+So emission is queued and drained on a background thread; the hot path
+only pays an `enqueue()`.
 
-Failure mode: the background thread logs and drops on POST failures. A
+Failure mode: the background thread logs and drops on sink failures. A
 backed-up or dead emitter must NEVER block proxy I/O — that's the
 fail-open contract. Queue is bounded; overflow drops the oldest event
 and logs once per 100 drops.
+
+Where events go is the Sink's job (sinks.py). The Emitter just enqueues,
+drains, and hands each event to ``self._sink.write(event)``. Sink is built
+once at start() from ``BATON_EVENT_SINK`` (URL-driven, comma-separated
+list builds a MultiSink); misconfig (unsupported scheme, http without
+api_key) raises at start() — never a silent no-emit.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import queue
 import threading
 import time
-import urllib.error
-import urllib.request
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -28,16 +31,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from baton_proxy.config import Config
+from baton_proxy.sinks import Sink, make_sink
 
 logger = logging.getLogger(__name__)
 
 # Bounded queue — backed-up emitter shouldn't accumulate unbounded memory.
 # 1000 events buys a decent buffer for typical 5-10 RPS tool-call workloads.
 _QUEUE_MAXSIZE = 1000
-
-# Per-POST timeout — keep tight so the emitter thread doesn't block forever
-# on a dead Console endpoint. The proxy I/O path is unaffected either way.
-_POST_TIMEOUT_S = 5.0
 
 _SDK_VERSION = "baton-proxy/0.0.1"
 _AGENT_RUNTIME = "mcp-proxy"
@@ -102,12 +102,16 @@ class Emitter:
         # the queue between our get and put.
         self._enqueue_lock = threading.Lock()
         self._drop_count = 0
+        # Sink set up in start(); None until then.
+        self._sink: Sink | None = None
 
     def start(self) -> None:
         if not self._config.emission_enabled:
             return
         if self._thread is not None:
             return
+        assert self._config.event_sink is not None  # emission_enabled gates this
+        self._sink = make_sink(self._config.event_sink, api_key=self._config.api_key)
         self._thread = threading.Thread(target=self._drain, name="baton-proxy-emitter", daemon=True)
         self._thread.start()
 
@@ -125,6 +129,9 @@ class Emitter:
             pass
         self._thread.join(timeout=timeout)
         self._thread = None
+        if self._sink is not None:
+            self._sink.close()
+            self._sink = None
 
     def enqueue_tool_call_start(
         self,
@@ -258,30 +265,19 @@ class Emitter:
                 continue
             if event is None:
                 return
-            self._post(event)
+            self._deliver(event)
 
-    def _post(self, event: _Event) -> None:
-        body = json.dumps(event.to_json()).encode("utf-8")
-        url = f"{self._config.console_url.rstrip('/')}/v0/events"  # type: ignore[union-attr]
-        req = urllib.request.Request(
-            url,
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._config.api_key}",
-            },
-        )
+    def _deliver(self, event: _Event) -> None:
+        """Hand one event to the sink. Any failure is logged and dropped —
+        fail-open contract: a broken sink must not stall the drain loop or
+        propagate exceptions that would kill the daemon thread."""
+        assert self._sink is not None  # start() built it
         try:
-            with urllib.request.urlopen(req, timeout=_POST_TIMEOUT_S) as resp:
-                if resp.status >= 400:
-                    logger.warning(
-                        "baton-proxy emit %s -> HTTP %d", event.event_type, resp.status
-                    )
-        except urllib.error.HTTPError as e:
-            logger.warning("baton-proxy emit %s -> HTTP %d", event.event_type, e.code)
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            logger.warning("baton-proxy emit %s -> %s: %s", event.event_type, type(e).__name__, e)
+            self._sink.write(event.to_json())
+        except Exception as e:  # noqa: BLE001 — fail-open at delivery boundary
+            logger.warning(
+                "baton-proxy emit %s -> %s: %s", event.event_type, type(e).__name__, e
+            )
 
 
 def utc_now_ms() -> int:
