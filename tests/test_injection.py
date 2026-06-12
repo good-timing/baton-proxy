@@ -238,7 +238,7 @@ def test_vendor_id_does_not_affect_tool_name() -> None:
 def test_handle_injected_call_null_params_does_not_crash() -> None:
     """JSON-RPC permits params: null. dict.get's default fires on missing
     keys, not on explicit None, so the chained get pattern must coerce."""
-    from baton_proxy.proxy import _Injection, _handle_injected_call
+    from baton_proxy.proxy import _handle_injected_call, _Injection
 
     injection = _Injection.create(event_sink_url=None)
     session_id = "test-session"
