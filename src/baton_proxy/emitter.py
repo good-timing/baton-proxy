@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from baton_proxy import __version__ as _PKG_VERSION
 from baton_proxy.config import Config
 from baton_proxy.sinks import Sink, make_sink
 
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 # 1000 events buys a decent buffer for typical 5-10 RPS tool-call workloads.
 _QUEUE_MAXSIZE = 1000
 
-_SDK_VERSION = "baton-proxy/0.0.1"
+_SDK_VERSION = f"baton-proxy/{_PKG_VERSION}"
 _AGENT_RUNTIME = "mcp-proxy"
 
 

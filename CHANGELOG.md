@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-06-12
+
+### Fixed
+- `sdk_version` field in emitted events was hardcoded to `"baton-proxy/0.0.1"` and never picked up version bumps. Now derived from `baton_proxy.__version__` at module load. Caught while dogfooding the 0.1.1 install — events from a `pipx`-installed proxy were reporting the stale version.
+
 ## [0.1.1] — 2026-06-12
 
 Docs-only release to refresh the PyPI project description. No code changes.
@@ -30,6 +35,7 @@ Initial public release on PyPI.
 - Consent guard: refuses to start when an `http(s)://` sink is paired with the placeholder `BATON_CONSENT_TOKEN=local`, or when an `http(s)://` sink is configured without `BATON_API_KEY`.
 - Fail-open delivery: emission runs on a background thread; Console outage never blocks the MCP pipe.
 
-[Unreleased]: https://github.com/good-timing/baton-proxy/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/good-timing/baton-proxy/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/good-timing/baton-proxy/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/good-timing/baton-proxy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/good-timing/baton-proxy/releases/tag/v0.1.0
