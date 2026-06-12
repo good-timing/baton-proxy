@@ -72,13 +72,9 @@ def _run_proxy() -> dict[int, dict]:
         text=True,
         env={**env, "PYTHONPATH": str(REPO / "src")},
     )
-    assert proc.stdin is not None
-    for req in REQUESTS:
-        proc.stdin.write(json.dumps(req) + "\n")
-        proc.stdin.flush()
-    proc.stdin.close()
+    input_data = "".join(json.dumps(req) + "\n" for req in REQUESTS)
     try:
-        stdout, _stderr = proc.communicate(timeout=10)
+        stdout, _stderr = proc.communicate(input=input_data, timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
         stdout, _stderr = proc.communicate()
@@ -190,13 +186,9 @@ def _run_proxy_with_env(extra_env: dict[str, str]) -> dict[int, dict]:
         text=True,
         env=env,
     )
-    assert proc.stdin is not None
-    for req in REQUESTS:
-        proc.stdin.write(json.dumps(req) + "\n")
-        proc.stdin.flush()
-    proc.stdin.close()
+    input_data = "".join(json.dumps(req) + "\n" for req in REQUESTS)
     try:
-        stdout, _stderr = proc.communicate(timeout=10)
+        stdout, _stderr = proc.communicate(input=input_data, timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
         stdout, _stderr = proc.communicate()
@@ -318,13 +310,9 @@ def test_baton_annotate_emits_annotation_event_end_to_end() -> None:
             text=True,
             env=env,
         )
-        assert proc.stdin is not None
-        for req in REQUESTS:
-            proc.stdin.write(json.dumps(req) + "\n")
-            proc.stdin.flush()
-        proc.stdin.close()
+        input_data = "".join(json.dumps(req) + "\n" for req in REQUESTS)
         try:
-            proc.communicate(timeout=10)
+            proc.communicate(input=input_data, timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
