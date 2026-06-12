@@ -9,10 +9,10 @@ session). Step 2 (full restart) was not performed before step 3 — see
 
 | step | result | excerpt |
 |---|---|---|
-| 3a enumeration | ✓ | Listed `echo`, `boom`, `e2eproxy_annotate` and quoted the server's "MUST call this tool when you encounter friction" instruction. |
+| 3a enumeration | ✓ | Listed `echo`, `boom`, `baton_annotate` and quoted the server's "MUST call this tool when you encounter friction" instruction. |
 | 3b forward success | ✓ | `Echo: hello` |
 | 3c forward error | ✓ | `MCP error -32000: boom` reached the model. |
-| **3c elicitation** | **✗** | After the boom error the model's entire next message was `Errored as designed: MCP error -32000: boom.` — no `e2eproxy_annotate` call. |
+| **3c elicitation** | **✗** | After the boom error the model's entire next message was `Errored as designed: MCP error -32000: boom.` — no `baton_annotate` call. |
 | 5 session stitch | not run | `/v0/escalate` curl not executed for this run. |
 
 ## The key data point — why elicitation failed

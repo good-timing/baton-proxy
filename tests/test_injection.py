@@ -39,7 +39,7 @@ REQUESTS = [
         "id": 3,
         "method": "tools/call",
         "params": {
-            "name": "vendor_annotate",
+            "name": "baton_annotate",
             "arguments": {
                 "signal_type": "failure",
                 "intent": "test",
@@ -102,7 +102,7 @@ def test_initialize_carries_injected_instructions() -> None:
     init = by_id.get(1)
     assert init is not None, "no initialize response"
     instructions = init.get("result", {}).get("instructions", "")
-    assert "vendor_annotate" in instructions
+    assert "baton_annotate" in instructions
     assert "MUST" in instructions
 
 
@@ -111,7 +111,7 @@ def test_tools_list_contains_injected_tool() -> None:
     tools_list = by_id.get(2)
     assert tools_list is not None, "no tools/list response"
     names = [t.get("name") for t in tools_list.get("result", {}).get("tools", [])]
-    assert "vendor_annotate" in names
+    assert "baton_annotate" in names
     assert "echo" in names  # upstream tool still there
 
 
@@ -120,7 +120,7 @@ def test_injected_tool_call_handled_by_proxy() -> None:
     inj = by_id.get(3)
     assert inj is not None
     text = inj["result"]["content"][0]["text"]
-    assert "vendor_annotate recorded" in text
+    assert "baton_annotate recorded" in text
 
 
 def test_upstream_tool_call_still_works() -> None:
@@ -138,13 +138,14 @@ def test_upstream_tool_error_passes_through() -> None:
     assert boom["error"]["code"] == -32000
 
 
-def test_derive_annotation_tool_name() -> None:
-    from baton_proxy.proxy import DEFAULT_TOOL_NAME, derive_annotation_tool_name
+def test_annotate_tool_name_is_baton_branded() -> None:
+    """v1 posture: the proxy is a gateway demo, Baton brand visibility is the
+    point. White-label tool naming was previously per-vendor; that machinery
+    is gone until a vendor specifically asks. Regression guard for that
+    design decision."""
+    from baton_proxy.proxy import ANNOTATE_TOOL_NAME
 
-    assert derive_annotation_tool_name(None) == DEFAULT_TOOL_NAME
-    assert derive_annotation_tool_name("") == DEFAULT_TOOL_NAME
-    assert derive_annotation_tool_name("acme") == "acme_annotate"
-    assert derive_annotation_tool_name("foo-bar") == "foo-bar_annotate"
+    assert ANNOTATE_TOOL_NAME == "baton_annotate"
 
 
 def _run_proxy_with_env(extra_env: dict[str, str]) -> dict[int, dict]:
@@ -184,20 +185,25 @@ def _run_proxy_with_env(extra_env: dict[str, str]) -> dict[int, dict]:
     return by_id
 
 
-def test_vendor_id_namespaces_the_annotation_tool() -> None:
+def test_vendor_id_does_not_affect_tool_name() -> None:
+    """v1 design decision: BATON_VENDOR_ID labels the install for the operator
+    but does NOT prefix the injected tool name. Customers evaluating Baton
+    via the proxy always see ``baton_annotate``, regardless of which vendor
+    they wrapped. Regression guard — flipping this back to vendor-namespaced
+    is a deliberate move (vendor opt-in to white-label), not an accident."""
     by_id = _run_proxy_with_env({"BATON_VENDOR_ID": "acme"})
 
     init = by_id.get(1)
     assert init is not None
     instructions = init.get("result", {}).get("instructions", "")
-    assert "acme_annotate" in instructions
-    assert "vendor_annotate" not in instructions
+    assert "baton_annotate" in instructions
+    assert "acme_annotate" not in instructions
 
     tools_list = by_id.get(2)
     assert tools_list is not None
     names = [t.get("name") for t in tools_list.get("result", {}).get("tools", [])]
-    assert "acme_annotate" in names
-    assert "vendor_annotate" not in names
+    assert "baton_annotate" in names
+    assert "acme_annotate" not in names
 
 
 def test_handle_injected_call_null_params_does_not_crash() -> None:
@@ -219,7 +225,7 @@ def test_handle_injected_call_null_params_does_not_crash() -> None:
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": {"name": "vendor_annotate", "arguments": None},
+            "params": {"name": "baton_annotate", "arguments": None},
         }
     )
     assert resp["id"] == 3
@@ -244,9 +250,9 @@ class _StubIngest(BaseHTTPRequestHandler):
         return
 
 
-def test_vendor_annotate_emits_annotation_event_end_to_end() -> None:
+def test_baton_annotate_emits_annotation_event_end_to_end() -> None:
     """Run the proxy with BATON_* env vars and verify the annotation event
-    is POSTed to the console after vendor_annotate is called."""
+    is POSTed to the console after baton_annotate is called."""
     _StubIngest.received = []
     server = HTTPServer(("127.0.0.1", 0), _StubIngest)
     t = threading.Thread(target=server.serve_forever, daemon=True)

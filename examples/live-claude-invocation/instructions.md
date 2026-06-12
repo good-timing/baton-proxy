@@ -41,7 +41,7 @@ To tee to stderr or POST to a real Console instead, pre-set
 The proxy wraps `tests/fixture_server.py`, which exposes:
 - `echo` — returns its input (success path)
 - `boom` — always errors (error path)
-- `e2eproxy_annotate` — the proxy-injected annotation tool
+- `baton_annotate` — the proxy-injected annotation tool
 
 ### 2. Restart Claude Code
 
@@ -52,7 +52,7 @@ The proxy wraps `tests/fixture_server.py`, which exposes:
 **a. enumeration**
 > What MCP tools are available from the `baton-proxy-example` server?
 
-Expect: `echo`, `boom`, `e2eproxy_annotate`.
+Expect: `echo`, `boom`, `baton_annotate`.
 
 **b. forward success**
 > Call the echo tool from baton-proxy-example with text="hello".
@@ -63,7 +63,7 @@ Expect: response contains `Echo: hello`.
 > Call the boom tool from baton-proxy-example with no arguments.
 
 Expect: error response. **Then watch what Claude does next.** Don't prompt
-for annotation — the point is to see whether it calls `e2eproxy_annotate`
+for annotation — the point is to see whether it calls `baton_annotate`
 on its own.
 
 ### 4. Inspect the event stream
@@ -75,7 +75,7 @@ cat /tmp/baton-proxy-example.jsonl
 Each line is one event envelope. You should see:
 - `tool_call_start` + `tool_call_end` for the `echo` call (3b)
 - `tool_call_start` + `tool_call_error` for the `boom` call (3c)
-- `tool_call_start` + `annotation` for `e2eproxy_annotate` *if and only
+- `tool_call_start` + `annotation` for `baton_annotate` *if and only
   if* Claude elicited it (3c — the key data point)
 
 Pretty-print with `jq`:
@@ -111,10 +111,10 @@ bash examples/live-claude-invocation/unregister.sh
 
 Mark ✓ / ✗ + a one-line excerpt of Claude's actual output for each:
 
-- **enumeration** — did Claude see `e2eproxy_annotate` in tools/list?
+- **enumeration** — did Claude see `baton_annotate` in tools/list?
 - **forward success** — did `echo` round-trip?
 - **forward error** — did Claude see the upstream `boom` error?
-- **elicitation** — did Claude call `e2eproxy_annotate` without being asked? *(the key data point)*
+- **elicitation** — did Claude call `baton_annotate` without being asked? *(the key data point)*
 - **event stream** — does the JSONL file show the expected event sequence?
 - **session stitch** (if you ran step 5) — did `/v0/escalate` return a `ticket_id`?
 

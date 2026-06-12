@@ -48,7 +48,7 @@ To ship events to a Console instead (or in addition), add four env vars:
 }
 ```
 
-The proxy adds one tool (`vendor_annotate`) to the upstream server's tool list and emits a friction event per real tool call.
+The proxy adds one tool (`baton_annotate`) to the upstream server's tool list and emits a friction event per real tool call.
 
 ## What gets emitted
 
@@ -62,7 +62,7 @@ Per real tool call, three event types match the Baton wire format (`tool_call_st
 
 Each event carries a session id (one per proxy process), monotonic sequence number, and the upstream MCP request's `_meta` block (for cycle correlation).
 
-The injected `vendor_annotate` tool itself is handled by the proxy; the upstream server never sees it.
+The injected `baton_annotate` tool itself is handled by the proxy; the upstream server never sees it.
 
 ## Configuration
 
@@ -74,7 +74,7 @@ All knobs are environment variables. Every emission-related one has a default; t
 | `BATON_TENANT_ID`     | `local` | Tenant identifier. Placeholder; replace when shipping to a Console. |
 | `BATON_CONSENT_TOKEN` | `local` | Per-process consent token. **Placeholder; you MUST replace this before pointing at an `http(s)://` sink** — the proxy refuses to start in that combination, so accidental remote leakage of placeholder-tagged events doesn't happen. |
 | `BATON_API_KEY`       | _(unset)_ | Bearer token. Required only when the sink scheme is `http(s)://`; `file://` and `stderr:` sinks ignore it. |
-| `BATON_VENDOR_ID`     | _(unset)_ | When set, the injected annotation tool is named `{vendor_id}_annotate` instead of `vendor_annotate`. Avoids colliding with an upstream tool of the same name. |
+| `BATON_VENDOR_ID`     | _(unset)_ | Labels the install for the operator (useful for multi-vendor customers grepping their JSONL). Does NOT prefix the injected tool name — that stays `baton_annotate` in v1. Vendors who need a white-labelled tool name will get an opt-in switch when they ask. |
 | `BATON_PROXY_LOG_FILE`| _(unset)_ | Path to tee proxy logs to (default: stderr only). |
 
 ### The three rungs
@@ -120,8 +120,8 @@ These are emitted as proxy startup errors so a misconfigured install never silen
 
 Two unidirectional pumps:
 
-- **client → server**: forwards stdin lines to the child process. Intercepts `tools/call` for `vendor_annotate` (proxy synthesises the response). For every other `tools/call`, enqueues a `tool_call_start` event and records the request id.
-- **server → client**: forwards child stdout to the client. Modifies the `initialize` response to append annotation-tool instructions; modifies the `tools/list` response to append the `vendor_annotate` tool. Correlates responses by id to emit `tool_call_end` / `tool_call_error`.
+- **client → server**: forwards stdin lines to the child process. Intercepts `tools/call` for `baton_annotate` (proxy synthesises the response). For every other `tools/call`, enqueues a `tool_call_start` event and records the request id.
+- **server → client**: forwards child stdout to the client. Modifies the `initialize` response to append annotation-tool instructions; modifies the `tools/list` response to append the `baton_annotate` tool. Correlates responses by id to emit `tool_call_end` / `tool_call_error`.
 
 A third background thread drains an in-memory queue and delivers events one at a time to the configured sink (HTTP POST for `https://`, JSONL append for `file://`). Failed deliveries are logged and dropped — the proxy never retries on the hot path.
 

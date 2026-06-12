@@ -45,16 +45,13 @@ logger = logging.getLogger("baton_proxy")
 MAX_PENDING = 256
 EVICTED_ERROR_TYPE = "proxy_pending_evicted"
 
-# Fallback tool name when no BATON_VENDOR_ID is set; vendors with a
-# configured vendor_id get a namespaced "{vendor_id}_annotate" instead.
+# Baton-branded tool name for the injected annotation surface. v1 posture:
+# the proxy is the gateway demo for customers evaluating Baton, so Baton
+# brand visibility is the point. Vendors who eventually need white-label
+# tool naming will get an opt-in switch — defer until first vendor asks.
 # Underscore form matches the SDK's `derive_annotation_tool_name` rather
-# than the dot form in SPEC §5.1.1 — the SDK ships underscores today.
-DEFAULT_TOOL_NAME = "vendor_annotate"
-
-
-def derive_annotation_tool_name(vendor_id: str | None) -> str:
-    """Per-vendor namespaced tool name; falls back to DEFAULT_TOOL_NAME."""
-    return f"{vendor_id}_annotate" if vendor_id else DEFAULT_TOOL_NAME
+# than the dot form in SPEC §5.1.1; the SDK ships underscores today.
+ANNOTATE_TOOL_NAME = "baton_annotate"
 
 
 def _build_injected_tool(tool_name: str) -> dict[str, Any]:
@@ -103,12 +100,11 @@ class _Injection:
     instructions_suffix: str
 
     @classmethod
-    def for_vendor(cls, vendor_id: str | None) -> _Injection:
-        name = derive_annotation_tool_name(vendor_id)
+    def create(cls) -> _Injection:
         return cls(
-            name=name,
-            tool=_build_injected_tool(name),
-            instructions_suffix=_build_instructions_suffix(name),
+            name=ANNOTATE_TOOL_NAME,
+            tool=_build_injected_tool(ANNOTATE_TOOL_NAME),
+            instructions_suffix=_build_instructions_suffix(ANNOTATE_TOOL_NAME),
         )
 
 
@@ -172,7 +168,7 @@ def _inject_into_response(msg: dict[str, Any], injection: _Injection) -> dict[st
 
 
 def _handle_injected_call(req: dict[str, Any]) -> dict[str, Any]:
-    """Synthesise a response for the injected vendor_annotate tool.
+    """Synthesise a response for the injected baton_annotate tool.
 
     The annotation event itself is enqueued by the caller; this only builds
     the JSON-RPC envelope sent back to the client.
@@ -187,7 +183,7 @@ def _handle_injected_call(req: dict[str, Any]) -> dict[str, Any]:
         "id": req.get("id"),
         "result": {
             "content": [
-                {"type": "text", "text": f"vendor_annotate recorded signal_type={signal}"}
+                {"type": "text", "text": f"baton_annotate recorded signal_type={signal}"}
             ]
         },
     }
@@ -381,7 +377,7 @@ def run_proxy(argv: list[str]) -> int:
     """
     config = Config.from_env()
     _configure_logging(config.log_file)
-    injection = _Injection.for_vendor(config.vendor_id)
+    injection = _Injection.create()
     logger.info(
         "baton-proxy starting (session=%s, emission=%s, tool=%s, upstream=%s)",
         config.session_id,
