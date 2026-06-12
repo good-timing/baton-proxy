@@ -7,3 +7,6 @@ dist/
 .pytest_cache/
 .ruff_cache/
 *.log
+
+# Local exploratory work — examples/ is the published equivalent
+spikes/
