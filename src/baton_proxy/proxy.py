@@ -111,7 +111,10 @@ def _handle_injected_call(req: dict[str, Any]) -> dict[str, Any]:
     The annotation event itself is enqueued by the caller; this only builds
     the JSON-RPC envelope sent back to the client.
     """
-    args = req.get("params", {}).get("arguments", {}) or {}
+    # `params` and `arguments` may both be explicit JSON null — dict.get's
+    # default only fires when the key is absent, not when the value is None,
+    # so chain through `or {}` at each level.
+    args = (req.get("params") or {}).get("arguments") or {}
     signal = args.get("signal_type", "unknown")
     return {
         "jsonrpc": "2.0",

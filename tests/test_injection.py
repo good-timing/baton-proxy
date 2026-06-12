@@ -138,6 +138,31 @@ def test_upstream_tool_error_passes_through() -> None:
     assert boom["error"]["code"] == -32000
 
 
+def test_handle_injected_call_null_params_does_not_crash() -> None:
+    """JSON-RPC permits params: null. dict.get's default fires on missing
+    keys, not on explicit None, so the chained get pattern must coerce."""
+    from baton_proxy.proxy import _handle_injected_call
+
+    resp = _handle_injected_call({"jsonrpc": "2.0", "id": 1, "method": "tools/call"})
+    assert resp["id"] == 1
+    assert "signal_type=unknown" in resp["result"]["content"][0]["text"]
+
+    resp = _handle_injected_call(
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": None}
+    )
+    assert resp["id"] == 2
+
+    resp = _handle_injected_call(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "vendor_annotate", "arguments": None},
+        }
+    )
+    assert resp["id"] == 3
+
+
 class _StubIngest(BaseHTTPRequestHandler):
     received: list[dict] = []
 
