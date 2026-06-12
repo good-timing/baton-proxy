@@ -144,7 +144,7 @@ def test_derive_annotation_tool_name() -> None:
     assert derive_annotation_tool_name(None) == DEFAULT_TOOL_NAME
     assert derive_annotation_tool_name("") == DEFAULT_TOOL_NAME
     assert derive_annotation_tool_name("acme") == "acme_annotate"
-    assert derive_annotation_tool_name("singlestore") == "singlestore_annotate"
+    assert derive_annotation_tool_name("foo-bar") == "foo-bar_annotate"
 
 
 def _run_proxy_with_env(extra_env: dict[str, str]) -> dict[int, dict]:
