@@ -27,6 +27,7 @@ import os
 import subprocess
 import sys
 import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -35,6 +36,14 @@ from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter, utc_now_ms
 
 logger = logging.getLogger("baton_proxy")
+
+# Cap the in-flight tool-call tracking dict. Well above realistic MCP
+# concurrency (1-10 parallel calls); the cap exists to bound memory if the
+# upstream stops responding. When exceeded, oldest entries are evicted and
+# a synthetic tool_call_error is emitted so the worker sees a well-formed
+# start/error pair rather than a dangling start.
+MAX_PENDING = 256
+EVICTED_ERROR_TYPE = "proxy_pending_evicted"
 
 # Fallback tool name when no BATON_VENDOR_ID is set; vendors with a
 # configured vendor_id get a namespaced "{vendor_id}_annotate" instead.
@@ -112,6 +121,26 @@ class _PendingCall:
         self.runtime_meta = runtime_meta
 
 
+def _evict_overflow(pending: OrderedDict[Any, _PendingCall], emitter: Emitter) -> None:
+    """Evict oldest pending entries down to MAX_PENDING; caller holds pending_lock.
+
+    Each eviction emits a synthetic tool_call_error so the wire stream
+    doesn't carry a dangling start with no end/error pair.
+    """
+    while len(pending) > MAX_PENDING:
+        _evicted_id, evicted = pending.popitem(last=False)
+        try:
+            emitter.enqueue_tool_call_error(
+                tool_name=evicted.tool_name,
+                error_type=EVICTED_ERROR_TYPE,
+                error_body="proxy pending dict overflowed without upstream response",
+                duration_ms=max(0, utc_now_ms() - evicted.started_ms),
+                runtime_meta=evicted.runtime_meta,
+            )
+        except Exception:
+            logger.exception("baton-proxy: enqueue evicted tool_call_error failed")
+
+
 def _inject_into_response(msg: dict[str, Any], injection: _Injection) -> dict[str, Any]:
     """Inject into responses to `initialize` and `tools/list`.
 
@@ -169,7 +198,7 @@ def _write_line(stream: Any, payload: dict[str, Any] | str) -> None:
 
 def _pump_client_to_server(
     child_stdin: Any,
-    pending: dict[Any, _PendingCall],
+    pending: OrderedDict[Any, _PendingCall],
     pending_lock: threading.Lock,
     emitter: Emitter,
     injection: _Injection,
@@ -246,6 +275,7 @@ def _pump_client_to_server(
                         started_ms=utc_now_ms(),
                         runtime_meta=runtime_meta,
                     )
+                    _evict_overflow(pending, emitter)
 
         try:
             child_stdin.write(json.dumps(req) + "\n")
@@ -256,7 +286,7 @@ def _pump_client_to_server(
 
 def _pump_server_to_client(
     child_stdout: Any,
-    pending: dict[Any, _PendingCall],
+    pending: OrderedDict[Any, _PendingCall],
     pending_lock: threading.Lock,
     emitter: Emitter,
     injection: _Injection,
@@ -374,7 +404,7 @@ def run_proxy(argv: list[str]) -> int:
         emitter.stop()
         return 127
 
-    pending: dict[Any, _PendingCall] = {}
+    pending: OrderedDict[Any, _PendingCall] = OrderedDict()
     pending_lock = threading.Lock()
 
     t_in = threading.Thread(
@@ -393,6 +423,12 @@ def run_proxy(argv: list[str]) -> int:
     t_out.start()
 
     rc = child.wait()
+    # t_out terminates naturally once child's stdout closes (which happens
+    # on child exit). Give it a moment to drain final responses + their
+    # tool_call_end events before we stop the emitter. t_in is blocked on
+    # sys.stdin and can't be unblocked from Python; daemon=True takes care
+    # of it at process exit.
+    t_out.join(timeout=2.0)
     emitter.stop()
     logger.info("baton-proxy exiting (upstream rc=%d)", rc)
     return rc

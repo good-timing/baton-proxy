@@ -114,10 +114,14 @@ class Emitter:
     def stop(self, timeout: float = 2.0) -> None:
         if self._thread is None:
             return
-        # Sentinel signals drain loop to exit.
+        # Blocking put with timeout — if the queue is full, put_nowait would
+        # silently drop the sentinel and the drain thread would loop until
+        # daemon-killed at process exit (losing buffered events). put() waits
+        # for the drain thread to free a slot, which it does once per second.
         try:
-            self._queue.put_nowait(None)
+            self._queue.put(None, timeout=timeout)
         except queue.Full:
+            # Drain thread is dead or wedged; nothing more we can do here.
             pass
         self._thread.join(timeout=timeout)
         self._thread = None

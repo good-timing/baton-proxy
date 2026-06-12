@@ -171,3 +171,25 @@ def test_stop_is_clean_when_console_dead() -> None:
     e.enqueue_tool_call_start(tool_name="echo", params={})
     e.stop(timeout=3.0)
     assert e._thread is None  # noqa: SLF001
+
+
+def test_stop_drains_when_queue_was_full() -> None:
+    """stop() must succeed even if the queue was full when stop was called.
+    Previously put_nowait(None) would silently drop the sentinel and the
+    drain thread would loop until daemon-killed at process exit."""
+    server, url = _start_stub()
+    try:
+        e = Emitter(_config_with(url))
+        # Shrink the queue so we can saturate it deterministically.
+        e._queue = __import__("queue").Queue(maxsize=4)  # noqa: SLF001
+        e.start()
+        # Fill well past capacity to guarantee the queue stays at maxsize
+        # during the stop() call (drop-oldest keeps room, but stop racing
+        # with drain is what we're after).
+        for i in range(50):
+            e.enqueue_tool_call_start(tool_name=f"t{i}", params={})
+        # Don't wait for drain — stop should still terminate cleanly.
+        e.stop(timeout=5.0)
+        assert e._thread is None  # noqa: SLF001
+    finally:
+        server.shutdown()
