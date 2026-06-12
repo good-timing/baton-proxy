@@ -185,26 +185,33 @@ def _pump_client_to_server(
                     logger.exception("baton-proxy: synthesising annotation response failed")
                 continue
 
-            # Real tool call — emit start, track for end/error.
+            # Real tool call — emit start FIRST, then track for end/error.
+            # Order matters: if enqueue throws we MUST NOT have a pending
+            # entry, otherwise the eventual response would emit an orphan
+            # tool_call_end the worker can't pair with a start. (Forwarding
+            # to the upstream happens after this block, so there's no risk
+            # of the response arriving before we add to pending on success.)
             req_id = req.get("id")
             # TODO: MCP also permits a top-level `_meta` on the request envelope;
             # we currently only capture `params._meta`. Revisit if a vendor runtime
             # surfaces correlation ids at the request level instead.
             runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            safe_tool_name = str(tool_name) if tool_name else ""
             try:
-                with pending_lock:
-                    pending[req_id] = _PendingCall(
-                        tool_name=str(tool_name) if tool_name else "",
-                        started_ms=utc_now_ms(),
-                        runtime_meta=runtime_meta,
-                    )
                 emitter.enqueue_tool_call_start(
-                    tool_name=str(tool_name) if tool_name else "",
+                    tool_name=safe_tool_name,
                     params=params.get("arguments"),
                     runtime_meta=runtime_meta,
                 )
             except Exception:
                 logger.exception("baton-proxy: enqueue tool_call_start failed")
+            else:
+                with pending_lock:
+                    pending[req_id] = _PendingCall(
+                        tool_name=safe_tool_name,
+                        started_ms=utc_now_ms(),
+                        runtime_meta=runtime_meta,
+                    )
 
         try:
             child_stdin.write(json.dumps(req) + "\n")

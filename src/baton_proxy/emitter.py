@@ -96,6 +96,11 @@ class Emitter:
         self._thread: threading.Thread | None = None
         self._seq = 0
         self._seq_lock = threading.Lock()
+        # Serialises put_nowait across producers. queue.Queue's internal mutex
+        # guards individual operations but not a get+put pair, so an unguarded
+        # drop-oldest sequence has a window where another producer can refill
+        # the queue between our get and put.
+        self._enqueue_lock = threading.Lock()
         self._drop_count = 0
 
     def start(self) -> None:
@@ -219,23 +224,27 @@ class Emitter:
             runtime_meta=runtime_meta,
         )
 
-        try:
-            self._queue.put_nowait(event)
-        except queue.Full:
-            # Drop-oldest semantics. Logging on every drop would itself be
-            # noise on a sustained overflow, so we count and log periodically.
-            self._drop_count += 1
+        with self._enqueue_lock:
             try:
-                self._queue.get_nowait()  # drop oldest
                 self._queue.put_nowait(event)
-            except queue.Empty:
-                pass
             except queue.Full:
-                pass
-            if self._drop_count % 100 == 1:
-                logger.warning(
-                    "baton-proxy emitter queue full, dropped %d events", self._drop_count
-                )
+                # Drop-oldest. Held under _enqueue_lock so the get+put pair
+                # is atomic w.r.t. other producers; without it a concurrent
+                # put_nowait could refill the slot between our get and put
+                # and silently drop the new event instead of the oldest.
+                self._drop_count += 1
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self._queue.put_nowait(event)
+                except queue.Full:
+                    pass
+                if self._drop_count % 100 == 1:
+                    logger.warning(
+                        "baton-proxy emitter queue full, dropped %d events", self._drop_count
+                    )
 
     def _drain(self) -> None:
         while True:
