@@ -138,6 +138,68 @@ def test_upstream_tool_error_passes_through() -> None:
     assert boom["error"]["code"] == -32000
 
 
+def test_derive_annotation_tool_name() -> None:
+    from baton_proxy.proxy import DEFAULT_TOOL_NAME, derive_annotation_tool_name
+
+    assert derive_annotation_tool_name(None) == DEFAULT_TOOL_NAME
+    assert derive_annotation_tool_name("") == DEFAULT_TOOL_NAME
+    assert derive_annotation_tool_name("acme") == "acme_annotate"
+    assert derive_annotation_tool_name("singlestore") == "singlestore_annotate"
+
+
+def _run_proxy_with_env(extra_env: dict[str, str]) -> dict[int, dict]:
+    """Run the proxy with the REQUESTS script and extra env overrides."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
+    env["PYTHONPATH"] = str(REPO / "src")
+    env.update(extra_env)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "baton_proxy", "--", sys.executable, str(FIXTURE)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    assert proc.stdin is not None
+    for req in REQUESTS:
+        proc.stdin.write(json.dumps(req) + "\n")
+        proc.stdin.flush()
+    proc.stdin.close()
+    try:
+        stdout, _stderr = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, _stderr = proc.communicate()
+    by_id: dict[int, dict] = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "id" in msg:
+            by_id[msg["id"]] = msg
+    return by_id
+
+
+def test_vendor_id_namespaces_the_annotation_tool() -> None:
+    by_id = _run_proxy_with_env({"BATON_VENDOR_ID": "acme"})
+
+    init = by_id.get(1)
+    assert init is not None
+    instructions = init.get("result", {}).get("instructions", "")
+    assert "acme_annotate" in instructions
+    assert "vendor_annotate" not in instructions
+
+    tools_list = by_id.get(2)
+    assert tools_list is not None
+    names = [t.get("name") for t in tools_list.get("result", {}).get("tools", [])]
+    assert "acme_annotate" in names
+    assert "vendor_annotate" not in names
+
+
 def test_handle_injected_call_null_params_does_not_crash() -> None:
     """JSON-RPC permits params: null. dict.get's default fires on missing
     keys, not on explicit None, so the chained get pattern must coerce."""

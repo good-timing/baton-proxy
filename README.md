@@ -66,7 +66,7 @@ All knobs are environment variables:
 | `BATON_TENANT_ID`     | for emission | Tenant identifier. |
 | `BATON_API_KEY`       | for emission | Bearer token. |
 | `BATON_CONSENT_TOKEN` | for emission | Per-process consent token. |
-| `BATON_VENDOR_ID`     | optional     | Reserved for future vendor-namespaced tool prefixes. |
+| `BATON_VENDOR_ID`     | optional     | When set, the injected annotation tool is named `{vendor_id}_annotate` instead of `vendor_annotate`. Avoids colliding with an upstream tool of the same name. |
 | `BATON_PROXY_LOG_FILE`| optional     | Path to tee proxy logs to (default: stderr only). |
 
 If any of the first four are missing, **emission is disabled** and the proxy still injects + intercepts the annotation tool. This is the fail-open path: the proxy never breaks MCP traffic because of a Console outage or misconfiguration.

@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from baton_proxy.config import Config
@@ -35,35 +36,67 @@ from baton_proxy.emitter import Emitter, utc_now_ms
 
 logger = logging.getLogger("baton_proxy")
 
-INJECTED_TOOL_NAME = "vendor_annotate"
-INJECTED_TOOL: dict[str, Any] = {
-    "name": INJECTED_TOOL_NAME,
-    "description": (
-        "MUST call this tool when you encounter friction, an error, a parameter "
-        "mismatch, or a feature gap while using this server's tools. Annotate "
-        "with signal_type (failure / feature_gap / parameter_confusion), intent "
-        "(what the user wanted), and suggested_improvement (concrete API change "
-        "that would have avoided the friction)."
-    ),
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "signal_type": {
-                "type": "string",
-                "enum": ["failure", "feature_gap", "parameter_confusion"],
-            },
-            "intent": {"type": "string"},
-            "suggested_improvement": {"type": "string"},
-        },
-        "required": ["signal_type", "intent", "suggested_improvement"],
-    },
-}
+# Fallback tool name when no BATON_VENDOR_ID is set; vendors with a
+# configured vendor_id get a namespaced "{vendor_id}_annotate" instead.
+# Underscore form matches the SDK's `derive_annotation_tool_name` rather
+# than the dot form in SPEC §5.1.1 — the SDK ships underscores today.
+DEFAULT_TOOL_NAME = "vendor_annotate"
 
-INJECTED_INSTRUCTIONS_SUFFIX = (
-    " IMPORTANT: When you encounter friction, errors, or feature gaps while "
-    "using this server's tools, you MUST call the vendor_annotate tool to "
-    "record a structured signal. This helps the vendor improve their tools."
-)
+
+def derive_annotation_tool_name(vendor_id: str | None) -> str:
+    """Per-vendor namespaced tool name; falls back to DEFAULT_TOOL_NAME."""
+    return f"{vendor_id}_annotate" if vendor_id else DEFAULT_TOOL_NAME
+
+
+def _build_injected_tool(tool_name: str) -> dict[str, Any]:
+    return {
+        "name": tool_name,
+        "description": (
+            "MUST call this tool when you encounter friction, an error, a parameter "
+            "mismatch, or a feature gap while using this server's tools. Annotate "
+            "with signal_type (failure / feature_gap / parameter_confusion), intent "
+            "(what the user wanted), and suggested_improvement (concrete API change "
+            "that would have avoided the friction)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "signal_type": {
+                    "type": "string",
+                    "enum": ["failure", "feature_gap", "parameter_confusion"],
+                },
+                "intent": {"type": "string"},
+                "suggested_improvement": {"type": "string"},
+            },
+            "required": ["signal_type", "intent", "suggested_improvement"],
+        },
+    }
+
+
+def _build_instructions_suffix(tool_name: str) -> str:
+    return (
+        " IMPORTANT: When you encounter friction, errors, or feature gaps while "
+        f"using this server's tools, you MUST call the {tool_name} tool to "
+        "record a structured signal. This helps the vendor improve their tools."
+    )
+
+
+@dataclass(frozen=True)
+class _Injection:
+    """Resolved per-process injection state."""
+
+    name: str
+    tool: dict[str, Any]
+    instructions_suffix: str
+
+    @classmethod
+    def for_vendor(cls, vendor_id: str | None) -> _Injection:
+        name = derive_annotation_tool_name(vendor_id)
+        return cls(
+            name=name,
+            tool=_build_injected_tool(name),
+            instructions_suffix=_build_instructions_suffix(name),
+        )
 
 
 class _PendingCall:
@@ -79,7 +112,7 @@ class _PendingCall:
         self.runtime_meta = runtime_meta
 
 
-def _inject_into_response(msg: dict[str, Any]) -> dict[str, Any]:
+def _inject_into_response(msg: dict[str, Any], injection: _Injection) -> dict[str, Any]:
     """Inject into responses to `initialize` and `tools/list`.
 
     Returns the (possibly-mutated) message. Errors are swallowed — a malformed
@@ -96,10 +129,10 @@ def _inject_into_response(msg: dict[str, Any]) -> dict[str, Any]:
             original = result.get("instructions", "")
             if not isinstance(original, str):
                 original = ""
-            result["instructions"] = original + INJECTED_INSTRUCTIONS_SUFFIX
+            result["instructions"] = original + injection.instructions_suffix
 
         if "tools" in result and isinstance(result["tools"], list):
-            result["tools"].append(INJECTED_TOOL)
+            result["tools"].append(injection.tool)
     except Exception:
         logger.exception("baton-proxy: injection failed, forwarding response unmodified")
     return msg
@@ -139,6 +172,7 @@ def _pump_client_to_server(
     pending: dict[Any, _PendingCall],
     pending_lock: threading.Lock,
     emitter: Emitter,
+    injection: _Injection,
 ) -> None:
     """Forward client->server, with injection interception + start emission."""
     for line in sys.stdin:
@@ -160,7 +194,7 @@ def _pump_client_to_server(
         if method == "tools/call":
             params = req.get("params", {}) or {}
             tool_name = params.get("name")
-            if tool_name == INJECTED_TOOL_NAME:
+            if tool_name == injection.name:
                 # The proxy owns this tool — don't forward. Emit the annotation
                 # event before synthesising the response; that's the whole point
                 # of intercepting the call.
@@ -225,6 +259,7 @@ def _pump_server_to_client(
     pending: dict[Any, _PendingCall],
     pending_lock: threading.Lock,
     emitter: Emitter,
+    injection: _Injection,
 ) -> None:
     """Forward server->client, with response modification + end/error emission."""
     for line in child_stdout:
@@ -270,7 +305,7 @@ def _pump_server_to_client(
                 except Exception:
                     logger.exception("baton-proxy: enqueue tool_call_end/error failed")
 
-        modified = _inject_into_response(msg)
+        modified = _inject_into_response(msg, injection)
         try:
             _write_line(sys.stdout, modified)
         except Exception:
@@ -312,10 +347,12 @@ def run_proxy(argv: list[str]) -> int:
     """
     config = Config.from_env()
     _configure_logging(config.log_file)
+    injection = _Injection.for_vendor(config.vendor_id)
     logger.info(
-        "baton-proxy starting (session=%s, emission=%s, upstream=%s)",
+        "baton-proxy starting (session=%s, emission=%s, tool=%s, upstream=%s)",
         config.session_id,
         "on" if config.emission_enabled else "off",
+        injection.name,
         " ".join(argv),
     )
 
@@ -342,13 +379,13 @@ def run_proxy(argv: list[str]) -> int:
 
     t_in = threading.Thread(
         target=_pump_client_to_server,
-        args=(child.stdin, pending, pending_lock, emitter),
+        args=(child.stdin, pending, pending_lock, emitter, injection),
         name="baton-proxy-in",
         daemon=True,
     )
     t_out = threading.Thread(
         target=_pump_server_to_client,
-        args=(child.stdout, pending, pending_lock, emitter),
+        args=(child.stdout, pending, pending_lock, emitter, injection),
         name="baton-proxy-out",
         daemon=True,
     )
