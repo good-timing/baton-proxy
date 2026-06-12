@@ -1,6 +1,6 @@
 # baton-proxy
 
-Subprocess-wrap MCP proxy. Wraps a stdio MCP server, injects an annotation tool into the handshake, and emits friction events to a Baton Console.
+Subprocess-wrap MCP proxy. Wraps a stdio MCP server, injects an annotation tool into the handshake, and emits friction events to one or more sinks (stderr, a JSONL file, or a Baton Console).
 
 Zero changes to the underlying MCP server. The proxy *is* the MCP server from Claude's perspective; the real server is its child process.
 
@@ -8,11 +8,13 @@ Zero changes to the underlying MCP server. The proxy *is* the MCP server from Cl
 ┌──────────┐      ┌───────────────┐      ┌────────────────────┐
 │  Claude  │ ◀──▶ │  baton-proxy  │ ◀──▶ │ your MCP server    │
 └──────────┘      └───────┬───────┘      └────────────────────┘
-                          │ async POST
+                          │
+                          │ async fan-out — pick any subset
                           ▼
-                   ┌──────────────┐
-                   │ Baton Console│
-                   └──────────────┘
+   ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+   │  stderr:        │  │  file://        │  │  Baton Console  │
+   │  JSONL stream   │  │  JSONL file     │  │  (HTTPS POST)   │
+   └─────────────────┘  └─────────────────┘  └─────────────────┘
 ```
 
 ## Quick start
@@ -63,7 +65,7 @@ And the proxy emits a friction event per real tool call.
 
 ## What gets emitted
 
-Per real tool call, three event types match the Baton wire format (`tool_call_start` / `tool_call_end` / `tool_call_error`):
+Per real tool call, three event types match the [Baton wire format](https://github.com/good-timing/baton/blob/main/docs/SPEC.md) (`tool_call_start` / `tool_call_end` / `tool_call_error`):
 
 | Event | Payload |
 |---|---|
@@ -152,6 +154,11 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest
 ```
+
+## Related
+
+- **[baton-sdk](https://github.com/good-timing/baton)** — the in-process alternative. Vendors who control their MCP server add `install_baton(mcp, ...)` instead of subprocess-wrapping. Same wire format, same sinks; tighter integration with one line of vendor code.
+- **[Baton wire protocol](https://github.com/good-timing/baton/blob/main/docs/SPEC.md)** — the event envelope, signal taxonomy, and HTTPS contract that both `baton-proxy` and `baton-sdk` emit against.
 
 ## Roadmap
 
