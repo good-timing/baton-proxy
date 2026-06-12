@@ -53,6 +53,13 @@ EVICTED_ERROR_TYPE = "proxy_pending_evicted"
 # than the dot form in SPEC §5.1.1; the SDK ships underscores today.
 ANNOTATE_TOOL_NAME = "baton_annotate"
 
+# Local-only "show me a friction report for this session" tool — only
+# injected when the sink is purely local (file:// present, no http(s)://).
+# The gate maps to product mode: gateway demo = report tool present,
+# vendor production (http sink) = no report tool, vendor's Console
+# renders tickets instead.
+REPORT_TOOL_NAME = "baton_session_report"
+
 
 def _build_injected_tool(tool_name: str) -> dict[str, Any]:
     return {
@@ -91,20 +98,53 @@ def _build_instructions_suffix(tool_name: str) -> str:
     )
 
 
+def _build_report_tool() -> dict[str, Any]:
+    return {
+        "name": REPORT_TOOL_NAME,
+        "description": (
+            "Show a friction report for the current session — a vendor-shareable "
+            "summary of tool calls, errors, and friction signals captured by the "
+            "proxy. Use this when the user asks 'show me what went wrong', 'what "
+            "would a support ticket for this look like', or wants to see a "
+            "rollup of friction in this session. Output is ready-to-paste "
+            "markdown."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    }
+
+
 @dataclass(frozen=True)
 class _Injection:
-    """Resolved per-process injection state."""
+    """Resolved per-process injection state.
 
-    name: str
-    tool: dict[str, Any]
+    Always carries the annotate tool. Carries the session-report tool too
+    when the sink is purely local (so the customer can see the friction
+    report surface as part of the gateway demo). HTTP sinks indicate
+    production mode where the vendor's Console renders tickets, not the
+    proxy — so the report tool is suppressed there.
+    """
+
+    tools: list[dict[str, Any]]
     instructions_suffix: str
+    sink_path: str | None  # path of the file sink to read for the report, if any
+
+    @property
+    def names(self) -> set[str]:
+        return {t["name"] for t in self.tools}
 
     @classmethod
-    def create(cls) -> _Injection:
+    def create(cls, event_sink_url: str | None) -> _Injection:
+        from baton_proxy.report import find_file_sink_path, should_inject_report_tool
+
+        tools = [_build_injected_tool(ANNOTATE_TOOL_NAME)]
+        sink_path: str | None = None
+        if should_inject_report_tool(event_sink_url):
+            tools.append(_build_report_tool())
+            sink_path = find_file_sink_path(event_sink_url)
         return cls(
-            name=ANNOTATE_TOOL_NAME,
-            tool=_build_injected_tool(ANNOTATE_TOOL_NAME),
+            tools=tools,
             instructions_suffix=_build_instructions_suffix(ANNOTATE_TOOL_NAME),
+            sink_path=sink_path,
         )
 
 
@@ -161,22 +201,32 @@ def _inject_into_response(msg: dict[str, Any], injection: _Injection) -> dict[st
             result["instructions"] = original + injection.instructions_suffix
 
         if "tools" in result and isinstance(result["tools"], list):
-            result["tools"].append(injection.tool)
+            result["tools"].extend(injection.tools)
     except Exception:
         logger.exception("baton-proxy: injection failed, forwarding response unmodified")
     return msg
 
 
-def _handle_injected_call(req: dict[str, Any]) -> dict[str, Any]:
-    """Synthesise a response for the injected baton_annotate tool.
+def _handle_injected_call(
+    req: dict[str, Any],
+    *,
+    injection: _Injection,
+    session_id: str,
+) -> dict[str, Any]:
+    """Synthesise a response for whichever injected tool was called.
 
-    The annotation event itself is enqueued by the caller; this only builds
-    the JSON-RPC envelope sent back to the client.
+    The annotation event itself is enqueued by the caller before this is
+    invoked; this only builds the JSON-RPC envelope to send back. Dispatch
+    is by tool name — annotate vs session_report — with a defensive
+    fallback that never raises (a bug here MUST NOT break MCP traffic).
     """
-    # `params` and `arguments` may both be explicit JSON null — dict.get's
-    # default only fires when the key is absent, not when the value is None,
-    # so chain through `or {}` at each level.
-    args = (req.get("params") or {}).get("arguments") or {}
+    params = req.get("params") or {}
+    name = params.get("name") if isinstance(params, dict) else None
+    if name == REPORT_TOOL_NAME:
+        return _build_report_response(req, injection=injection, session_id=session_id)
+    # Default / ANNOTATE_TOOL_NAME path.
+    args = params.get("arguments") if isinstance(params, dict) else None
+    args = args or {}
     signal = args.get("signal_type", "unknown")
     return {
         "jsonrpc": "2.0",
@@ -186,6 +236,32 @@ def _handle_injected_call(req: dict[str, Any]) -> dict[str, Any]:
                 {"type": "text", "text": f"baton_annotate recorded signal_type={signal}"}
             ]
         },
+    }
+
+
+def _build_report_response(
+    req: dict[str, Any],
+    *,
+    injection: _Injection,
+    session_id: str,
+) -> dict[str, Any]:
+    from baton_proxy.report import synthesize
+
+    if injection.sink_path is None:
+        # Shouldn't happen — report tool is only injected when there IS a
+        # file sink — but defend defensively rather than raise into the
+        # MCP wire.
+        text = "Friction report unavailable — no local file sink configured."
+    else:
+        try:
+            text = synthesize(injection.sink_path, session_id)
+        except Exception:
+            logger.exception("baton-proxy: report synthesis failed")
+            text = "Friction report synthesis failed — see proxy log for details."
+    return {
+        "jsonrpc": "2.0",
+        "id": req.get("id"),
+        "result": {"content": [{"type": "text", "text": text}]},
     }
 
 
@@ -202,6 +278,7 @@ def _pump_client_to_server(
     pending_lock: threading.Lock,
     emitter: Emitter,
     injection: _Injection,
+    session_id: str,
 ) -> None:
     """Forward client->server, with injection interception + start emission."""
     for line in sys.stdin:
@@ -223,29 +300,43 @@ def _pump_client_to_server(
         if method == "tools/call":
             params = req.get("params", {}) or {}
             tool_name = params.get("name")
-            if tool_name == injection.name:
-                # The proxy owns this tool — don't forward. Emit the annotation
-                # event before synthesising the response; that's the whole point
-                # of intercepting the call.
-                args = params.get("arguments", {}) or {}
-                ann_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
-                ctx = args.get("context") if isinstance(args.get("context"), dict) else None
+            if tool_name in injection.names:
+                # The proxy owns this tool — don't forward. For annotate
+                # calls, emit the annotation event before synthesising the
+                # response; that's the whole point of intercepting it.
+                if tool_name == ANNOTATE_TOOL_NAME:
+                    args = params.get("arguments", {}) or {}
+                    ann_meta = (
+                        params.get("_meta")
+                        if isinstance(params.get("_meta"), dict)
+                        else None
+                    )
+                    ctx = (
+                        args.get("context")
+                        if isinstance(args.get("context"), dict)
+                        else None
+                    )
+                    try:
+                        emitter.enqueue_annotation(
+                            signal_type=args.get("signal_type"),
+                            intent=args.get("intent"),
+                            suggested_improvement=args.get("suggested_improvement"),
+                            expected_outcome=args.get("expected_outcome"),
+                            workflow=args.get("workflow"),
+                            context=ctx,
+                            runtime_meta=ann_meta,
+                        )
+                    except Exception:
+                        logger.exception("baton-proxy: enqueue annotation failed")
                 try:
-                    emitter.enqueue_annotation(
-                        signal_type=args.get("signal_type"),
-                        intent=args.get("intent"),
-                        suggested_improvement=args.get("suggested_improvement"),
-                        expected_outcome=args.get("expected_outcome"),
-                        workflow=args.get("workflow"),
-                        context=ctx,
-                        runtime_meta=ann_meta,
+                    _write_line(
+                        sys.stdout,
+                        _handle_injected_call(
+                            req, injection=injection, session_id=session_id
+                        ),
                     )
                 except Exception:
-                    logger.exception("baton-proxy: enqueue annotation failed")
-                try:
-                    _write_line(sys.stdout, _handle_injected_call(req))
-                except Exception:
-                    logger.exception("baton-proxy: synthesising annotation response failed")
+                    logger.exception("baton-proxy: synthesising injected response failed")
                 continue
 
             # Real tool call — emit start FIRST, then track for end/error.
@@ -377,12 +468,12 @@ def run_proxy(argv: list[str]) -> int:
     """
     config = Config.from_env()
     _configure_logging(config.log_file)
-    injection = _Injection.create()
+    injection = _Injection.create(config.event_sink)
     logger.info(
-        "baton-proxy starting (session=%s, emission=%s, tool=%s, upstream=%s)",
+        "baton-proxy starting (session=%s, emission=%s, tools=%s, upstream=%s)",
         config.session_id,
         "on" if config.emission_enabled else "off",
-        injection.name,
+        sorted(injection.names),
         " ".join(argv),
     )
 
@@ -409,7 +500,7 @@ def run_proxy(argv: list[str]) -> int:
 
     t_in = threading.Thread(
         target=_pump_client_to_server,
-        args=(child.stdin, pending, pending_lock, emitter, injection),
+        args=(child.stdin, pending, pending_lock, emitter, injection, config.session_id),
         name="baton-proxy-in",
         daemon=True,
     )

@@ -115,6 +115,35 @@ def test_tools_list_contains_injected_tool() -> None:
     assert "echo" in names  # upstream tool still there
 
 
+def test_report_tool_injected_for_default_install() -> None:
+    """Default install (no env vars) -> sink defaults to stderr + file ->
+    report tool MUST appear in tools/list. This is the gateway demo: the
+    customer should discover ``baton_session_report`` naturally."""
+    by_id = _run_proxy()
+    tools_list = by_id.get(2)
+    assert tools_list is not None
+    names = [t.get("name") for t in tools_list.get("result", {}).get("tools", [])]
+    assert "baton_session_report" in names
+
+
+def test_report_tool_NOT_injected_when_http_sink() -> None:
+    """Any http(s) sink = vendor production mode. The report tool must be
+    suppressed — the vendor's Console renders tickets, not the proxy."""
+    by_id = _run_proxy_with_env(
+        {
+            "BATON_EVENT_SINK": "https://console.example.com",
+            "BATON_API_KEY": "k",
+            "BATON_TENANT_ID": "acme",
+            "BATON_CONSENT_TOKEN": "real-token",
+        }
+    )
+    tools_list = by_id.get(2)
+    assert tools_list is not None
+    names = [t.get("name") for t in tools_list.get("result", {}).get("tools", [])]
+    assert "baton_annotate" in names  # annotate is always present
+    assert "baton_session_report" not in names
+
+
 def test_injected_tool_call_handled_by_proxy() -> None:
     by_id = _run_proxy()
     inj = by_id.get(3)
@@ -209,14 +238,23 @@ def test_vendor_id_does_not_affect_tool_name() -> None:
 def test_handle_injected_call_null_params_does_not_crash() -> None:
     """JSON-RPC permits params: null. dict.get's default fires on missing
     keys, not on explicit None, so the chained get pattern must coerce."""
-    from baton_proxy.proxy import _handle_injected_call
+    from baton_proxy.proxy import _Injection, _handle_injected_call
 
-    resp = _handle_injected_call({"jsonrpc": "2.0", "id": 1, "method": "tools/call"})
+    injection = _Injection.create(event_sink_url=None)
+    session_id = "test-session"
+
+    resp = _handle_injected_call(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call"},
+        injection=injection,
+        session_id=session_id,
+    )
     assert resp["id"] == 1
     assert "signal_type=unknown" in resp["result"]["content"][0]["text"]
 
     resp = _handle_injected_call(
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": None}
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": None},
+        injection=injection,
+        session_id=session_id,
     )
     assert resp["id"] == 2
 
@@ -226,7 +264,9 @@ def test_handle_injected_call_null_params_does_not_crash() -> None:
             "id": 3,
             "method": "tools/call",
             "params": {"name": "baton_annotate", "arguments": None},
-        }
+        },
+        injection=injection,
+        session_id=session_id,
     )
     assert resp["id"] == 3
 

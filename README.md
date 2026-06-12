@@ -31,7 +31,12 @@ Replace your MCP server entry in Claude's config:
 { "command": "baton-proxy", "args": ["--", "npx", "@vendor/mcp-server"] }
 ```
 
-That's the entire install. Restart Claude, drive the wrapped server, then `cat /tmp/baton-proxy.jsonl` to see the friction events the proxy captured. No env vars, no backend, no credentials.
+That's the entire install. Restart Claude, drive the wrapped server, then either:
+
+- Ask Claude **"show me the friction report for this session"** — the proxy injects a `baton_session_report` tool that returns a vendor-shareable markdown report directly in the conversation, or
+- `cat /tmp/baton-proxy.jsonl` to see the raw friction events.
+
+No env vars, no backend, no credentials. The report is a preview of the ticket shape a Baton-instrumented vendor sees in their Console.
 
 To ship events to a Console instead (or in addition), add four env vars:
 
@@ -48,7 +53,11 @@ To ship events to a Console instead (or in addition), add four env vars:
 }
 ```
 
-The proxy adds one tool (`baton_annotate`) to the upstream server's tool list and emits a friction event per real tool call.
+The proxy adds two tools to the upstream server's tool list:
+- `baton_annotate` — Claude calls it (unprompted) when it hits friction; emits an annotation event.
+- `baton_session_report` — Claude calls it (when the customer asks for a report); returns a vendor-shareable markdown summary of the session's friction. **Only injected in local-sink installs** — vendors using an `http(s)://` sink (production mode) get a clean tool list; the vendor's Console renders tickets there instead.
+
+And the proxy emits a friction event per real tool call.
 
 ## What gets emitted
 
@@ -89,13 +98,20 @@ Pick the rung you need; the env-var deltas are the entire difference.
 
 ### See it locally
 
-After installing (`{ "command": "baton-proxy", "args": ["--", "npx", "@vendor/mcp-server"] }` in your Claude config) and restarting Claude, drive a few tool calls and:
+After installing (`{ "command": "baton-proxy", "args": ["--", "npx", "@vendor/mcp-server"] }` in your Claude config) and restarting Claude, drive a few tool calls and try either:
+
+**Conversational** — ask Claude:
+> Show me the friction report for this session.
+
+Claude calls the injected `baton_session_report` tool; the proxy returns a markdown report (per-tool breakdown, errored calls with input/error detail, any annotations the model emitted) that Claude relays directly in the conversation.
+
+**Raw** — inspect the JSONL stream:
 
 ```sh
 cat /tmp/baton-proxy.jsonl | jq -c '{type: .event_type, payload}'
 ```
 
-You should see one event per real tool call. See `examples/live-claude-invocation/` for a guided walk-through that also covers the elicitation behaviour of the injected `annotate` tool.
+See `examples/live-claude-invocation/` for a guided walk-through that also covers the elicitation behaviour of the injected `baton_annotate` tool.
 
 ### Sink misconfig fails loudly
 
