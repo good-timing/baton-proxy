@@ -1,6 +1,6 @@
 """Emitter tests — verify queued events reach the configured sink with the
 IncomingEvent-compatible envelope. HTTP sink uses an in-process http.server
-as the Console stand-in; file sink writes JSONL to a tmp path.
+as the upstream HTTP stand-in; file sink writes JSONL to a tmp path.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter
 
 
-class _StubConsole(BaseHTTPRequestHandler):
+class _StubReceiver(BaseHTTPRequestHandler):
     received: list[dict] = []
     auth_headers: list[str] = []
 
@@ -40,9 +40,9 @@ class _StubConsole(BaseHTTPRequestHandler):
 
 
 def _start_stub() -> tuple[HTTPServer, str]:
-    _StubConsole.received = []
-    _StubConsole.auth_headers = []
-    server = HTTPServer(("127.0.0.1", 0), _StubConsole)
+    _StubReceiver.received = []
+    _StubReceiver.auth_headers = []
+    server = HTTPServer(("127.0.0.1", 0), _StubReceiver)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     url = f"http://127.0.0.1:{server.server_address[1]}"
@@ -105,12 +105,12 @@ def test_emits_tool_call_start_end_error() -> None:
         e.enqueue_tool_call_error(
             tool_name="boom", error_type="-32000", error_body="boom", duration_ms=11
         )
-        assert _wait_for(lambda: len(_StubConsole.received) >= 3)
+        assert _wait_for(lambda: len(_StubReceiver.received) >= 3)
         e.stop()
     finally:
         server.shutdown()
 
-    events_by_type = {ev["event_type"]: ev for ev in _StubConsole.received}
+    events_by_type = {ev["event_type"]: ev for ev in _StubReceiver.received}
     assert set(events_by_type) == {"tool_call_start", "tool_call_end", "tool_call_error"}
 
     start = events_by_type["tool_call_start"]
@@ -129,7 +129,7 @@ def test_emits_tool_call_start_end_error() -> None:
     assert err["payload"]["error_type"] == "-32000"
 
     # Auth header on every POST.
-    assert all(h == "Bearer k" for h in _StubConsole.auth_headers)
+    assert all(h == "Bearer k" for h in _StubReceiver.auth_headers)
 
 
 def test_emits_annotation() -> None:
@@ -143,12 +143,12 @@ def test_emits_annotation() -> None:
             suggested_improvement="distinguish 404 from transport error",
             # expected_outcome and workflow left as None — must be omitted.
         )
-        assert _wait_for(lambda: len(_StubConsole.received) >= 1)
+        assert _wait_for(lambda: len(_StubReceiver.received) >= 1)
         e.stop()
     finally:
         server.shutdown()
 
-    ann = _StubConsole.received[0]
+    ann = _StubReceiver.received[0]
     assert ann["event_type"] == "annotation"
     assert ann["payload"] == {
         "signal_type": "failure",
@@ -169,19 +169,19 @@ def test_sequence_numbers_are_monotonic() -> None:
         e.start()
         for i in range(5):
             e.enqueue_tool_call_start(tool_name=f"t{i}", params={})
-        assert _wait_for(lambda: len(_StubConsole.received) >= 5)
+        assert _wait_for(lambda: len(_StubReceiver.received) >= 5)
         e.stop()
     finally:
         server.shutdown()
 
-    seqs = [ev["sequence_number"] for ev in _StubConsole.received]
+    seqs = [ev["sequence_number"] for ev in _StubReceiver.received]
     assert seqs == sorted(seqs)
     assert seqs[0] == 0
     assert len(set(seqs)) == len(seqs)  # all distinct
 
 
-def test_stop_is_clean_when_console_dead() -> None:
-    """If the console URL is unreachable, the background thread still
+def test_stop_is_clean_when_remote_dead() -> None:
+    """If the remote URL is unreachable, the background thread still
     drains and exits on stop() without blocking proxy shutdown."""
     e = Emitter(_config_http("http://127.0.0.1:1"))  # nothing listening
     e.start()
@@ -226,12 +226,12 @@ def test_emits_to_file_sink(tmp_path: Path) -> None:
 def test_http_sink_with_placeholder_consent_refuses_at_start() -> None:
     """The zero-config install ships with consent_token='local'. Pointing
     that install at a remote sink without first replacing the consent token
-    would leak placeholder-tagged events to the Console — refuse at start()
-    so the operator sees an actionable error rather than silently-mistagged
-    events later."""
+    would leak placeholder-tagged events to the remote endpoint — refuse at
+    start() so the operator sees an actionable error rather than silently-
+    mistagged events later."""
     config = Config(
         session_id="test-session",
-        event_sink="https://console.example.com",
+        event_sink="https://collector.example.com",
         tenant_id="t",
         api_key="k",
         consent_token="local",  # the placeholder

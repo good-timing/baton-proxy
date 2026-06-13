@@ -71,7 +71,7 @@ def test_should_NOT_inject_report_tool_for_stderr_only() -> None:
 def test_should_NOT_inject_report_tool_for_http_only() -> None:
     """HTTP sink = vendor production mode. Upstream renders the report, not
     the proxy. No Baton-branded customer-facing surface in production."""
-    assert should_inject_report_tool("https://console.example.com") is False
+    assert should_inject_report_tool("https://collector.example.com") is False
 
 
 def test_should_NOT_inject_report_tool_when_any_http_present() -> None:
@@ -79,7 +79,7 @@ def test_should_NOT_inject_report_tool_when_any_http_present() -> None:
     means the customer is in production mode and the report tool must be
     suppressed."""
     assert (
-        should_inject_report_tool("file:///tmp/a.jsonl,https://console.example.com")
+        should_inject_report_tool("file:///tmp/a.jsonl,https://collector.example.com")
         is False
     )
 

@@ -38,7 +38,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Per-POST timeout — keep tight so the drain thread doesn't block forever
-# on a dead Console endpoint. The proxy I/O path is unaffected either way.
+# on a dead remote endpoint. The proxy I/O path is unaffected either way.
 _POST_TIMEOUT_S = 5.0
 
 

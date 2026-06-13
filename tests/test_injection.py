@@ -124,10 +124,11 @@ def test_report_tool_injected_for_default_install() -> None:
 
 def test_report_tool_NOT_injected_when_http_sink() -> None:
     """Any http(s) sink = vendor production mode. The report tool must be
-    suppressed — the vendor's Console renders tickets, not the proxy."""
+    suppressed — the vendor's own pipeline renders the report, not the
+    proxy."""
     by_id = _run_proxy_with_env(
         {
-            "BATON_EVENT_SINK": "https://console.example.com",
+            "BATON_EVENT_SINK": "https://collector.example.com",
             "BATON_API_KEY": "k",
             "BATON_TENANT_ID": "acme",
             "BATON_CONSENT_TOKEN": "real-token",

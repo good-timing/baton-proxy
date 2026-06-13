@@ -11,7 +11,7 @@ The proxy is meant to be install-and-play: add ``baton-proxy --`` in front of
 any MCP server, restart, and you get a stream of friction events in
 ``/tmp/baton-proxy.jsonl`` (and on stderr). No env vars required. The
 defaults are deliberately placeholder-flavoured (``"local"``) so that the
-upgrade to a real Console is forced to be explicit.
+upgrade to a remote sink is forced to be explicit.
 
 When ``BATON_EVENT_SINK`` resolves to an http(s):// sink, the emitter
 refuses to start while ``BATON_CONSENT_TOKEN`` is still the placeholder —
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 # Zero-config defaults. Multi-sink (stderr + local file) so the events are
 # immediately visible both as a live stream and as a persistent log; tenant
 # and consent default to a sentinel ``"local"`` to make it obvious in any
-# downstream system that the install hasn't been wired to a real Console yet.
+# downstream system that the install hasn't been wired to a remote sink yet.
 DEFAULT_EVENT_SINK = "stderr:,file:///tmp/baton-proxy.jsonl"
 DEFAULT_TENANT_ID = "local"
 DEFAULT_CONSENT_TOKEN = "local"
@@ -42,7 +42,7 @@ class Config:
     session_id: str
 
     # Where emitted events go. A URL whose scheme selects the sink:
-    #   https://console.example.com  -> HTTP POST to {url}/v0/events
+    #   https://collector.example.com  -> HTTP POST to {url}/v0/events
     #   file:///tmp/events.jsonl     -> append-JSONL to the local path
     #   stderr:                      -> JSONL to stderr
     # Comma-separated values fan out (MultiSink). Defaults via from_env() to

@@ -55,9 +55,9 @@ ANNOTATE_TOOL_NAME = "baton_annotate"
 
 # Local-only "show me a friction report for this session" tool — only
 # injected when the sink is purely local (file:// present, no http(s)://).
-# The gate maps to product mode: gateway demo = report tool present,
-# vendor production (http sink) = no report tool, vendor's Console
-# renders tickets instead.
+# The gate maps to product mode: local-sink demo = report tool present,
+# vendor production (http sink) = no report tool, the vendor's own
+# pipeline renders the report instead.
 REPORT_TOOL_NAME = "baton_session_report"
 
 
@@ -119,9 +119,9 @@ class _Injection:
 
     Always carries the annotate tool. Carries the session-report tool too
     when the sink is purely local (so the customer can see the friction
-    report surface as part of the gateway demo). HTTP sinks indicate
-    production mode where the vendor's Console renders tickets, not the
-    proxy — so the report tool is suppressed there.
+    report surface). HTTP sinks indicate production mode where the
+    vendor's own pipeline renders the report, not the proxy — so the
+    report tool is suppressed there.
     """
 
     tools: list[dict[str, Any]]

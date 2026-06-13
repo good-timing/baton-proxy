@@ -49,9 +49,9 @@ def test_from_env_explicit_event_sink_overrides_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _scrub_baton_env(monkeypatch)
-    monkeypatch.setenv("BATON_EVENT_SINK", "https://console.example.com")
+    monkeypatch.setenv("BATON_EVENT_SINK", "https://collector.example.com")
     config = Config.from_env()
-    assert config.event_sink == "https://console.example.com"
+    assert config.event_sink == "https://collector.example.com"
 
 
 def test_from_env_explicit_tenant_overrides_default(monkeypatch: pytest.MonkeyPatch) -> None:

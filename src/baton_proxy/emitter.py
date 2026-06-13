@@ -121,7 +121,7 @@ class Emitter:
         """Refuse to ship events to a remote sink while the consent token is
         still the install-time placeholder. Local file/stderr sinks are
         always OK — the placeholder just marks "this install hasn't been
-        wired to a real Console yet". The check runs before sink
+        wired to a remote sink yet". The check runs before sink
         construction so a misconfigured install fails loudly at startup
         instead of silently leaking placeholder-tagged events.
         """
@@ -133,7 +133,8 @@ class Emitter:
             raise ValueError(
                 "Refusing to ship events to an http(s) sink with placeholder "
                 "BATON_CONSENT_TOKEN='local' — set BATON_CONSENT_TOKEN to the "
-                "real per-install consent token before pointing at a Console."
+                "real per-install consent token before pointing at a remote "
+                "endpoint."
             )
 
     def stop(self, timeout: float = 2.0) -> None:
