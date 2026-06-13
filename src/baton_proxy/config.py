@@ -70,10 +70,7 @@ class Config:
         """True when the envelope-essential fields are populated. With
         ``from_env()`` defaults this is always True; only test code that
         passes ``event_sink=None`` etc. directly will see False."""
-        return all(
-            v is not None
-            for v in (self.event_sink, self.tenant_id, self.consent_token)
-        )
+        return all(v is not None for v in (self.event_sink, self.tenant_id, self.consent_token))
 
     @property
     def using_placeholder_consent(self) -> bool:

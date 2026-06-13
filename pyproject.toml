@@ -38,6 +38,10 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "T20"]
+# E501 line-too-long: handled by the formatter for everything it can wrap;
+# the residue is long string literals (test fixtures, error bodies) the
+# formatter won't break. Mirrors the SDK's ruff config.
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

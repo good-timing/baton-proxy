@@ -204,9 +204,7 @@ def test_emits_to_file_sink(tmp_path: Path) -> None:
     e.enqueue_tool_call_error(
         tool_name="boom", error_type="-32000", error_body="boom", duration_ms=11
     )
-    assert _wait_for(
-        lambda: sink_path.exists() and len(sink_path.read_text().splitlines()) >= 3
-    )
+    assert _wait_for(lambda: sink_path.exists() and len(sink_path.read_text().splitlines()) >= 3)
     e.stop()
 
     events = [json.loads(line) for line in sink_path.read_text().splitlines()]

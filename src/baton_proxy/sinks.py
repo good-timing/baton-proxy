@@ -104,9 +104,7 @@ class HttpSink(Sink):
 
     def __init__(self, base_url: str, *, api_key: str) -> None:
         if not api_key:
-            raise ValueError(
-                f"HttpSink requires an api_key (BATON_API_KEY) for sink {base_url}"
-            )
+            raise ValueError(f"HttpSink requires an api_key (BATON_API_KEY) for sink {base_url}")
         self._url = base_url.rstrip("/")
         self._api_key = api_key
 
@@ -202,9 +200,7 @@ def _make_one(url: str, *, api_key: str | None) -> Sink:
         return FileSink(parsed.path)
     if scheme in ("http", "https"):
         if api_key is None:
-            raise ValueError(
-                f"BATON_API_KEY required for http(s) event sinks (sink: {url})"
-            )
+            raise ValueError(f"BATON_API_KEY required for http(s) event sinks (sink: {url})")
         return HttpSink(url, api_key=api_key)
     raise ValueError(f"unsupported BATON_EVENT_SINK scheme: {scheme!r} (in {url})")
 

@@ -297,9 +297,7 @@ class Emitter:
         try:
             self._sink.write(event.to_json())
         except Exception as e:  # noqa: BLE001 — fail-open at delivery boundary
-            logger.warning(
-                "baton-proxy emit %s -> %s: %s", event.event_type, type(e).__name__, e
-            )
+            logger.warning("baton-proxy emit %s -> %s: %s", event.event_type, type(e).__name__, e)
 
 
 def utc_now_ms() -> int:

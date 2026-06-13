@@ -96,9 +96,7 @@ def should_inject_report_tool(event_sink_url: str | None) -> bool:
       - stderr: only                              -> skip (nothing to read)
       - any http(s):// (incl. multi-sink with it) -> skip (vendor production)
     """
-    return find_file_sink_path(event_sink_url) is not None and not has_http_sink(
-        event_sink_url
-    )
+    return find_file_sink_path(event_sink_url) is not None and not has_http_sink(event_sink_url)
 
 
 # =============================================================================
@@ -150,8 +148,7 @@ def _render_markdown(events: list[dict[str, Any]], session_id: str) -> str:
     reactives = [
         e
         for e in events
-        if e.get("event_type") == "annotation"
-        and (e.get("payload") or {}).get("signal_type")
+        if e.get("event_type") == "annotation" and (e.get("payload") or {}).get("signal_type")
     ]
 
     lines: list[str] = []
@@ -164,9 +161,7 @@ def _render_markdown(events: list[dict[str, Any]], session_id: str) -> str:
             lines.extend(_render_toc(reactives))
         prev_seq = -1
         for i, reactive in enumerate(reactives, start=1):
-            lines.extend(
-                _render_signal_block(events, reactive, i, prev_reactive_seq=prev_seq)
-            )
+            lines.extend(_render_signal_block(events, reactive, i, prev_reactive_seq=prev_seq))
             prev_seq = int(reactive.get("sequence_number", 0))
 
     lines.extend(_render_footer())
@@ -197,9 +192,7 @@ def _render_toc(reactives: list[dict[str, Any]]) -> list[str]:
         p = r.get("payload") or {}
         signal = p.get("signal_type", "")
         ctx = p.get("context") or {}
-        intent_text = (
-            ctx.get("requested_capability") or p.get("intent") or "agent-filed signal"
-        )
+        intent_text = ctx.get("requested_capability") or p.get("intent") or "agent-filed signal"
         ts = str(r.get("captured_at", ""))
         ts_short = ts.split("T")[1].rstrip("Z") if "T" in ts else ts
         lines.append(f"{i}. `{signal}` — {_short_intent(intent_text)} ({ts_short})")
@@ -292,10 +285,7 @@ def _render_signal_block(
         or ""
     )
     workflow = (
-        rpayload.get("workflow")
-        or lp_payload.get("workflow")
-        or fp_payload.get("workflow")
-        or ""
+        rpayload.get("workflow") or lp_payload.get("workflow") or fp_payload.get("workflow") or ""
     )
 
     # Primary tool: prefer the most-recent tool_call_error within the cycle;
@@ -382,9 +372,7 @@ def _render_signal_block(
         lines.append("")
 
     # ----- §3 What's missing -----
-    missing = rcontext.get("missing_capability_field") or rcontext.get(
-        "missing_capability"
-    )
+    missing = rcontext.get("missing_capability_field") or rcontext.get("missing_capability")
     if missing:
         lines.append("### What's missing")
         lines.append("")
@@ -408,10 +396,7 @@ def _render_signal_block(
             params = (primary_start.get("payload") or {}).get("params")
             if params is not None:
                 details.append(("params", f"`{json.dumps(params, sort_keys=True)}`"))
-        if (
-            primary_tool_call is not None
-            and primary_tool_call.get("event_type") == "tool_call_end"
-        ):
+        if primary_tool_call is not None and primary_tool_call.get("event_type") == "tool_call_end":
             details.append(("status", "`ok`"))
             d = (primary_tool_call.get("payload") or {}).get("duration_ms")
             if d is not None:
@@ -550,9 +535,7 @@ def _render_trail(steps: list[dict[str, Any]]) -> list[str]:
 # =============================================================================
 
 
-def _latest_before(
-    events: list[dict[str, Any]], before_seq: int
-) -> dict[str, Any] | None:
+def _latest_before(events: list[dict[str, Any]], before_seq: int) -> dict[str, Any] | None:
     return next(
         (e for e in reversed(events) if int(e.get("sequence_number", 0)) < before_seq),
         None,

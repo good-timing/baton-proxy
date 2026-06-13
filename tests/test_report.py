@@ -78,10 +78,7 @@ def test_should_NOT_inject_report_tool_when_any_http_present() -> None:
     """Even with a local file sink alongside, the presence of any http leg
     means the customer is in production mode and the report tool must be
     suppressed."""
-    assert (
-        should_inject_report_tool("file:///tmp/a.jsonl,https://collector.example.com")
-        is False
-    )
+    assert should_inject_report_tool("file:///tmp/a.jsonl,https://collector.example.com") is False
 
 
 # =============================================================================
