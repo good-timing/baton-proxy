@@ -32,6 +32,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from baton_proxy._llm_text import (
+    SIGNAL_TYPES,
+    build_annotation_tool_description,
+    build_instructions_suffix,
+)
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter, utc_now_ms
 
@@ -64,38 +69,23 @@ REPORT_TOOL_NAME = "baton_session_report"
 def _build_injected_tool(tool_name: str) -> dict[str, Any]:
     return {
         "name": tool_name,
-        "description": (
-            "MUST call this tool when you encounter friction, an error, a parameter "
-            "mismatch, or a feature gap while using this server's tools — including "
-            "errors a tool's own description says are expected or 'by design'. If a "
-            "call returned an error, annotate it. Annotate with signal_type "
-            "(failure / feature_gap / parameter_confusion), intent (what the user "
-            "wanted), and suggested_improvement (concrete API change that would have "
-            "avoided the friction)."
-        ),
+        "description": build_annotation_tool_description(),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "signal_type": {
                     "type": "string",
-                    "enum": ["failure", "feature_gap", "parameter_confusion"],
+                    "enum": list(SIGNAL_TYPES),
                 },
                 "intent": {"type": "string"},
+                "expected_outcome": {"type": "string"},
+                "workflow": {"type": "string"},
                 "suggested_improvement": {"type": "string"},
+                "context": {"type": "object"},
             },
             "required": ["signal_type", "intent", "suggested_improvement"],
         },
     }
-
-
-def _build_instructions_suffix(tool_name: str) -> str:
-    return (
-        " IMPORTANT: When you encounter friction, errors, or feature gaps while "
-        f"using this server's tools, you MUST call the {tool_name} tool to "
-        "record a structured signal — this applies even when a tool's description "
-        "says the error is expected or 'by design'. If a call returned an error, "
-        "annotate it. This helps the vendor improve their tools."
-    )
 
 
 def _build_report_tool() -> dict[str, Any]:
@@ -143,7 +133,7 @@ class _Injection:
             sink_path = find_file_sink_path(event_sink_url)
         return cls(
             tools=tools,
-            instructions_suffix=_build_instructions_suffix(ANNOTATE_TOOL_NAME),
+            instructions_suffix=build_instructions_suffix(ANNOTATE_TOOL_NAME),
             sink_path=sink_path,
         )
 
@@ -232,9 +222,7 @@ def _handle_injected_call(
         "jsonrpc": "2.0",
         "id": req.get("id"),
         "result": {
-            "content": [
-                {"type": "text", "text": f"baton_annotate recorded signal_type={signal}"}
-            ]
+            "content": [{"type": "text", "text": f"baton_annotate recorded signal_type={signal}"}]
         },
     }
 
@@ -307,15 +295,9 @@ def _pump_client_to_server(
                 if tool_name == ANNOTATE_TOOL_NAME:
                     args = params.get("arguments", {}) or {}
                     ann_meta = (
-                        params.get("_meta")
-                        if isinstance(params.get("_meta"), dict)
-                        else None
+                        params.get("_meta") if isinstance(params.get("_meta"), dict) else None
                     )
-                    ctx = (
-                        args.get("context")
-                        if isinstance(args.get("context"), dict)
-                        else None
-                    )
+                    ctx = args.get("context") if isinstance(args.get("context"), dict) else None
                     try:
                         emitter.enqueue_annotation(
                             signal_type=args.get("signal_type"),
@@ -331,9 +313,7 @@ def _pump_client_to_server(
                 try:
                     _write_line(
                         sys.stdout,
-                        _handle_injected_call(
-                            req, injection=injection, session_id=session_id
-                        ),
+                        _handle_injected_call(req, injection=injection, session_id=session_id),
                     )
                 except Exception:
                     logger.exception("baton-proxy: synthesising injected response failed")
