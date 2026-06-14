@@ -132,6 +132,49 @@ def test_emits_tool_call_start_end_error() -> None:
     assert all(h == "Bearer k" for h in _StubReceiver.auth_headers)
 
 
+def test_scrubs_pii_before_payload_reaches_sink() -> None:
+    """Source-side scrubbing: emails / tokens / API keys in tool params and
+    results are redacted before the event lands at the sink. Both the file
+    sink and HTTP sink see only [REDACTED:*] markers — that's the load-bearing
+    trust contract for Persona B (Baton-hosted console)."""
+    server, url = _start_stub()
+    try:
+        e = Emitter(_config_http(url))
+        e.start()
+        e.enqueue_tool_call_start(
+            tool_name="search",
+            params={"query": "find ujwal@goodtiming.ai please", "api_key": "should-be-redacted"},
+        )
+        e.enqueue_tool_call_end(
+            tool_name="search",
+            result={"matches": [{"email": "x@y.co"}]},
+            duration_ms=10,
+        )
+        assert _wait_for(lambda: len(_StubReceiver.received) >= 2)
+        e.stop()
+    finally:
+        server.shutdown()
+
+    by_type = {ev["event_type"]: ev for ev in _StubReceiver.received}
+
+    start_params = by_type["tool_call_start"]["payload"]["params"]
+    assert "ujwal@goodtiming.ai" not in start_params["query"]
+    assert "[REDACTED:email]" in start_params["query"]
+    # api_key field-name override — entire value masked regardless of pattern.
+    assert start_params["api_key"] == "[REDACTED:field-api_key]"
+
+    end_result = by_type["tool_call_end"]["payload"]["result"]
+    # Recursive walk into the nested list + dict reaches the email leaf
+    # via the field-name override on "email".
+    assert end_result["matches"][0]["email"] == "[REDACTED:field-email]"
+
+    # Counter exposed for the report tool to consume.
+    counts = e.scrub_counts()
+    assert counts["email"] >= 1
+    assert counts["field:api_key"] == 1
+    assert counts["field:email"] == 1
+
+
 def test_emits_annotation() -> None:
     server, url = _start_stub()
     try:

@@ -32,6 +32,7 @@ from typing import Any
 
 from baton_proxy import __version__ as _PKG_VERSION
 from baton_proxy.config import Config
+from baton_proxy.scrub import Scrubber
 from baton_proxy.sinks import Sink, make_sink
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,12 @@ class Emitter:
         self._drop_count = 0
         # Sink set up in start(); None until then.
         self._sink: Sink | None = None
+        # Source-side PII scrubber. Stateful — accumulates per-category
+        # counts across every payload that flows through _enqueue, so the
+        # report tool can surface "N emails, M bearer tokens" without
+        # re-parsing the JSONL. Applied BEFORE the queue, so file sink
+        # and HTTP sink both see scrubbed values.
+        self._scrubber = Scrubber()
 
     def start(self) -> None:
         if not self._config.emission_enabled:
@@ -154,6 +161,13 @@ class Emitter:
         if self._sink is not None:
             self._sink.close()
             self._sink = None
+
+    def scrub_counts(self) -> dict[str, int]:
+        """Snapshot of per-category PII redaction counts since session start.
+        Read by the report tool to surface "N emails, M tokens" without
+        re-parsing the JSONL stream. Returns a copy so callers can't mutate
+        the live counter."""
+        return dict(self._scrubber.counts)
 
     def enqueue_tool_call_start(
         self,
@@ -238,6 +252,11 @@ class Emitter:
     ) -> None:
         if not self._config.emission_enabled or self._thread is None:
             return
+
+        # Scrub PII from the payload before anything else touches it. Both
+        # the file sink and any HTTP sink will see only the scrubbed copy,
+        # so the trust contract holds even for purely local installs.
+        payload = self._scrubber(payload)
 
         with self._seq_lock:
             seq = self._seq
