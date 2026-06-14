@@ -133,3 +133,35 @@ def test_from_env_raises_when_vendor_id_is_empty_string(
     monkeypatch.setenv("BATON_VENDOR_ID", "")
     with pytest.raises(ValueError, match="BATON_VENDOR_ID"):
         Config.from_env()
+
+
+def test_from_env_tenant_type_defaults_to_vendor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset BATON_TENANT_TYPE = vendor mode. Preserves existing install
+    semantics; customer mode is opt-in."""
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    config = Config.from_env()
+    assert config.tenant_type == "vendor"
+
+
+def test_from_env_tenant_type_customer_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BATON_TENANT_TYPE=customer flips the report-tool gate so the
+    in-Claude tool stays injected even with a remote http sink."""
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("BATON_TENANT_TYPE", "customer")
+    config = Config.from_env()
+    assert config.tenant_type == "customer"
+
+
+def test_from_env_tenant_type_rejects_unknown_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Typos / unknown values fail loudly — silently treating
+    BATON_TENANT_TYPE=customers (plural) as vendor would surprise the
+    user; better to raise."""
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("BATON_TENANT_TYPE", "customers")
+    with pytest.raises(ValueError, match="BATON_TENANT_TYPE"):
+        Config.from_env()

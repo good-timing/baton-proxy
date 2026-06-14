@@ -31,6 +31,15 @@ from dataclasses import dataclass
 DEFAULT_EVENT_SINK = "stderr:,file:///tmp/baton-proxy.jsonl"
 DEFAULT_TENANT_ID = "local"
 DEFAULT_CONSENT_TOKEN = "local"
+DEFAULT_TENANT_TYPE = "vendor"
+
+# Valid values for BATON_TENANT_TYPE. ``vendor`` = production install
+# wrapped on a customer's machine that ships signal to the vendor's
+# Console; ``customer`` = end-user install where the same person owns
+# both the proxy and the Console tenant ("Sentry for AI agents" shape).
+# Different defaults follow: vendor mode hides the in-Claude report tool
+# (Console renders reports server-side), customer mode keeps it.
+_TENANT_TYPES: frozenset[str] = frozenset({"vendor", "customer"})
 
 
 @dataclass(frozen=True)
@@ -66,6 +75,16 @@ class Config:
     # override with BATON_PROXY_LOG_FILE for persistent debugging.
     log_file: str | None
 
+    # Which Baton tenant shape this proxy is wired to: ``vendor`` (default)
+    # ships signal to the wrapped MCP server's vendor Console; ``customer``
+    # ships to the end-user's own Baton tenant. Controls whether the
+    # in-Claude ``baton_session_report`` tool is injected when an HTTP sink
+    # is configured — vendor mode hides it (Console renders reports
+    # server-side); customer mode keeps it. Defaulted here so tests that
+    # construct Config directly don't need to spell it out; from_env()
+    # always populates it explicitly from BATON_TENANT_TYPE.
+    tenant_type: str = DEFAULT_TENANT_TYPE
+
     @property
     def emission_enabled(self) -> bool:
         """True when the envelope-essential fields are populated. With
@@ -90,6 +109,12 @@ class Config:
                 "'slack'). The console uses this to bucket friction signal "
                 "by vendor; it also labels events in the local JSONL stream."
             )
+        tenant_type = _env("BATON_TENANT_TYPE") or DEFAULT_TENANT_TYPE
+        if tenant_type not in _TENANT_TYPES:
+            raise ValueError(
+                f"BATON_TENANT_TYPE must be one of {sorted(_TENANT_TYPES)}; "
+                f"got {tenant_type!r}."
+            )
         return cls(
             session_id=str(uuid.uuid4()),
             event_sink=_env("BATON_EVENT_SINK") or DEFAULT_EVENT_SINK,
@@ -97,6 +122,7 @@ class Config:
             api_key=_env("BATON_API_KEY"),
             consent_token=_env("BATON_CONSENT_TOKEN") or DEFAULT_CONSENT_TOKEN,
             vendor_id=vendor_id,
+            tenant_type=tenant_type,
             log_file=_env("BATON_PROXY_LOG_FILE"),
         )
 

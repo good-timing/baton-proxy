@@ -123,12 +123,12 @@ class _Injection:
         return {t["name"] for t in self.tools}
 
     @classmethod
-    def create(cls, event_sink_url: str | None) -> _Injection:
+    def create(cls, event_sink_url: str | None, *, tenant_type: str = "vendor") -> _Injection:
         from baton_proxy.report import find_file_sink_path, should_inject_report_tool
 
         tools = [_build_injected_tool(ANNOTATE_TOOL_NAME)]
         sink_path: str | None = None
-        if should_inject_report_tool(event_sink_url):
+        if should_inject_report_tool(event_sink_url, tenant_type=tenant_type):
             tools.append(_build_report_tool())
             sink_path = find_file_sink_path(event_sink_url)
         return cls(
@@ -461,7 +461,7 @@ def run_proxy(argv: list[str]) -> int:
     """
     config = Config.from_env()
     _configure_logging(config.log_file)
-    injection = _Injection.create(config.event_sink)
+    injection = _Injection.create(config.event_sink, tenant_type=config.tenant_type)
     logger.info(
         "baton-proxy starting (session=%s, emission=%s, tools=%s, upstream=%s)",
         config.session_id,

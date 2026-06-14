@@ -75,10 +75,45 @@ def test_should_NOT_inject_report_tool_for_http_only() -> None:
 
 
 def test_should_NOT_inject_report_tool_when_any_http_present() -> None:
-    """Even with a local file sink alongside, the presence of any http leg
-    means the customer is in production mode and the report tool must be
-    suppressed."""
+    """In vendor mode (default), the presence of any http leg means the
+    customer is in production mode and the report tool must be suppressed.
+    Customer mode flips this — see the customer-mode tests below."""
     assert should_inject_report_tool("file:///tmp/a.jsonl,https://collector.example.com") is False
+
+
+def test_should_inject_report_tool_for_customer_mode_with_file_and_http() -> None:
+    """Customer mode: the same person owns the proxy and the Console, so
+    keep the in-Claude report tool injected even when shipping to a
+    remote http sink. Requires a file sink alongside so synth has
+    something to read."""
+    assert (
+        should_inject_report_tool(
+            "file:///tmp/a.jsonl,https://console.baton.dev",
+            tenant_type="customer",
+        )
+        is True
+    )
+
+
+def test_should_NOT_inject_report_tool_for_customer_mode_http_only() -> None:
+    """Even in customer mode, an http-only sink leaves the report tool
+    with no file to synthesize from — suppress the tool rather than
+    inject something that always returns 'no local file sink'."""
+    assert (
+        should_inject_report_tool(
+            "https://console.baton.dev",
+            tenant_type="customer",
+        )
+        is False
+    )
+
+
+def test_should_inject_report_tool_for_customer_mode_file_only() -> None:
+    """File-only is the same as default install — customer mode doesn't
+    change it."""
+    assert (
+        should_inject_report_tool("file:///tmp/a.jsonl", tenant_type="customer") is True
+    )
 
 
 # =============================================================================

@@ -88,15 +88,30 @@ def has_http_sink(event_sink_url: str | None) -> bool:
     return False
 
 
-def should_inject_report_tool(event_sink_url: str | None) -> bool:
-    """Inject the report tool only for purely local installs with a file sink
-    to read from. The gate maps to product mode:
-      - Default install (stderr + file)           -> inject (gateway demo)
-      - Custom local install (file://)            -> inject (gateway demo)
-      - stderr: only                              -> skip (nothing to read)
-      - any http(s):// (incl. multi-sink with it) -> skip (vendor production)
+def should_inject_report_tool(
+    event_sink_url: str | None,
+    *,
+    tenant_type: str = "vendor",
+) -> bool:
+    """Inject the report tool when there's a file sink to read from AND
+    HTTP-sink suppression doesn't apply. The gate maps to product mode:
+
+      - Default install (stderr + file), vendor    -> inject (gateway demo)
+      - Custom local install (file://), vendor     -> inject (gateway demo)
+      - stderr: only                                -> skip (no file to read)
+      - http(s):// only (any tenant_type)           -> skip (no file to read)
+      - file + http(s)://, tenant_type=vendor       -> skip (vendor prod)
+      - file + http(s)://, tenant_type=customer     -> inject (customer mode)
+
+    Customer mode keeps the in-Claude report tool because the customer
+    owns the same Console the events ship to — they want fast access to
+    the same report shape without leaving their Claude session.
     """
-    return find_file_sink_path(event_sink_url) is not None and not has_http_sink(event_sink_url)
+    if find_file_sink_path(event_sink_url) is None:
+        return False
+    if has_http_sink(event_sink_url) and tenant_type != "customer":
+        return False
+    return True
 
 
 # =============================================================================
