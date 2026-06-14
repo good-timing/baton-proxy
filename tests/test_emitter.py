@@ -116,6 +116,7 @@ def test_emits_tool_call_start_end_error() -> None:
     start = events_by_type["tool_call_start"]
     assert start["session_id"] == "test-session"
     assert start["tenant_id"] == "t"
+    assert start["vendor_id"] == "v"
     assert start["consent_token"] == "c"
     assert start["agent_runtime"] == "mcp-proxy"
     assert start["sdk_version"].startswith("baton-proxy/")

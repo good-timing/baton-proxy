@@ -60,6 +60,7 @@ class _Event:
     sequence_number: int
     captured_at: str
     tenant_id: str
+    vendor_id: str
     consent_token: str
     sdk_version: str
     agent_runtime: str
@@ -74,6 +75,7 @@ class _Event:
             "sequence_number": self.sequence_number,
             "captured_at": self.captured_at,
             "tenant_id": self.tenant_id,
+            "vendor_id": self.vendor_id,
             "consent_token": self.consent_token,
             "sdk_version": self.sdk_version,
             "agent_runtime": self.agent_runtime,
@@ -269,6 +271,7 @@ class Emitter:
             sequence_number=seq,
             captured_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             tenant_id=self._config.tenant_id,  # type: ignore[arg-type]
+            vendor_id=self._config.vendor_id,
             consent_token=self._config.consent_token,  # type: ignore[arg-type]
             sdk_version=_SDK_VERSION,
             agent_runtime=_AGENT_RUNTIME,
