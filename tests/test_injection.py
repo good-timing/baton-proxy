@@ -70,7 +70,9 @@ def _run_proxy() -> dict[int, dict]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env={**env, "PYTHONPATH": str(REPO / "src")},
+        # BATON_VENDOR_ID is required at startup; tests that don't otherwise
+        # exercise vendor_id semantics still need a baseline value.
+        env={**env, "PYTHONPATH": str(REPO / "src"), "BATON_VENDOR_ID": "v"},
     )
     input_data = "".join(json.dumps(req) + "\n" for req in REQUESTS)
     try:
@@ -175,9 +177,13 @@ def test_annotate_tool_name_is_baton_branded() -> None:
 
 
 def _run_proxy_with_env(extra_env: dict[str, str]) -> dict[int, dict]:
-    """Run the proxy with the REQUESTS script and extra env overrides."""
+    """Run the proxy with the REQUESTS script and extra env overrides.
+
+    BATON_VENDOR_ID is required at startup so we set a baseline of ``"v"``;
+    callers can override it (or any other BATON_*) via ``extra_env``."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
     env["PYTHONPATH"] = str(REPO / "src")
+    env["BATON_VENDOR_ID"] = "v"
     env.update(extra_env)
     proc = subprocess.Popen(
         [sys.executable, "-m", "baton_proxy", "--", sys.executable, str(FIXTURE)],
@@ -322,6 +328,7 @@ def test_baton_annotate_emits_annotation_event_end_to_end() -> None:
                 "BATON_TENANT_ID": "t",
                 "BATON_API_KEY": "k",
                 "BATON_CONSENT_TOKEN": "c",
+                "BATON_VENDOR_ID": "v",
             }
         )
         proc = subprocess.Popen(

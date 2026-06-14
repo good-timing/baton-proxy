@@ -56,10 +56,11 @@ class Config:
     api_key: str | None
     consent_token: str | None
 
-    # Vendor identifier surfaced in proxy logs and the annotation tool's
-    # namespace prefix (``{vendor_id}_annotate``). Optional; falls back to
-    # the generic ``vendor_annotate`` name.
-    vendor_id: str | None
+    # Vendor identifier surfaced in proxy logs and used by the console to
+    # bucket friction signal per wrapped MCP server. Required at startup
+    # so every event carries a meaningful vendor label — without it the
+    # customer-mode dashboard can't render its cross-vendor view.
+    vendor_id: str
 
     # Where the proxy writes its own operational log. Stderr by default;
     # override with BATON_PROXY_LOG_FILE for persistent debugging.
@@ -81,13 +82,21 @@ class Config:
 
     @classmethod
     def from_env(cls) -> Config:
+        vendor_id = _env("BATON_VENDOR_ID")
+        if not vendor_id:
+            raise ValueError(
+                "BATON_VENDOR_ID is required — set it to the wrapped MCP "
+                "server's vendor identifier (e.g., 'notion', 'github', "
+                "'slack'). The console uses this to bucket friction signal "
+                "by vendor; it also labels events in the local JSONL stream."
+            )
         return cls(
             session_id=str(uuid.uuid4()),
             event_sink=_env("BATON_EVENT_SINK") or DEFAULT_EVENT_SINK,
             tenant_id=_env("BATON_TENANT_ID") or DEFAULT_TENANT_ID,
             api_key=_env("BATON_API_KEY"),
             consent_token=_env("BATON_CONSENT_TOKEN") or DEFAULT_CONSENT_TOKEN,
-            vendor_id=_env("BATON_VENDOR_ID"),
+            vendor_id=vendor_id,
             log_file=_env("BATON_PROXY_LOG_FILE"),
         )
 
