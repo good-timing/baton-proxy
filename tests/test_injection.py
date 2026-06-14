@@ -231,15 +231,34 @@ def test_vendor_id_does_not_affect_tool_name() -> None:
 def test_handle_injected_call_null_params_does_not_crash() -> None:
     """JSON-RPC permits params: null. dict.get's default fires on missing
     keys, not on explicit None, so the chained get pattern must coerce."""
+    from baton_proxy.config import Config
+    from baton_proxy.emitter import Emitter
     from baton_proxy.proxy import _handle_injected_call, _Injection
 
     injection = _Injection.create(event_sink_url=None)
     session_id = "test-session"
+    # _handle_injected_call needs an Emitter for the report-tool branch; a
+    # disabled-emission instance is enough to satisfy the type without
+    # spinning a sink. The defensive branches under test never call
+    # emitter.scrub_counts(), but we pass a real instance so the signature
+    # is honored.
+    emitter = Emitter(
+        Config(
+            session_id=session_id,
+            event_sink=None,
+            tenant_id="t",
+            api_key=None,
+            consent_token="c",
+            vendor_id="v",
+            log_file=None,
+        )
+    )
 
     resp = _handle_injected_call(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call"},
         injection=injection,
         session_id=session_id,
+        emitter=emitter,
     )
     assert resp["id"] == 1
     assert "signal_type=unknown" in resp["result"]["content"][0]["text"]
@@ -248,6 +267,7 @@ def test_handle_injected_call_null_params_does_not_crash() -> None:
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": None},
         injection=injection,
         session_id=session_id,
+        emitter=emitter,
     )
     assert resp["id"] == 2
 
@@ -260,6 +280,7 @@ def test_handle_injected_call_null_params_does_not_crash() -> None:
         },
         injection=injection,
         session_id=session_id,
+        emitter=emitter,
     )
     assert resp["id"] == 3
 

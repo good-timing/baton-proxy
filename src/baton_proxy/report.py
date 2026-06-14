@@ -104,16 +104,27 @@ def should_inject_report_tool(event_sink_url: str | None) -> bool:
 # =============================================================================
 
 
-def synthesize(sink_path: str, session_id: str) -> str:
+def synthesize(
+    sink_path: str,
+    session_id: str,
+    *,
+    scrub_counts: dict[str, int] | None = None,
+) -> str:
     """Read the proxy's JSONL sink, filter to this session, return markdown.
 
     The output is a friction report rendered locally from the JSONL stream
     so customers can see the report surface firsthand.
+
+    ``scrub_counts`` is an optional snapshot from ``Emitter.scrub_counts()``
+    (counts of PII fields redacted this session). When provided, the
+    header renders a "Scrubbed fields" line as a visible trust signal.
+    Computed live from the emitter rather than re-parsed from the JSONL
+    file because the file already only contains scrubbed payloads.
     """
     events = _read_session_events(sink_path, session_id)
     if not events:
         return _no_events_template(session_id, sink_path)
-    return _render_markdown(events, session_id)
+    return _render_markdown(events, session_id, scrub_counts=scrub_counts)
 
 
 def _read_session_events(sink_path: str, session_id: str) -> list[dict[str, Any]]:
@@ -144,7 +155,12 @@ def _read_session_events(sink_path: str, session_id: str) -> list[dict[str, Any]
 # =============================================================================
 
 
-def _render_markdown(events: list[dict[str, Any]], session_id: str) -> str:
+def _render_markdown(
+    events: list[dict[str, Any]],
+    session_id: str,
+    *,
+    scrub_counts: dict[str, int] | None = None,
+) -> str:
     reactives = [
         e
         for e in events
@@ -152,7 +168,7 @@ def _render_markdown(events: list[dict[str, Any]], session_id: str) -> str:
     ]
 
     lines: list[str] = []
-    lines.extend(_render_header(events, session_id, reactives))
+    lines.extend(_render_header(events, session_id, reactives, scrub_counts=scrub_counts))
 
     if not reactives:
         lines.extend(_render_no_reactive_stub())
@@ -172,17 +188,61 @@ def _render_header(
     events: list[dict[str, Any]],
     session_id: str,
     reactives: list[dict[str, Any]],
+    *,
+    scrub_counts: dict[str, int] | None = None,
 ) -> list[str]:
     first_ts = events[0].get("captured_at", "")
     last_ts = events[-1].get("captured_at", "")
-    return [
+    lines = [
         "# Baton friction report",
         "",
         f"**Session** `{session_id}`  ",
         f"**Window** {first_ts} → {last_ts}  ",
         f"**Events** {len(events)} captured · **Signals filed** {len(reactives)}",
-        "",
     ]
+    scrub_line = _format_scrub_counts(scrub_counts)
+    if scrub_line:
+        lines.append(f"**Scrubbed fields** {scrub_line}  ")
+    lines.append("")
+    return lines
+
+
+def _format_scrub_counts(counts: dict[str, int] | None) -> str:
+    """Render the scrub-counts dict as a human-readable comma-separated
+    string. Returns empty string when there's nothing to show — caller
+    suppresses the header line entirely in that case so a zero-PII
+    session doesn't read as "we wanted to redact but failed"."""
+    if not counts:
+        return ""
+    nonzero = {k: v for k, v in counts.items() if v > 0}
+    if not nonzero:
+        return ""
+    # Stable ordering: alphabetical by category. Makes the line readable
+    # and keeps test assertions reproducible without depending on dict
+    # insertion order.
+    labels = {
+        "email": "emails",
+        "bearer": "bearer tokens",
+        "sk_key": "sk-* keys",
+        "aws_key": "AWS keys",
+        "jwt": "JWTs",
+        "phone": "phone numbers",
+        "cc": "credit cards",
+    }
+    parts: list[str] = []
+    for category in sorted(nonzero):
+        count = nonzero[category]
+        # field:* counts are surfaced under a "field-name matches" bucket
+        # because most users don't need per-field-name detail in the
+        # report header; the dashboard can break it down further.
+        if category.startswith("field:"):
+            continue
+        label = labels.get(category, category)
+        parts.append(f"{count} {label}")
+    field_total = sum(v for k, v in nonzero.items() if k.startswith("field:"))
+    if field_total:
+        parts.append(f"{field_total} field-name matches")
+    return ", ".join(parts) if parts else ""
 
 
 def _render_toc(reactives: list[dict[str, Any]]) -> list[str]:

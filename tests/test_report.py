@@ -137,6 +137,40 @@ def test_synthesize_missing_file_does_not_crash(tmp_path: Path) -> None:
     assert "No events" in out  # falls through the empty-events template
 
 
+def test_synthesize_renders_scrub_counts_in_header(tmp_path: Path) -> None:
+    """When scrub_counts is passed, the header surfaces a 'Scrubbed fields'
+    line so customers see a visible trust signal in the report tool's output."""
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        json.dumps(_event(0, "tool_call_start", {"tool_name": "x", "params": {}})) + "\n"
+    )
+    out = synthesize(
+        str(path),
+        "s1",
+        scrub_counts={"email": 2, "bearer": 1, "field:password": 3, "cc": 0},
+    )
+    assert "Scrubbed fields" in out
+    assert "2 emails" in out
+    assert "1 bearer tokens" in out
+    assert "3 field-name matches" in out
+    # Zero-count categories are suppressed.
+    assert "0 credit cards" not in out
+
+
+def test_synthesize_omits_scrub_line_when_no_counts(tmp_path: Path) -> None:
+    """A clean session with nothing scrubbed must not render a 'Scrubbed
+    fields: ' line — empty / zero counts read as 'we tried and failed'."""
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        json.dumps(_event(0, "tool_call_start", {"tool_name": "x", "params": {}})) + "\n"
+    )
+    out_none = synthesize(str(path), "s1", scrub_counts=None)
+    out_empty = synthesize(str(path), "s1", scrub_counts={})
+    out_zero = synthesize(str(path), "s1", scrub_counts={"email": 0})
+    for out in (out_none, out_empty, out_zero):
+        assert "Scrubbed fields" not in out
+
+
 def test_synthesize_events_but_no_reactive_renders_no_signal_stub(
     tmp_path: Path,
 ) -> None:

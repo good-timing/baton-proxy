@@ -202,6 +202,7 @@ def _handle_injected_call(
     *,
     injection: _Injection,
     session_id: str,
+    emitter: Emitter,
 ) -> dict[str, Any]:
     """Synthesise a response for whichever injected tool was called.
 
@@ -213,7 +214,9 @@ def _handle_injected_call(
     params = req.get("params") or {}
     name = params.get("name") if isinstance(params, dict) else None
     if name == REPORT_TOOL_NAME:
-        return _build_report_response(req, injection=injection, session_id=session_id)
+        return _build_report_response(
+            req, injection=injection, session_id=session_id, emitter=emitter
+        )
     # Default / ANNOTATE_TOOL_NAME path.
     args = params.get("arguments") if isinstance(params, dict) else None
     args = args or {}
@@ -232,6 +235,7 @@ def _build_report_response(
     *,
     injection: _Injection,
     session_id: str,
+    emitter: Emitter,
 ) -> dict[str, Any]:
     from baton_proxy.report import synthesize
 
@@ -242,7 +246,11 @@ def _build_report_response(
         text = "Friction report unavailable — no local file sink configured."
     else:
         try:
-            text = synthesize(injection.sink_path, session_id)
+            text = synthesize(
+                injection.sink_path,
+                session_id,
+                scrub_counts=emitter.scrub_counts(),
+            )
         except Exception:
             logger.exception("baton-proxy: report synthesis failed")
             text = "Friction report synthesis failed — see proxy log for details."
@@ -313,7 +321,12 @@ def _pump_client_to_server(
                 try:
                     _write_line(
                         sys.stdout,
-                        _handle_injected_call(req, injection=injection, session_id=session_id),
+                        _handle_injected_call(
+                            req,
+                            injection=injection,
+                            session_id=session_id,
+                            emitter=emitter,
+                        ),
                     )
                 except Exception:
                     logger.exception("baton-proxy: synthesising injected response failed")
