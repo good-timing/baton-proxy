@@ -234,6 +234,72 @@ def test_vendor_id_does_not_affect_tool_name() -> None:
     assert "acme_annotate" not in names
 
 
+def test_annotation_schema_requires_only_intent() -> None:
+    """Proactive annotations carry intent alone; signal_type +
+    suggested_improvement are reactive-only. The schema must reflect
+    that — forcing signal_type as required pushes the agent to invent
+    `signal_type='other'` for proactives, polluting friction counts.
+
+    Regression guard for the 2026-06-16 schema loosening (proxy.py
+    inputSchema.required changed from [signal_type, intent,
+    suggested_improvement] to [intent]).
+    """
+    from baton_proxy.proxy import _build_injected_tool
+
+    tool = _build_injected_tool("baton_annotate")
+    schema = tool["inputSchema"]
+    assert schema["required"] == ["intent"]
+    # signal_type stays a valid PROPERTY — reactives still set it.
+    assert "signal_type" in schema["properties"]
+    assert "suggested_improvement" in schema["properties"]
+
+
+def test_proactive_annotation_handled_without_signal_type() -> None:
+    """A proactive annotation arrives with only ``intent`` (and maybe
+    expected_outcome / workflow / context). The proxy must accept it,
+    emit the event, and not invent a signal_type='unknown' for the
+    user-visible confirmation — the absence of signal_type is the
+    semantic marker that this was proactive."""
+    from baton_proxy.config import Config
+    from baton_proxy.emitter import Emitter
+    from baton_proxy.proxy import _handle_injected_call, _Injection
+
+    injection = _Injection.create(event_sink_url=None)
+    session_id = "test-session"
+    emitter = Emitter(
+        Config(
+            session_id=session_id,
+            event_sink=None,
+            tenant_id="t",
+            api_key=None,
+            consent_token="c",
+            vendor_id="v",
+            log_file=None,
+        )
+    )
+    resp = _handle_injected_call(
+        {
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "baton_annotate",
+                "arguments": {
+                    "intent": "user wants the 3 most recent issues",
+                    "expected_outcome": "a list of 3 issues, newest first",
+                },
+            },
+        },
+        injection=injection,
+        session_id=session_id,
+        emitter=emitter,
+    )
+    assert resp["id"] == 99
+    # The handler should not fabricate signal_type='unknown' for proactives.
+    text = resp["result"]["content"][0]["text"]
+    assert "signal_type=unknown" not in text
+
+
 def test_handle_injected_call_null_params_does_not_crash() -> None:
     """JSON-RPC permits params: null. dict.get's default fires on missing
     keys, not on explicit None, so the chained get pattern must coerce."""
@@ -267,7 +333,10 @@ def test_handle_injected_call_null_params_does_not_crash() -> None:
         emitter=emitter,
     )
     assert resp["id"] == 1
-    assert "signal_type=unknown" in resp["result"]["content"][0]["text"]
+    # No params at all → no signal_type → confirmation surfaces it as a
+    # proactive (preferred to the prior "unknown" sentinel — see the
+    # schema-loosening note on the handler).
+    assert "proactive intent" in resp["result"]["content"][0]["text"]
 
     resp = _handle_injected_call(
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": None},

@@ -83,7 +83,14 @@ def _build_injected_tool(tool_name: str) -> dict[str, Any]:
                 "suggested_improvement": {"type": "string"},
                 "context": {"type": "object"},
             },
-            "required": ["signal_type", "intent", "suggested_improvement"],
+            # intent is the only required field — proactive annotations
+            # (filed BEFORE a tool call to capture the user's goal) carry
+            # intent alone. signal_type + suggested_improvement are reactive-
+            # only, set AFTER a tool call returned an unhelpful result.
+            # Treating signal_type as required forces agents to invent a
+            # signal_type='other' for proactives, polluting friction counts
+            # downstream.
+            "required": ["intent"],
         },
     }
 
@@ -220,13 +227,19 @@ def _handle_injected_call(
     # Default / ANNOTATE_TOOL_NAME path.
     args = params.get("arguments") if isinstance(params, dict) else None
     args = args or {}
-    signal = args.get("signal_type", "unknown")
+    signal = args.get("signal_type")
+    # Proactives carry intent alone — absence of signal_type is the
+    # semantic marker, not "unknown". Make the confirmation reflect that
+    # so downstream telemetry (Console event payloads, log lines) doesn't
+    # have to second-guess what mode the annotation was filed in.
+    if signal:
+        confirmation = f"baton_annotate recorded signal_type={signal}"
+    else:
+        confirmation = "baton_annotate recorded proactive intent"
     return {
         "jsonrpc": "2.0",
         "id": req.get("id"),
-        "result": {
-            "content": [{"type": "text", "text": f"baton_annotate recorded signal_type={signal}"}]
-        },
+        "result": {"content": [{"type": "text", "text": confirmation}]},
     }
 
 
