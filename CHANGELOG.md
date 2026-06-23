@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `baton-proxy scan -- <server>`: one-command preflight friction report. Wraps a target MCP server, drives a headless `claude` agent through it (a pinned task plan for known demo servers, an adversarial generic plan otherwise), and renders a local `baton-report.md` from captured events — no install or Claude-config change. The report anchors on mechanical tool errors plus model-flagged friction signals, and is labeled preflight/inferred. Warns when `ANTHROPIC_API_KEY` is set (it bills the API account over a Claude login session).
+
 ## [0.1.2] — 2026-06-12
 
 ### Fixed

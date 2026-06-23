@@ -532,6 +532,17 @@ def run_proxy(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    # Manual subcommand dispatch: the `scan` activation flow is a distinct
+    # entry point. Done before argparse because the proxy path uses
+    # REMAINDER for the upstream command, which doesn't compose with
+    # subparsers. Everything that isn't `scan` is the proxy wrap, unchanged.
+    if argv and argv[0] == "scan":
+        from baton_proxy.scan import scan_main
+
+        return scan_main(argv[1:])
+
     parser = argparse.ArgumentParser(
         prog="baton-proxy",
         description=(
