@@ -44,6 +44,14 @@ _RUNNERS = frozenset(
     {"npx", "uvx", "uv", "npm", "pnpm", "yarn", "bunx", "bun", "node", "deno", "python", "python3"}
 )
 
+# baton-proxy's own invocation names — used to detect (and peel) an entry that
+# is ALREADY wrapped in the proxy, so `--config` doesn't double-wrap it.
+_BATON_PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
+
+
+class ScanConfigError(Exception):
+    """A ``--config`` resolution failure carrying a user-facing message."""
+
 # Fallback driver prompt for servers without a pinned plan — the "scan YOUR
 # server" path. Reliability on an arbitrary server comes from HOW we drive, not
 # from a task library: adversarial framing (find friction, don't just use it),
@@ -87,6 +95,20 @@ def scan_main(argv: list[str]) -> int:
         help=f"Where to write the report (default ./{DEFAULT_REPORT_PATH}).",
     )
     parser.add_argument(
+        "--config",
+        metavar="NAME",
+        help=(
+            "Scan an authed server you already use, by name — e.g. `--config "
+            "github` — reusing its saved credentials. Auto-discovers ./.mcp.json "
+            "and ~/.claude.json. No secret to type; nothing leaves your machine."
+        ),
+    )
+    parser.add_argument(
+        "--config-file",
+        metavar="PATH",
+        help="Search this MCP config file for --config NAME instead of the standard locations.",
+    )
+    parser.add_argument(
         "server",
         nargs=argparse.REMAINDER,
         help="Server command after `--`, e.g. -- npx -y @vendor/mcp-server",
@@ -96,22 +118,46 @@ def scan_main(argv: list[str]) -> int:
     server_cmd = list(args.server or [])
     if server_cmd and server_cmd[0] == "--":
         server_cmd = server_cmd[1:]
-    if not server_cmd:
-        parser.error("server command required, after `--`")
+
+    if args.config_file and not args.config:
+        parser.error("--config-file requires --config NAME")
+    if args.config and server_cmd:
+        parser.error("pass either --config NAME or a `-- <server>` command, not both")
+
+    entry_env: dict[str, str] = {}
+    if args.config:
+        try:
+            server_cmd, entry_env, label = _resolve_config_entry(args.config, args.config_file)
+        except ScanConfigError as e:
+            print(f"✗ {e}")
+            return 2
+        creds_note = ", reusing its saved credentials" if entry_env else ""
+        source_note = f" (config entry `{args.config}`{creds_note})"
+    else:
+        if not server_cmd:
+            parser.error("server command required, after `--` (or use --config NAME)")
+        label = _server_label(server_cmd)
+        source_note = ""
 
     driver = _resolve_driver()
     if driver is None:
         return 2  # guidance already printed
 
-    label = _server_label(server_cmd)
     workdir = tempfile.mkdtemp(prefix="baton-scan-")
     sink_path = os.path.join(workdir, "events.jsonl")
-    cfg_path = _write_mcp_config(workdir, server_cmd, label, sink_path)
+    cfg_path = _write_mcp_config(workdir, server_cmd, label, sink_path, extra_env=entry_env)
     plan = pinned_plan_for(" ".join(server_cmd)) or GENERIC_PLAN
 
-    print(f"▸ scanning {label} — preflight (inferred; nothing leaves your machine)")
+    print(f"▸ scanning {label}{source_note} — preflight (inferred; nothing leaves your machine)")
     print(f"▸ driving agent through the wrapped server (budget {args.timeout}s)…")
-    timed_out = _run_agent(driver, plan, cfg_path, workdir, args.timeout)
+    try:
+        timed_out = _run_agent(driver, plan, cfg_path, workdir, args.timeout)
+    finally:
+        # The generated config may hold resolved credentials (from --config or
+        # a credentialed `-- <server>`). Drop it once the agent has booted —
+        # don't leave an indefinite plaintext secret in the temp dir. The
+        # credential-free debug artifacts (events.jsonl, agent.log) stay.
+        _safe_unlink(cfg_path)
 
     sid = _first_session_id(sink_path)
     if sid is None:
@@ -123,6 +169,11 @@ def scan_main(argv: list[str]) -> int:
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(md + "\n")
     _print_headline(md, out_path, timed_out=timed_out)
+    # Success: the report is written to out_path; nothing else references the
+    # temp dir. Drop the whole thing so no captured events (which can include
+    # tool-argument secrets) linger on disk — "creds never move." The
+    # no-events branch above deliberately keeps the dir for its agent.log hint.
+    _safe_rmtree(workdir)
     return 0
 
 
@@ -196,20 +247,33 @@ def _server_label(server_cmd: list[str]) -> str:
     return " ".join(server_cmd) or "the scanned server"
 
 
-def _write_mcp_config(workdir: str, server_cmd: list[str], label: str, sink_path: str) -> str:
+def _write_mcp_config(
+    workdir: str,
+    server_cmd: list[str],
+    label: str,
+    sink_path: str,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> str:
     """Write an ephemeral MCP config that launches the server wrapped by
-    baton-proxy with a file sink. The agent's MCP client merges this env over
-    the inherited environment, so the server's own runtime (PATH, Node, creds)
-    still flows — we only need to set the proxy's vars."""
+    baton-proxy with a file sink.
+
+    The agent's MCP client merges this ``env`` over the inherited environment
+    (verified: a non-empty block layers, it does not replace), so the server's
+    own runtime (PATH, Node, ambient creds) still flows. ``extra_env`` carries
+    credentials resolved from a ``--config`` entry; ``${VAR}`` references in
+    those values are expanded by the MCP client at launch (also verified). The
+    proxy's own vars are set LAST so a stray entry value can never shadow them.
+    """
+    env: dict[str, str] = dict(extra_env or {})
+    env["BATON_VENDOR_ID"] = label
+    env["BATON_EVENT_SINK"] = f"file://{sink_path}"
     cfg = {
         "mcpServers": {
             "scan_target": {
                 "command": sys.executable,
                 "args": ["-m", "baton_proxy", "--", *server_cmd],
-                "env": {
-                    "BATON_VENDOR_ID": label,
-                    "BATON_EVENT_SINK": f"file://{sink_path}",
-                },
+                "env": env,
             }
         }
     }
@@ -217,6 +281,146 @@ def _write_mcp_config(workdir: str, server_cmd: list[str], label: str, sink_path
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f)
     return path
+
+
+def _safe_unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _safe_rmtree(path: str) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+
+
+# =============================================================================
+# `--config <name>` resolution — wrap an already-authed server entry.
+# =============================================================================
+
+
+def _config_search_paths(explicit_file: str | None) -> list[str]:
+    """Where to look for the named entry. An explicit ``--config-file`` short-
+    circuits the search; otherwise project-scoped ``./.mcp.json`` then the
+    user's ``~/.claude.json`` (project entry beats global within that file)."""
+    if explicit_file:
+        return [explicit_file]
+    return [os.path.join(os.getcwd(), ".mcp.json"), os.path.expanduser("~/.claude.json")]
+
+
+def _load_mcp_servers(path: str) -> dict[str, dict]:
+    """Return ``{name: entry}`` from one config file. Merges the top-level
+    ``mcpServers`` with the current project's entries in the ``~/.claude.json``
+    shape (``projects.<cwd>.mcpServers``), the more-specific project scope
+    winning. Missing/unreadable/malformed file → empty dict (the caller reports
+    'not found' across all searched paths)."""
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    servers: dict[str, dict] = {}
+    top = data.get("mcpServers")
+    if isinstance(top, dict):
+        servers.update(top)
+    projects = data.get("projects")
+    if isinstance(projects, dict):
+        proj = projects.get(os.getcwd())
+        if isinstance(proj, dict) and isinstance(proj.get("mcpServers"), dict):
+            servers.update(proj["mcpServers"])
+    return servers
+
+
+def _strip_baton_env(env: dict[str, str]) -> dict[str, str]:
+    """Drop ``BATON_*`` keys from a resolved entry's env. An entry that is
+    already baton-proxy-wrapped carries the vendor's live ``BATON_EVENT_SINK`` /
+    ``BATON_API_KEY``; inheriting those would ship the robot scan session to the
+    vendor's real Console. scan sets its own (local file sink) instead."""
+    return {k: v for k, v in env.items() if not k.startswith("BATON_")}
+
+
+def _unwrap_baton_proxy(server_cmd: list[str]) -> list[str]:
+    """Peel a leading baton-proxy invocation off a resolved command.
+
+    A real vendor's authed entry is commonly ALREADY wrapped (`baton-proxy --
+    <upstream>` or `python -m baton_proxy -- <upstream>`). Wrapping that again
+    would double-inject the annotation/report tools and nest two proxies. Return
+    the bare upstream so scan wraps it exactly once; recurse to handle an
+    accidental multi-wrap. A wrapper with no `--` separator is left untouched."""
+    if not server_cmd:
+        return server_cmd
+    head = os.path.basename(server_cmd[0])
+    rest = server_cmd[1:]
+    is_console = head in _BATON_PROXY_NAMES
+    is_module = (
+        head.startswith("python")
+        and len(rest) >= 2
+        and rest[0] == "-m"
+        and rest[1] in _BATON_PROXY_NAMES
+    )
+    if not (is_console or is_module):
+        return server_cmd
+    try:
+        sep = rest.index("--")
+    except ValueError:
+        return server_cmd
+    upstream = rest[sep + 1 :]
+    return _unwrap_baton_proxy(upstream) if upstream else server_cmd
+
+
+def _resolve_config_entry(
+    name: str, explicit_file: str | None
+) -> tuple[list[str], dict[str, str], str]:
+    """Resolve a named MCP server entry to ``(server_cmd, env, label)``.
+
+    Raises ``ScanConfigError`` (user-facing message) when the name is absent,
+    ambiguous across configs, a remote/non-stdio server, or malformed.
+    """
+    paths = _config_search_paths(explicit_file)
+    matches: list[tuple[str, dict]] = []
+    available: set[str] = set()
+    for p in paths:
+        servers = _load_mcp_servers(p)
+        available.update(servers.keys())
+        if name in servers and isinstance(servers[name], dict):
+            matches.append((p, servers[name]))
+
+    if not matches:
+        searched = ", ".join(paths)
+        avail = ", ".join(sorted(available)) or "none found"
+        raise ScanConfigError(
+            f"no MCP server named `{name}` in {searched}.\n"
+            f"  available: {avail}\n"
+            "  → check the name, or pass `--config-file <path>` to point at another config."
+        )
+    if len({json.dumps(e, sort_keys=True) for _p, e in matches}) > 1:
+        srcs = ", ".join(p for p, _e in matches)
+        raise ScanConfigError(
+            f"`{name}` is defined differently in multiple configs ({srcs}).\n"
+            "  → pass `--config-file <path>` to choose one."
+        )
+
+    entry = matches[0][1]
+    etype = entry.get("type")
+    if etype in ("http", "sse") or ("command" not in entry and "url" in entry):
+        url = entry.get("url", "")
+        raise ScanConfigError(
+            f"`{name}` is a remote ({etype or 'http'}) MCP server"
+            + (f" ({url})" if url else "")
+            + ".\n  scan wraps stdio servers today; remote/OAuth servers aren't supported yet."
+        )
+    command = entry.get("command")
+    if not command or not isinstance(command, str):
+        raise ScanConfigError(f"`{name}` entry has no usable `command` to launch.")
+    raw_args = entry.get("args")
+    raw_args = raw_args if isinstance(raw_args, list) else []
+    server_cmd = _unwrap_baton_proxy([command, *[str(a) for a in raw_args]])
+    raw_env = entry.get("env")
+    raw_env = raw_env if isinstance(raw_env, dict) else {}
+    env = _strip_baton_env({str(k): str(v) for k, v in raw_env.items()})
+    return server_cmd, env, name
 
 
 def _run_agent(driver: str, plan: str, cfg_path: str, workdir: str, timeout: int) -> bool:
@@ -271,7 +475,9 @@ def _no_events_guidance(label: str, workdir: str) -> str:
         f"\n✗ no friction captured for `{label}` — the wrapped server produced no "
         "tool calls.\n"
         "  Most likely it needs credentials to boot, or the command failed to start:\n"
-        "    • account-gated server → pass credentials through the environment, e.g.\n"
+        "    • a server you already use in Claude → `baton-proxy scan --config <name>` "
+        "reuses its saved credentials (no secret to type).\n"
+        "    • otherwise pass credentials through the environment, e.g.\n"
         "        VENDOR_API_KEY=… baton-proxy scan -- <server command>\n"
         "    • `npx`/`uvx` servers auto-install; a local or private server must be "
         "built first.\n"
