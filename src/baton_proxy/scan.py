@@ -2,7 +2,9 @@
 
 Drives a headless agent through a wrapped MCP server and renders a friction
 report, with **no permanent install and no change to the user's Claude config**.
-This is the activation CTA: ``uvx baton-proxy scan -- npx -y @vendor/mcp-server``.
+This is the activation CTA: ``uvx baton-proxy scan --config <name>`` — it targets
+a server the user has already configured in Claude, reusing that entry's saved
+credentials (a friction report only lands on a server they actually run).
 
 Pipeline — all local, nothing leaves the machine:
 
@@ -37,12 +39,6 @@ from baton_proxy.scan_tasks import pinned_plan_for
 # rather than hang.
 DEFAULT_TIMEOUT_S = 300
 DEFAULT_REPORT_PATH = "baton-report.md"
-
-# Launcher commands to skip when labelling a server, so `uvx mcp-server-time`
-# labels as the package rather than the runner.
-_RUNNERS = frozenset(
-    {"npx", "uvx", "uv", "npm", "pnpm", "yarn", "bunx", "bun", "node", "deno", "python", "python3"}
-)
 
 # baton-proxy's own invocation names — used to detect (and peel) an entry that
 # is ALREADY wrapped in the proxy, so `--config` doesn't double-wrap it.
@@ -109,35 +105,44 @@ def scan_main(argv: list[str]) -> int:
         help="Search this MCP config file for --config NAME instead of the standard locations.",
     )
     parser.add_argument(
+        # Accepted only so a bare `-- <server>` invocation gets a tailored error
+        # pointing at --config, rather than an opaque argparse failure.
         "server",
         nargs=argparse.REMAINDER,
-        help="Server command after `--`, e.g. -- npx -y @vendor/mcp-server",
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args(argv)
 
-    server_cmd = list(args.server or [])
-    if server_cmd and server_cmd[0] == "--":
-        server_cmd = server_cmd[1:]
+    bare_server = list(args.server or [])
+    if bare_server and bare_server[0] == "--":
+        bare_server = bare_server[1:]
 
+    # scan targets a server you've configured in Claude (`--config <name>`),
+    # reusing that entry's saved credentials. A friction report only delivers
+    # its insight on a server you actually run, so the bare `-- <server>` form
+    # (idly scanning a stranger's server) is intentionally not supported.
+    if bare_server:
+        parser.error(
+            "the bare `-- <server>` form is not supported; scan targets a server "
+            "you've configured in Claude. Add it to your config and run "
+            "`baton-proxy scan --config <name>`."
+        )
     if args.config_file and not args.config:
         parser.error("--config-file requires --config NAME")
-    if args.config and server_cmd:
-        parser.error("pass either --config NAME or a `-- <server>` command, not both")
+    if not args.config:
+        parser.error(
+            "scan requires --config NAME — point it at an MCP server you've configured "
+            "in Claude (e.g. `--config github`). It reuses that entry's saved "
+            "credentials; nothing leaves your machine."
+        )
 
-    entry_env: dict[str, str] = {}
-    if args.config:
-        try:
-            server_cmd, entry_env, label = _resolve_config_entry(args.config, args.config_file)
-        except ScanConfigError as e:
-            print(f"✗ {e}")
-            return 2
-        creds_note = ", reusing its saved credentials" if entry_env else ""
-        source_note = f" (config entry `{args.config}`{creds_note})"
-    else:
-        if not server_cmd:
-            parser.error("server command required, after `--` (or use --config NAME)")
-        label = _server_label(server_cmd)
-        source_note = ""
+    try:
+        server_cmd, entry_env, label = _resolve_config_entry(args.config, args.config_file)
+    except ScanConfigError as e:
+        print(f"✗ {e}")
+        return 2
+    creds_note = ", reusing its saved credentials" if entry_env else ""
+    source_note = f" (config entry `{args.config}`{creds_note})"
 
     driver = _resolve_driver()
     if driver is None:
@@ -223,28 +228,6 @@ def _confirm_api_key_billing() -> bool:
         return True
     print("    Aborted. `unset ANTHROPIC_API_KEY` and re-run to use your Claude login.")
     return False
-
-
-def _server_label(server_cmd: list[str]) -> str:
-    """Pick a recognizable label for the server. Prefer an ``@scope/pkg``
-    package name, then a path-like token, then the first non-flag token that
-    isn't a runner (``npx``/``uvx``/``node``/…). So ``uvx mcp-server-time``
-    labels as ``mcp-server-time`` and ``server-filesystem /tmp/dir`` labels as
-    the package, not the runner or the trailing directory. Used as the report
-    title and the proxy's required BATON_VENDOR_ID."""
-    non_flags = [t for t in server_cmd if not t.startswith("-")]
-    for tok in non_flags:
-        if tok.startswith("@"):
-            return tok
-    for tok in non_flags:
-        if "/" in tok:
-            return tok
-    for tok in non_flags:
-        if tok not in _RUNNERS:
-            return tok
-    if non_flags:
-        return non_flags[0]
-    return " ".join(server_cmd) or "the scanned server"
 
 
 def _write_mcp_config(
@@ -474,11 +457,10 @@ def _no_events_guidance(label: str, workdir: str) -> str:
     return (
         f"\n✗ no friction captured for `{label}` — the wrapped server produced no "
         "tool calls.\n"
-        "  Most likely it needs credentials to boot, or the command failed to start:\n"
-        "    • a server you already use in Claude → `baton-proxy scan --config <name>` "
-        "reuses its saved credentials (no secret to type).\n"
-        "    • otherwise pass credentials through the environment, e.g.\n"
-        "        VENDOR_API_KEY=… baton-proxy scan -- <server command>\n"
+        "  Most likely the configured server failed to start, or its saved "
+        "credentials are missing/expired:\n"
+        "    • confirm the entry works in Claude itself (scan runs the same command "
+        "+ env).\n"
         "    • `npx`/`uvx` servers auto-install; a local or private server must be "
         "built first.\n"
         f"  Agent log for debugging: {os.path.join(workdir, 'agent.log')}"

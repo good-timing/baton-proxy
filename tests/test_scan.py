@@ -6,29 +6,21 @@ from __future__ import annotations
 import json
 import sys
 
+import pytest
+
 from baton_proxy import scan
 
 
-def test_server_label_prefers_package_token() -> None:
-    assert scan._server_label(["npx", "-y", "@scope/pkg"]) == "@scope/pkg"
-    assert scan._server_label(["python", "path/to/server.py"]) == "path/to/server.py"
+def test_scan_main_requires_config() -> None:
+    # No --config and no server → hard error (SystemExit from argparse).
+    with pytest.raises(SystemExit):
+        scan.scan_main([])
 
 
-def test_server_label_package_beats_trailing_path_arg() -> None:
-    # Servers that take a directory arg must label as the package, not the dir.
-    assert (
-        scan._server_label(["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp/dir"])
-        == "@modelcontextprotocol/server-filesystem"
-    )
-
-
-def test_server_label_falls_back_to_first_non_flag() -> None:
-    assert scan._server_label(["mcp-server", "--port", "3000"]) == "mcp-server"
-
-
-def test_server_label_skips_runner() -> None:
-    assert scan._server_label(["uvx", "mcp-server-time"]) == "mcp-server-time"
-    assert scan._server_label(["npx", "-y", "some-mcp-server"]) == "some-mcp-server"
+def test_scan_main_rejects_bare_server_form() -> None:
+    # The bare `-- <server>` form is intentionally unsupported; require --config.
+    with pytest.raises(SystemExit):
+        scan.scan_main(["--", "npx", "-y", "@vendor/mcp-server"])
 
 
 def test_write_mcp_config_wraps_server_in_proxy(tmp_path) -> None:
