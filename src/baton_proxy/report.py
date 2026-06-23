@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import urllib.parse
+from collections import OrderedDict
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -634,6 +635,10 @@ def _short_intent(intent: str | None, max_chars: int = 80) -> str:
     return s[: max_chars - 1].rstrip() + "…"
 
 
+def _plural(n: int, word: str) -> str:
+    return word if n == 1 else word + "s"
+
+
 def _truncate(s: str, n: int) -> str:
     if len(s) <= n:
         return s
@@ -649,3 +654,315 @@ def _no_events_template(session_id: str, sink_path: str) -> str:
         f"through the wrapped server and re-run this tool to see the "
         f"friction report.\n"
     )
+
+
+# =============================================================================
+# Scan mode — MECHANICAL-anchored rendering.
+#
+# The default report (`synthesize`) is anchored on model-filed reactive
+# annotations: no annotation => no signal block. That's right for the live
+# wrap, where a human session naturally produces reactive signals. But the
+# `scan` subcommand drives a headless agent that may not annotate, and we
+# want the report to be deterministic regardless of whether the model chose
+# to. So scan anchors on *mechanical* friction read straight off the event
+# stream — tool errors, retries, repeated-call chains — and uses any model
+# annotations only to enrich a finding's intent label, never to gate it.
+#
+# Honesty: this report is explicitly labeled preflight/inferred. It previews
+# the friction an agent is *likely* to hit; it is not real-user data.
+# =============================================================================
+
+
+def synthesize_scan(
+    sink_path: str,
+    session_id: str,
+    *,
+    server_label: str | None = None,
+    scrub_counts: dict[str, int] | None = None,
+) -> str:
+    """Render a scan friction report anchored on mechanical signals.
+
+    Unlike :func:`synthesize`, this never returns an empty "no signal filed"
+    stub when errors/retries are present — a captured ``tool_call_error``
+    always surfaces as a friction point. Reactive annotations, if the agent
+    happened to file any, enrich finding labels but are not required.
+    """
+    events = _read_session_events(sink_path, session_id)
+    if not events:
+        return _no_events_template(session_id, sink_path)
+    # Union of two evidence classes:
+    #   - mechanical: errors / retries / repeated calls — deterministic, always
+    #     surfaces, but BLIND to silent success (a tool that returns ok while
+    #     doing nothing — the "200 instead of an error" friction class).
+    #   - reactive: model-filed signal_type annotations — non-deterministic, but
+    #     the only thing that catches silent-success / feature gaps.
+    # Neither alone is sufficient; together they cover both failure modes.
+    findings = _merge_findings(
+        _derive_mechanical_findings(events), _derive_reactive_findings(events)
+    )
+    return _render_scan_markdown(
+        events,
+        session_id,
+        findings,
+        server_label=server_label,
+        scrub_counts=scrub_counts,
+    )
+
+
+def _derive_mechanical_findings(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Read friction findings straight off the event stream — no model
+    annotation required. Deterministic given the same events."""
+    starts = [e for e in events if e.get("event_type") == "tool_call_start"]
+    errors = [e for e in events if e.get("event_type") == "tool_call_error"]
+
+    starts_by_tool: dict[str, int] = {}
+    for s in starts:
+        tn = str((s.get("payload") or {}).get("tool_name") or "?")
+        starts_by_tool[tn] = starts_by_tool.get(tn, 0) + 1
+
+    # Group errors by (tool, error_type) so N identical failures read as one
+    # finding "failed N×" rather than N near-duplicate blocks.
+    err_groups: OrderedDict[tuple[str, str], list[dict[str, Any]]] = OrderedDict()
+    for e in errors:
+        p = e.get("payload") or {}
+        key = (str(p.get("tool_name") or "?"), str(p.get("error_type") or "error"))
+        err_groups.setdefault(key, []).append(e)
+
+    findings: list[dict[str, Any]] = []
+    for (tool, etype), evs in err_groups.items():
+        last_payload = evs[-1].get("payload") or {}
+        # The agent re-invoking a tool that errored is a retry; count extra
+        # starts of that tool beyond the first as retry attempts.
+        retries = max(0, starts_by_tool.get(tool, 0) - 1)
+        findings.append(
+            {
+                "kind": "error",
+                "signal": "retry_loop" if retries else "failure",
+                "tool": tool,
+                "error_type": etype,
+                "count": len(evs),
+                "retries": retries,
+                "evidence": str(
+                    last_payload.get("error_body") or last_payload.get("message") or ""
+                ),
+                "intent": _nearest_proactive_intent(events, evs[0]),
+            }
+        )
+
+    # NOTE: we deliberately do NOT flag repeated calls to a tool as a mechanical
+    # "multi-hop" finding. Validation (2026-06-22) showed it's a false-positive
+    # generator: iterative-by-design tools (sequentialthinking) and the scan's
+    # own adversarial probing ("exercise every tool") both inflate call counts
+    # that aren't user friction. Genuine multi-hop / ordering friction is caught
+    # by the model as a reactive signal, which understands intent; the mechanical
+    # counter can't tell exploration from a real missing one-shot. Errors stay
+    # mechanical (unambiguous); judgment-based friction stays with the model.
+    return findings
+
+
+def _merge_findings(
+    mechanical: list[dict[str, Any]], reactive: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Fold a reactive finding into the mechanical error finding for the same
+    tool, so a tool that errors *and* gets annotated reads as ONE richer
+    finding (mechanical evidence + the model's reasoning), not two. Without
+    this the headline count — the CTA's payoff number — double-counts the
+    normal live pattern (error + reactive about that error). Reactives with no
+    matching mechanical error stay standalone (e.g. silent-success gaps, which
+    have no error to merge into)."""
+    err_by_tool: dict[str, dict[str, Any]] = {}
+    for m in mechanical:
+        if m.get("kind") == "error" and m.get("tool"):
+            err_by_tool.setdefault(str(m["tool"]), m)
+
+    standalone: list[dict[str, Any]] = []
+    for r in reactive:
+        rt = str(r.get("tool") or "")
+        if rt and rt in err_by_tool:
+            m = err_by_tool[rt]
+            # Facts stay mechanical (error_type, evidence, count, retries); the
+            # model owns ALL interpretation — signal classification, intent,
+            # what's missing, suggested fix — so reactive wins every field here.
+            m["signal"] = r.get("signal") or m.get("signal")
+            m["intent"] = r.get("intent") or m.get("intent")
+            m["missing"] = r.get("missing") or m.get("missing")
+            m["suggested"] = r.get("suggested") or m.get("suggested")
+        else:
+            standalone.append(r)
+    return mechanical + standalone
+
+
+def _derive_reactive_findings(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Model-filed reactive signals as findings. These catch friction the
+    mechanical pass can't — chiefly *silent success* (a tool returns ok while
+    failing to meet intent), which has no ``tool_call_error`` to anchor on."""
+    findings: list[dict[str, Any]] = []
+    for e in events:
+        if e.get("event_type") != "annotation":
+            continue
+        p = e.get("payload") or {}
+        signal = p.get("signal_type")
+        if not signal:
+            continue
+        ctx = p.get("context") or {}
+        findings.append(
+            {
+                "kind": "reactive",
+                "signal": str(signal),
+                "tool": (ctx.get("tool") or p.get("tool_name") or ""),
+                "intent": str(ctx.get("requested_capability") or p.get("intent") or ""),
+                "missing": str(
+                    ctx.get("missing_capability_field") or ctx.get("missing_capability") or ""
+                ),
+                "suggested": str(p.get("suggested_improvement") or ""),
+            }
+        )
+    return findings
+
+
+def _nearest_proactive_intent(events: list[dict[str, Any]], before_event: dict[str, Any]) -> str:
+    """The last proactive intent (annotation with ``intent``, no
+    ``signal_type``) before this event — used to label a finding when the
+    agent narrated what it was doing. Empty string if none."""
+    before_seq = int(before_event.get("sequence_number", 0))
+    best = ""
+    for e in events:
+        if int(e.get("sequence_number", 0)) >= before_seq:
+            break
+        if e.get("event_type") != "annotation":
+            continue
+        p = e.get("payload") or {}
+        if p.get("intent") and not p.get("signal_type"):
+            best = str(p.get("intent"))
+    return best
+
+
+def _render_scan_markdown(
+    events: list[dict[str, Any]],
+    session_id: str,
+    findings: list[dict[str, Any]],
+    *,
+    server_label: str | None = None,
+    scrub_counts: dict[str, int] | None = None,
+) -> list[str] | str:
+    starts = [e for e in events if e.get("event_type") == "tool_call_start"]
+    ends = [e for e in events if e.get("event_type") == "tool_call_end"]
+    errors = [e for e in events if e.get("event_type") == "tool_call_error"]
+    n_calls = len(starts)
+    n_err = len(errors)
+    decided = len(ends) + n_err
+    success = round(100 * len(ends) / decided) if decided else 100
+    label = server_label or _first_meta(events, "vendor_id") or "the scanned server"
+
+    lines: list[str] = [
+        "# Baton scan — preflight friction report",
+        "",
+        (
+            "> ⚠️ **Inferred, not real-user data.** This previews the friction a "
+            "driven agent is *likely* to hit on this server. The permanent wrap "
+            "captures what your real users actually hit."
+        ),
+        "",
+        f"**Server** `{label}`  ",
+        f"**This run** {n_calls} {_plural(n_calls, 'call')} · "
+        f"{n_err} {_plural(n_err, 'error')} · {success}% success  ",
+        f"**Friction points found** {len(findings)} "
+        "_(errors & retries, plus model-flagged silent-success / gaps)_",
+    ]
+    scrub_line = _format_scrub_counts(scrub_counts)
+    if scrub_line:
+        lines.append(f"**Scrubbed fields** {scrub_line}  ")
+    lines.append("")
+
+    if not findings:
+        lines += [
+            "## No mechanical friction in this run",
+            "",
+            (
+                f"{n_calls} calls, 0 errors, and the agent flagged no gaps. "
+                "Either a clean surface for what the agent tried, or this run "
+                "didn't exercise the rough edges — friction surfaces with real "
+                "usage. Install the wrap to capture what your users actually hit."
+            ),
+            "",
+        ]
+        lines += _render_scan_footer()
+        return "\n".join(lines)
+
+    for i, f in enumerate(findings, start=1):
+        lines += _render_scan_finding(f, i)
+    lines += _render_scan_footer()
+    return "\n".join(lines)
+
+
+def _render_scan_finding(f: dict[str, Any], index: int) -> list[str]:
+    tool = f.get("tool") or "?"
+    intent = str(f.get("intent") or "")
+    if f.get("kind") == "error":
+        etype = f.get("error_type") or "error"
+        count = int(f.get("count", 1))
+        retries = int(f.get("retries", 0))
+        suffix = f" ×{count}" if count > 1 else ""
+        head = f"## Friction {index} — `{tool}` errored (`{etype}`){suffix}"
+        body = [head, "", f"**Signal:** `{f.get('signal')}`  ", f"**Tool:** `{tool}`  "]
+        if intent:
+            body.append(f"**Agent was trying to:** {_short_intent(intent, 120)}  ")
+        body.append("")
+        detail = f"The agent called `{tool}` and got `{etype}`"
+        if retries:
+            detail += f"; it retried {retries}× without getting unblocked"
+        body += [detail + ".", ""]
+        ev = _truncate(str(f.get("evidence") or ""), 500)
+        if ev:
+            body += ["Evidence (last occurrence):", "", "```", ev, "```", ""]
+        # Present only when a reactive annotation was merged into this error.
+        if f.get("missing"):
+            body += [f"**What's missing:** {f.get('missing')}", ""]
+        if f.get("suggested"):
+            body += [
+                "**Suggested improvement (verbatim from the agent):**",
+                "",
+                f"> {f.get('suggested')}",
+                "",
+            ]
+        return body
+    if f.get("kind") == "reactive":
+        signal = f.get("signal") or "other"
+        title = _short_intent(intent, 90) if intent else f"agent flagged `{signal}`"
+        body = [
+            f"## Friction {index} — `{signal}`: {title}",
+            "",
+            f"**Signal:** `{signal}` _(model-flagged — catches silent success / gaps "
+            "that produce no error)_  ",
+        ]
+        if f.get("tool"):
+            body.append(f"**Tool:** `{f.get('tool')}`  ")
+        if intent:
+            body.append(f"**Agent was trying to:** {_short_intent(intent, 120)}  ")
+        body.append("")
+        if f.get("missing"):
+            body += [f"**What's missing:** {f.get('missing')}", ""]
+        if f.get("suggested"):
+            body += [
+                "**Suggested improvement (verbatim from the agent):**",
+                "",
+                f"> {f.get('suggested')}",
+                "",
+            ]
+        return body
+
+    # Only "error" and "reactive" findings exist; any other kind is a bug.
+    return [f"## Friction {index} — `{tool}`", "", "*unrecognized finding kind*", ""]
+
+
+def _render_scan_footer() -> list[str]:
+    return [
+        "---",
+        "",
+        (
+            "_Preflight scan: friction inferred mechanically from one driven "
+            "agent run, rendered locally — nothing left your machine. Install the "
+            "wrap (`pipx install baton-proxy`, prepend `baton-proxy --` to your "
+            "MCP entry) to capture what your real users hit, continuously._"
+        ),
+    ]
