@@ -63,6 +63,28 @@ The proxy adds two tools to the upstream server's tool list:
 
 And the proxy emits a friction event per real tool call.
 
+## Try it in one command: `scan`
+
+Preview the friction an agent is likely to hit on a server you run — no permanent install, no change to your Claude config:
+
+```bash
+uvx baton-proxy scan --config github
+```
+
+`scan` targets a server you've **already configured in Claude** (by name), reusing that entry's saved credentials. It writes an ephemeral config, drives a headless agent (`claude -p`, billed to your own auth) through the wrapped server, and renders `./baton-report.md`. Everything runs locally — nothing leaves your machine, and you type no secrets. The report is labeled **preflight/inferred**: it previews likely friction, it's not real-user data (that's what the permanent wrap above captures).
+
+Why `--config` (and not a raw server command)? A friction report only delivers its insight on a server you actually run — its real tools, its real auth, your real workflows. So scan resolves a configured entry rather than scanning a stranger's server. It reads `--config <name>` from `~/.claude.json` or `./.mcp.json`; point at a specific file with `--config-file`:
+
+```bash
+uvx baton-proxy scan --config github --config-file ./.mcp.json
+```
+
+Details:
+- The resolved entry's credentials (its `env`, including `${VAR}` references) flow to the wrapped server untouched.
+- An entry that's already `baton-proxy`-wrapped is unwrapped automatically, and its `BATON_*` vars are dropped so the scan session stays local rather than shipping to your real Console.
+- Remote/OAuth (`http`/`sse`) entries aren't supported yet — scan wraps stdio servers.
+- `--timeout` bounds the run (default 300s; a partial report renders on expiry). `--out` sets the report path.
+
 ## What gets emitted
 
 Per real tool call, three event types match the [Baton wire format](https://github.com/good-timing/baton/blob/main/docs/SPEC.md) (`tool_call_start` / `tool_call_end` / `tool_call_error`):
