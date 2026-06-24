@@ -35,7 +35,11 @@ def main() -> None:
                     "id": req_id,
                     "result": {
                         "protocolVersion": "2025-03-26",
-                        "capabilities": {"tools": {"listChanged": False}},
+                        "capabilities": {
+                            "tools": {"listChanged": False},
+                            "resources": {"subscribe": False, "listChanged": False},
+                            "prompts": {"listChanged": False},
+                        },
                         "serverInfo": {"name": "fixture-server", "version": "0.1.0"},
                         "instructions": "Fixture MCP server. Use echo to echo text.",
                     },
@@ -68,6 +72,87 @@ def main() -> None:
                     },
                 }
             )
+        elif method == "resources/list":
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "resources": [
+                            {
+                                "uri": "fixture://notes.txt",
+                                "name": "notes",
+                                "description": "A test note resource.",
+                                "mimeType": "text/plain",
+                            },
+                            {
+                                "uri": "fixture://secret.txt",
+                                "name": "secret",
+                                "description": "Always returns an error when read.",
+                                "mimeType": "text/plain",
+                            },
+                        ]
+                    },
+                }
+            )
+        elif method == "resources/read":
+            params = req.get("params", {})
+            uri = params.get("uri", "")
+            if uri == "fixture://notes.txt":
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "contents": [{"uri": uri, "mimeType": "text/plain", "text": "Hello from fixture notes."}]
+                        },
+                    }
+                )
+            else:
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32002, "message": f"Resource not found: {uri}"},
+                    }
+                )
+        elif method == "prompts/list":
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "prompts": [
+                            {"name": "summarize", "description": "Summarize some text."},
+                            {"name": "boom_prompt", "description": "Always errors when fetched."},
+                        ]
+                    },
+                }
+            )
+        elif method == "prompts/get":
+            params = req.get("params", {})
+            name = params.get("name", "")
+            if name == "summarize":
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "description": "Summarize some text.",
+                            "messages": [
+                                {"role": "user", "content": {"type": "text", "text": "Please summarize: {{text}}"}}
+                            ],
+                        },
+                    }
+                )
+            else:
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32002, "message": f"Prompt not found: {name}"},
+                    }
+                )
         elif method == "tools/call":
             params = req.get("params", {})
             tool_name = params.get("name")
