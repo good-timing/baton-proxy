@@ -7,7 +7,7 @@ name = "baton-proxy"
 dynamic = ["version"]
 description = "Subprocess-wrap MCP proxy that injects an annotation tool and emits friction events."
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 authors = [{ name = "Good Timing, Inc." }]
 classifiers = [
