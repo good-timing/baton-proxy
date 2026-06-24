@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-06-23
+
+### Changed
+- `baton-proxy scan` now drives the agent to record each friction through `baton_annotate` (intent + `signal_type` + `suggested_improvement`) the moment it hits it, instead of only summarizing at the end. Scan reports are synthesized from captured annotation events, so mechanical-only error findings that used to render thin (generic intent, no fix) now carry the agent's restated intent and a concrete suggested fix. (A live `scan --config github` went from 1 thin finding to 7 with verbatim fixes.)
+
+### Fixed
+- `synthesize_scan` now folds a model-filed reactive into the mechanical error finding for the same tool even when the reactive names that tool only in its text (not a structured `tool` field), matching only when exactly one errored tool name appears. Previously a tool that both errored and got annotated could surface as two near-duplicate findings, inflating the headline friction count.
+
+### Removed
+- Pinned per-server task plans (`scan_tasks.py`). They existed only to make the cold-visitor homepage-demo finding reproducible; the config-only scan flow retired that demo path, leaving no consumer. Every scan now uses the adversarial generic driver plan.
+
+## [0.2.0] — 2026-06-23
+
 ### Added
-- `baton-proxy scan -- <server>`: one-command preflight friction report. Wraps a target MCP server, drives a headless `claude` agent through it (a pinned task plan for known demo servers, an adversarial generic plan otherwise), and renders a local `baton-report.md` from captured events — no install or Claude-config change. The report anchors on mechanical tool errors plus model-flagged friction signals, and is labeled preflight/inferred. Warns when `ANTHROPIC_API_KEY` is set (it bills the API account over a Claude login session).
+- `baton-proxy scan --config <name>`: one-command preflight friction report. Resolves an MCP server you've already configured in Claude (from `./.mcp.json` or `~/.claude.json`, reusing its saved credentials), wraps it, drives a headless `claude` agent through it, and renders a local `baton-report.md` from captured events — no permanent install or Claude-config change. The report anchors on mechanical tool errors plus model-flagged friction signals, and is labeled preflight/inferred. Warns when `ANTHROPIC_API_KEY` is set (it bills the API account over a Claude login session).
 
 ## [0.1.2] — 2026-06-12
 
