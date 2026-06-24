@@ -19,6 +19,7 @@ from baton_proxy.report import (
     has_http_sink,
     should_inject_report_tool,
     synthesize,
+    synthesize_scan,
 )
 
 # =============================================================================
@@ -610,3 +611,78 @@ def test_synthesize_reasoning_trail_renders_multi_step_chain(tmp_path: Path) -> 
     assert "step_one_tool" in out
     assert "step_two_tool" in out
     assert "NotFound" in out
+
+
+# =============================================================================
+# synthesize_scan() — mechanical + reactive merge
+# =============================================================================
+
+
+def test_synthesize_scan_folds_reactive_into_error_when_text_names_tool(
+    tmp_path: Path,
+) -> None:
+    """A reactive that names the failing tool in its text but does NOT set an
+    explicit tool field still folds into that tool's mechanical error finding,
+    so the errored call renders as ONE rich finding (error evidence + the
+    agent's suggested fix), not two."""
+    path = tmp_path / "events.jsonl"
+    _write_events(
+        path,
+        [
+            _proactive(1, "check release hygiene"),
+            _event(2, "tool_call_start", {"tool_name": "get_latest_release"}),
+            _event(
+                3,
+                "tool_call_error",
+                {
+                    "tool_name": "get_latest_release",
+                    "error_type": "0",
+                    "error_body": "404 Not Found",
+                },
+            ),
+            # No context.tool / tool_name — only the prose names the tool.
+            _reactive(
+                4,
+                "dead_end",
+                intent="Get the latest release to find the published version",
+                suggested_improvement=(
+                    "get_latest_release returns 404 even though the repo has tags; "
+                    "surface tags when releases is empty."
+                ),
+            ),
+        ],
+    )
+    out = synthesize_scan(str(path), "s1", server_label="github")
+    # One finding, not two: header reports a single friction point.
+    assert "**Friction points found** 1 " in out
+    assert out.count("## Friction ") == 1
+    # The mechanical error evidence and the model's suggested fix both render.
+    assert "404 Not Found" in out
+    assert "surface tags when releases is empty" in out
+
+
+def test_synthesize_scan_keeps_unrelated_reactive_standalone(tmp_path: Path) -> None:
+    """A reactive whose text does NOT name the errored tool stays a separate
+    finding — inference must not over-merge."""
+    path = tmp_path / "events.jsonl"
+    _write_events(
+        path,
+        [
+            _event(1, "tool_call_start", {"tool_name": "get_latest_release"}),
+            _event(
+                2,
+                "tool_call_error",
+                {"tool_name": "get_latest_release", "error_type": "0", "error_body": "404"},
+            ),
+            # Silent-success gap on a DIFFERENT tool that never errored.
+            _reactive(
+                3,
+                "feature_gap",
+                intent="search code for a string that exists",
+                suggested_improvement="search_code should warn when the index is stale.",
+            ),
+        ],
+    )
+    out = synthesize_scan(str(path), "s1", server_label="github")
+    assert "**Friction points found** 2 " in out
+    assert out.count("## Friction ") == 2

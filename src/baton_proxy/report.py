@@ -769,7 +769,13 @@ def _merge_findings(
     this the headline count — the CTA's payoff number — double-counts the
     normal live pattern (error + reactive about that error). Reactives with no
     matching mechanical error stay standalone (e.g. silent-success gaps, which
-    have no error to merge into)."""
+    have no error to merge into).
+
+    A reactive that set no explicit ``tool`` is still folded in when its text
+    names a mechanical-error tool (see ``_infer_error_tool``) — the agent
+    routinely describes the failing call by name without populating
+    ``context.tool``, and without this it would render as a second finding for
+    the same error."""
     err_by_tool: dict[str, dict[str, Any]] = {}
     for m in mechanical:
         if m.get("kind") == "error" and m.get("tool"):
@@ -777,7 +783,7 @@ def _merge_findings(
 
     standalone: list[dict[str, Any]] = []
     for r in reactive:
-        rt = str(r.get("tool") or "")
+        rt = str(r.get("tool") or "") or _infer_error_tool(r, err_by_tool)
         if rt and rt in err_by_tool:
             m = err_by_tool[rt]
             # Facts stay mechanical (error_type, evidence, count, retries); the
@@ -790,6 +796,21 @@ def _merge_findings(
         else:
             standalone.append(r)
     return mechanical + standalone
+
+
+def _infer_error_tool(
+    reactive: dict[str, Any], err_by_tool: dict[str, dict[str, Any]]
+) -> str:
+    """Recover the tool a reactive is about when it set no explicit ``tool``.
+
+    The agent's annotation on an errored call routinely *names* that tool in
+    its intent / suggested_improvement ("get_latest_release returns 404 …") yet
+    doesn't populate ``context.tool``. Match only when EXACTLY ONE
+    mechanical-error tool name appears in the reactive's text; zero or several
+    leaves it standalone, so we never guess which error it belongs to."""
+    text = f"{reactive.get('intent') or ''} {reactive.get('suggested') or ''}"
+    hits = [t for t in err_by_tool if t and t in text]
+    return hits[0] if len(hits) == 1 else ""
 
 
 def _derive_reactive_findings(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
