@@ -11,10 +11,9 @@ Pipeline — all local, nothing leaves the machine:
   1. write an ephemeral MCP config in a temp dir pointing a headless agent at
      ``baton-proxy -- <server>`` with a file event sink (the proxy captures
      friction exactly as in the live wrap);
-  2. pick a task plan — pinned for known demo servers, generic otherwise;
-  3. drive ``claude -p`` headlessly through that config (the agent is the
+  2. drive ``claude -p`` headlessly through that config (the agent is the
      "robot user"; LLM cost lands on the dev's own auth, never Baton's);
-  4. render the scan report (``report.synthesize_scan``) → ``./baton-report.md``
+  3. render the scan report (``report.synthesize_scan``) → ``./baton-report.md``
      and print a headline.
 
 The report is explicitly labeled preflight/inferred — it previews the friction
@@ -32,7 +31,6 @@ import sys
 import tempfile
 
 from baton_proxy import report
-from baton_proxy.scan_tasks import pinned_plan_for
 
 # Wall-clock budget for the agent run. A CTA must always finish in a few
 # minutes; on timeout we still render whatever was captured (partial report)
@@ -48,12 +46,12 @@ _BATON_PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
 class ScanConfigError(Exception):
     """A ``--config`` resolution failure carrying a user-facing message."""
 
-# Fallback driver prompt for servers without a pinned plan — the "scan YOUR
-# server" path. Reliability on an arbitrary server comes from HOW we drive, not
-# from a task library: adversarial framing (find friction, don't just use it),
-# full-surface coverage, and verify-after-each-action (the move that surfaces
-# the silent-success class). The honesty guard ("don't invent friction") keeps
-# the report grounded per the value-prop discipline.
+# The driver prompt for every scan — the "scan YOUR server" path. Reliability
+# on an arbitrary server comes from HOW we drive, not from a task library:
+# adversarial framing (find friction, don't just use it), full-surface
+# coverage, and verify-after-each-action (the move that surfaces the
+# silent-success class). The honesty guard ("don't invent friction") keeps the
+# report grounded per the value-prop discipline.
 #
 # Step 5 is load-bearing for report CONTENT: the scan report is built from
 # captured `baton_annotate` events, not from the agent's prose summary. A
@@ -163,7 +161,7 @@ def scan_main(argv: list[str]) -> int:
     workdir = tempfile.mkdtemp(prefix="baton-scan-")
     sink_path = os.path.join(workdir, "events.jsonl")
     cfg_path = _write_mcp_config(workdir, server_cmd, label, sink_path, extra_env=entry_env)
-    plan = pinned_plan_for(" ".join(server_cmd)) or GENERIC_PLAN
+    plan = GENERIC_PLAN
 
     print(f"▸ scanning {label}{source_note} — preflight (inferred; nothing leaves your machine)")
     print(f"▸ driving agent through the wrapped server (budget {args.timeout}s)…")
