@@ -709,36 +709,51 @@ def synthesize_scan(
     )
 
 
+_MECH_ERROR_TYPES = {"tool_call_error", "resource_read_error", "prompt_get_error"}
+_MECH_START_TYPES = {"tool_call_start", "resource_read_start", "prompt_get_start"}
+
+
+def _subject_from_event(e: dict[str, Any]) -> str:
+    """Extract the canonical subject (tool name, uri, or prompt name) from an event."""
+    p = e.get("payload") or {}
+    etype = e.get("event_type", "")
+    if etype in ("resource_read_error", "resource_read_start"):
+        return str(p.get("uri") or "?")
+    if etype in ("prompt_get_error", "prompt_get_start"):
+        return str(p.get("name") or "?")
+    return str(p.get("tool_name") or "?")
+
+
 def _derive_mechanical_findings(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Read friction findings straight off the event stream — no model
     annotation required. Deterministic given the same events."""
-    starts = [e for e in events if e.get("event_type") == "tool_call_start"]
-    errors = [e for e in events if e.get("event_type") == "tool_call_error"]
+    starts = [e for e in events if e.get("event_type") in _MECH_START_TYPES]
+    errors = [e for e in events if e.get("event_type") in _MECH_ERROR_TYPES]
 
-    starts_by_tool: dict[str, int] = {}
+    starts_by_subject: dict[str, int] = {}
     for s in starts:
-        tn = str((s.get("payload") or {}).get("tool_name") or "?")
-        starts_by_tool[tn] = starts_by_tool.get(tn, 0) + 1
+        subj = _subject_from_event(s)
+        starts_by_subject[subj] = starts_by_subject.get(subj, 0) + 1
 
-    # Group errors by (tool, error_type) so N identical failures read as one
+    # Group errors by (subject, error_type) so N identical failures read as one
     # finding "failed N×" rather than N near-duplicate blocks.
     err_groups: OrderedDict[tuple[str, str], list[dict[str, Any]]] = OrderedDict()
     for e in errors:
         p = e.get("payload") or {}
-        key = (str(p.get("tool_name") or "?"), str(p.get("error_type") or "error"))
+        key = (_subject_from_event(e), str(p.get("error_type") or "error"))
         err_groups.setdefault(key, []).append(e)
 
     findings: list[dict[str, Any]] = []
-    for (tool, etype), evs in err_groups.items():
+    for (subj, etype), evs in err_groups.items():
         last_payload = evs[-1].get("payload") or {}
-        # The agent re-invoking a tool that errored is a retry; count extra
-        # starts of that tool beyond the first as retry attempts.
-        retries = max(0, starts_by_tool.get(tool, 0) - 1)
+        # The agent re-invoking a subject that errored is a retry; count extra
+        # starts of that subject beyond the first as retry attempts.
+        retries = max(0, starts_by_subject.get(subj, 0) - 1)
         findings.append(
             {
                 "kind": "error",
                 "signal": "retry_loop" if retries else "failure",
-                "tool": tool,
+                "tool": subj,
                 "error_type": etype,
                 "count": len(evs),
                 "retries": retries,

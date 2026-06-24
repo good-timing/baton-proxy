@@ -146,36 +146,112 @@ class _Injection:
 
 
 class _PendingCall:
-    """Tracking state for an in-flight tool call (start emitted, awaiting end)."""
+    """Tracking state for an in-flight MCP call (start emitted, awaiting end).
 
-    __slots__ = ("tool_name", "started_ms", "runtime_meta")
+    ``kind`` is the discriminator: "tool" | "resource_read" | "resource_list" |
+    "prompt_get" | "prompt_list". ``subject`` is the uri/name for keyed kinds,
+    empty string for list kinds.
+    """
+
+    __slots__ = ("kind", "subject", "started_ms", "runtime_meta")
 
     def __init__(
-        self, tool_name: str, started_ms: int, runtime_meta: dict[str, Any] | None
+        self,
+        kind: str,
+        subject: str,
+        started_ms: int,
+        runtime_meta: dict[str, Any] | None,
     ) -> None:
-        self.tool_name = tool_name
+        self.kind = kind
+        self.subject = subject
         self.started_ms = started_ms
         self.runtime_meta = runtime_meta
+
+
+def _emit_call_end(
+    emitter: Emitter,
+    call: _PendingCall,
+    result: Any,
+    duration_ms: int,
+) -> None:
+    """Dispatch the correct *_end event for any pending-call kind."""
+    if call.kind == "tool":
+        emitter.enqueue_tool_call_end(
+            tool_name=call.subject, result=result, duration_ms=duration_ms, runtime_meta=call.runtime_meta
+        )
+    elif call.kind == "resource_read":
+        emitter.enqueue_resource_read_end(
+            uri=call.subject, duration_ms=duration_ms, runtime_meta=call.runtime_meta
+        )
+    elif call.kind == "resource_list":
+        count = len((result or {}).get("resources", []))
+        emitter.enqueue_resource_list_end(
+            count=count, duration_ms=duration_ms, runtime_meta=call.runtime_meta
+        )
+    elif call.kind == "prompt_get":
+        emitter.enqueue_prompt_get_end(
+            name=call.subject, duration_ms=duration_ms, runtime_meta=call.runtime_meta
+        )
+    elif call.kind == "prompt_list":
+        count = len((result or {}).get("prompts", []))
+        emitter.enqueue_prompt_list_end(
+            count=count, duration_ms=duration_ms, runtime_meta=call.runtime_meta
+        )
+
+
+def _emit_call_error(
+    emitter: Emitter,
+    call: _PendingCall,
+    error_type: str,
+    error_body: str,
+    duration_ms: int,
+) -> None:
+    """Dispatch the correct *_error event for any pending-call kind."""
+    if call.kind == "tool":
+        emitter.enqueue_tool_call_error(
+            tool_name=call.subject, error_type=error_type, error_body=error_body,
+            duration_ms=duration_ms, runtime_meta=call.runtime_meta,
+        )
+    elif call.kind == "resource_read":
+        emitter.enqueue_resource_read_error(
+            uri=call.subject, error_type=error_type, error_body=error_body,
+            duration_ms=duration_ms, runtime_meta=call.runtime_meta,
+        )
+    elif call.kind == "resource_list":
+        emitter.enqueue_resource_list_error(
+            error_type=error_type, error_body=error_body,
+            duration_ms=duration_ms, runtime_meta=call.runtime_meta,
+        )
+    elif call.kind == "prompt_get":
+        emitter.enqueue_prompt_get_error(
+            name=call.subject, error_type=error_type, error_body=error_body,
+            duration_ms=duration_ms, runtime_meta=call.runtime_meta,
+        )
+    elif call.kind == "prompt_list":
+        emitter.enqueue_prompt_list_error(
+            error_type=error_type, error_body=error_body,
+            duration_ms=duration_ms, runtime_meta=call.runtime_meta,
+        )
 
 
 def _evict_overflow(pending: OrderedDict[Any, _PendingCall], emitter: Emitter) -> None:
     """Evict oldest pending entries down to MAX_PENDING; caller holds pending_lock.
 
-    Each eviction emits a synthetic tool_call_error so the wire stream
-    doesn't carry a dangling start with no end/error pair.
+    Each eviction emits a synthetic error event so the wire stream doesn't
+    carry a dangling start with no end/error pair.
     """
     while len(pending) > MAX_PENDING:
         _evicted_id, evicted = pending.popitem(last=False)
         try:
-            emitter.enqueue_tool_call_error(
-                tool_name=evicted.tool_name,
-                error_type=EVICTED_ERROR_TYPE,
-                error_body="proxy pending dict overflowed without upstream response",
-                duration_ms=max(0, utc_now_ms() - evicted.started_ms),
-                runtime_meta=evicted.runtime_meta,
+            _emit_call_error(
+                emitter,
+                evicted,
+                EVICTED_ERROR_TYPE,
+                "proxy pending dict overflowed without upstream response",
+                max(0, utc_now_ms() - evicted.started_ms),
             )
         except Exception:
-            logger.exception("baton-proxy: enqueue evicted tool_call_error failed")
+            logger.exception("baton-proxy: enqueue evicted error failed")
 
 
 def _inject_into_response(msg: dict[str, Any], injection: _Injection) -> dict[str, Any]:
@@ -368,7 +444,90 @@ def _pump_client_to_server(
             else:
                 with pending_lock:
                     pending[req_id] = _PendingCall(
-                        tool_name=safe_tool_name,
+                        kind="tool",
+                        subject=safe_tool_name,
+                        started_ms=utc_now_ms(),
+                        runtime_meta=runtime_meta,
+                    )
+                    _evict_overflow(pending, emitter)
+
+        elif method == "resources/read":
+            params = req.get("params", {}) or {}
+            uri = str(params.get("uri") or "")
+            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            req_id = req.get("id")
+            try:
+                emitter.enqueue_resource_read_start(
+                    uri=uri,
+                    params={k: v for k, v in params.items() if k != "_meta"} or None,
+                    runtime_meta=runtime_meta,
+                )
+            except Exception:
+                logger.exception("baton-proxy: enqueue resource_read_start failed")
+            else:
+                with pending_lock:
+                    pending[req_id] = _PendingCall(
+                        kind="resource_read",
+                        subject=uri,
+                        started_ms=utc_now_ms(),
+                        runtime_meta=runtime_meta,
+                    )
+                    _evict_overflow(pending, emitter)
+
+        elif method == "resources/list":
+            params = req.get("params", {}) or {}
+            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            req_id = req.get("id")
+            try:
+                emitter.enqueue_resource_list_start(runtime_meta=runtime_meta)
+            except Exception:
+                logger.exception("baton-proxy: enqueue resource_list_start failed")
+            else:
+                with pending_lock:
+                    pending[req_id] = _PendingCall(
+                        kind="resource_list",
+                        subject="",
+                        started_ms=utc_now_ms(),
+                        runtime_meta=runtime_meta,
+                    )
+                    _evict_overflow(pending, emitter)
+
+        elif method == "prompts/get":
+            params = req.get("params", {}) or {}
+            name = str(params.get("name") or "")
+            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            req_id = req.get("id")
+            try:
+                emitter.enqueue_prompt_get_start(
+                    name=name,
+                    params=params.get("arguments"),
+                    runtime_meta=runtime_meta,
+                )
+            except Exception:
+                logger.exception("baton-proxy: enqueue prompt_get_start failed")
+            else:
+                with pending_lock:
+                    pending[req_id] = _PendingCall(
+                        kind="prompt_get",
+                        subject=name,
+                        started_ms=utc_now_ms(),
+                        runtime_meta=runtime_meta,
+                    )
+                    _evict_overflow(pending, emitter)
+
+        elif method == "prompts/list":
+            params = req.get("params", {}) or {}
+            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            req_id = req.get("id")
+            try:
+                emitter.enqueue_prompt_list_start(runtime_meta=runtime_meta)
+            except Exception:
+                logger.exception("baton-proxy: enqueue prompt_list_start failed")
+            else:
+                with pending_lock:
+                    pending[req_id] = _PendingCall(
+                        kind="prompt_list",
+                        subject="",
                         started_ms=utc_now_ms(),
                         runtime_meta=runtime_meta,
                     )
@@ -415,22 +574,17 @@ def _pump_server_to_client(
                     duration_ms = max(0, utc_now_ms() - call.started_ms)
                     if "error" in msg:
                         err = msg["error"] or {}
-                        emitter.enqueue_tool_call_error(
-                            tool_name=call.tool_name,
-                            error_type=str(err.get("code", "")) or "unknown",
-                            error_body=str(err.get("message", "")),
-                            duration_ms=duration_ms,
-                            runtime_meta=call.runtime_meta,
+                        _emit_call_error(
+                            emitter,
+                            call,
+                            str(err.get("code", "")) or "unknown",
+                            str(err.get("message", "")),
+                            duration_ms,
                         )
                     else:
-                        emitter.enqueue_tool_call_end(
-                            tool_name=call.tool_name,
-                            result=msg.get("result"),
-                            duration_ms=duration_ms,
-                            runtime_meta=call.runtime_meta,
-                        )
+                        _emit_call_end(emitter, call, msg.get("result"), duration_ms)
                 except Exception:
-                    logger.exception("baton-proxy: enqueue tool_call_end/error failed")
+                    logger.exception("baton-proxy: enqueue end/error failed")
 
         modified = _inject_into_response(msg, injection)
         try:

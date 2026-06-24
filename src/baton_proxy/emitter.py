@@ -218,6 +218,164 @@ class Emitter:
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
         )
 
+    def enqueue_resource_read_start(
+        self,
+        *,
+        uri: str,
+        params: Mapping[str, Any] | None,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="resource_read_start",
+            payload={"uri": uri, "params": dict(params) if params else {}},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_resource_read_end(
+        self,
+        *,
+        uri: str,
+        duration_ms: int,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="resource_read_end",
+            payload={"uri": uri, "duration_ms": duration_ms},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_resource_read_error(
+        self,
+        *,
+        uri: str,
+        error_type: str,
+        error_body: str,
+        duration_ms: int,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="resource_read_error",
+            payload={"uri": uri, "error_type": error_type, "error_body": error_body, "duration_ms": duration_ms},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_resource_list_start(
+        self,
+        *,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="resource_list_start",
+            payload={},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_resource_list_end(
+        self,
+        *,
+        count: int,
+        duration_ms: int,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="resource_list_end",
+            payload={"count": count, "duration_ms": duration_ms},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_resource_list_error(
+        self,
+        *,
+        error_type: str,
+        error_body: str,
+        duration_ms: int,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="resource_list_error",
+            payload={"error_type": error_type, "error_body": error_body, "duration_ms": duration_ms},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_prompt_get_start(
+        self,
+        *,
+        name: str,
+        params: Mapping[str, Any] | None,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="prompt_get_start",
+            payload={"name": name, "params": dict(params) if params else {}},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_prompt_get_end(
+        self,
+        *,
+        name: str,
+        duration_ms: int,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="prompt_get_end",
+            payload={"name": name, "duration_ms": duration_ms},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_prompt_get_error(
+        self,
+        *,
+        name: str,
+        error_type: str,
+        error_body: str,
+        duration_ms: int,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="prompt_get_error",
+            payload={"name": name, "error_type": error_type, "error_body": error_body, "duration_ms": duration_ms},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_prompt_list_start(
+        self,
+        *,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="prompt_list_start",
+            payload={},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_prompt_list_end(
+        self,
+        *,
+        count: int,
+        duration_ms: int,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="prompt_list_end",
+            payload={"count": count, "duration_ms": duration_ms},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_prompt_list_error(
+        self,
+        *,
+        error_type: str,
+        error_body: str,
+        duration_ms: int,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="prompt_list_error",
+            payload={"error_type": error_type, "error_body": error_body, "duration_ms": duration_ms},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
     def enqueue_annotation(
         self,
         *,

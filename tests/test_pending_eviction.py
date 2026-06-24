@@ -1,8 +1,8 @@
 """Tests for the pending-call eviction logic.
 
 The pending dict bounds memory at MAX_PENDING entries; once exceeded, the
-oldest entry is evicted and a synthetic tool_call_error is emitted so the
-worker can pair the dangling tool_call_start with an end/error event.
+oldest entry is evicted and a synthetic error event is emitted so the
+worker can pair the dangling start with an end/error event.
 """
 
 from __future__ import annotations
@@ -19,19 +19,31 @@ from baton_proxy.proxy import (
 
 
 class _RecordingEmitter:
-    """Drop-in for Emitter that just collects enqueue_tool_call_error calls."""
+    """Drop-in for Emitter that collects all *_error calls keyed by kind."""
 
     def __init__(self) -> None:
         self.errors: list[dict[str, Any]] = []
 
     def enqueue_tool_call_error(self, **kwargs: Any) -> None:
-        self.errors.append(kwargs)
+        self.errors.append({"kind": "tool", **kwargs})
+
+    def enqueue_resource_read_error(self, **kwargs: Any) -> None:
+        self.errors.append({"kind": "resource_read", **kwargs})
+
+    def enqueue_resource_list_error(self, **kwargs: Any) -> None:
+        self.errors.append({"kind": "resource_list", **kwargs})
+
+    def enqueue_prompt_get_error(self, **kwargs: Any) -> None:
+        self.errors.append({"kind": "prompt_get", **kwargs})
+
+    def enqueue_prompt_list_error(self, **kwargs: Any) -> None:
+        self.errors.append({"kind": "prompt_list", **kwargs})
 
 
 def _make_pending(n: int) -> OrderedDict[Any, _PendingCall]:
     pending: OrderedDict[Any, _PendingCall] = OrderedDict()
     for i in range(n):
-        pending[i] = _PendingCall(tool_name=f"t{i}", started_ms=1000 + i, runtime_meta=None)
+        pending[i] = _PendingCall(kind="tool", subject=f"t{i}", started_ms=1000 + i, runtime_meta=None)
     return pending
 
 
@@ -50,7 +62,7 @@ def test_eviction_drops_oldest_and_emits_error() -> None:
     assert len(pending) == MAX_PENDING
 
     # Three oldest evicted (ids 0, 1, 2), in order.
-    assert [e["tool_name"] for e in emitter.errors] == ["t0", "t1", "t2"]
+    assert [e["tool_name"] for e in emitter.errors] == ["t0", "t1", "t2"]  # tool_name kwarg from enqueue_tool_call_error
     assert all(e["error_type"] == EVICTED_ERROR_TYPE for e in emitter.errors)
     assert all(e["duration_ms"] >= 0 for e in emitter.errors)
     # The evicted entries are gone; newer ones remain.
@@ -63,6 +75,18 @@ def test_eviction_survives_emitter_failure() -> None:
 
     class _BrokenEmitter:
         def enqueue_tool_call_error(self, **_kwargs: Any) -> None:
+            raise RuntimeError("emit dead")
+
+        def enqueue_resource_read_error(self, **_kwargs: Any) -> None:
+            raise RuntimeError("emit dead")
+
+        def enqueue_resource_list_error(self, **_kwargs: Any) -> None:
+            raise RuntimeError("emit dead")
+
+        def enqueue_prompt_get_error(self, **_kwargs: Any) -> None:
+            raise RuntimeError("emit dead")
+
+        def enqueue_prompt_list_error(self, **_kwargs: Any) -> None:
             raise RuntimeError("emit dead")
 
     pending = _make_pending(MAX_PENDING + 2)
