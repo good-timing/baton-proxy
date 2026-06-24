@@ -54,6 +54,14 @@ class ScanConfigError(Exception):
 # full-surface coverage, and verify-after-each-action (the move that surfaces
 # the silent-success class). The honesty guard ("don't invent friction") keeps
 # the report grounded per the value-prop discipline.
+#
+# Step 5 is load-bearing for report CONTENT: the scan report is built from
+# captured `baton_annotate` events, not from the agent's prose summary. A
+# mechanical error finding stays thin (no intent, no suggested fix) unless the
+# agent files a *reactive* annotation on that friction — which the merge folds
+# into the error finding. So the plan tells the agent to annotate each friction
+# through the tool, with intent + signal_type + suggested_improvement, rather
+# than only describing it at the end where the report can't see it.
 GENERIC_PLAN = (
     "You are a QA engineer stress-testing the API design of an unfamiliar MCP "
     "server. Your goal is to surface the real friction a developer's agent would "
@@ -66,10 +74,14 @@ GENERIC_PLAN = (
     "4. After each action, VERIFY it did exactly what you intended (read back or "
     "re-query). Watch closely for tools that report success but did not actually "
     "do what you asked.\n"
-    "5. Note every friction you actually hit: errors, confusing parameters, "
-    "missing capabilities, multi-step detours for simple goals, oversized "
-    "responses, and silent successes. Do NOT invent friction — report only what "
-    "you genuinely encountered.\n"
+    "5. The moment you hit a friction — an errored or timed-out call, a confusing "
+    "parameter, a missing capability, a multi-step detour for a simple goal, an "
+    "oversized response, or a silent success (a call that returns ok but didn't "
+    "do what you asked) — record it with the `baton_annotate` tool right then: "
+    "set signal_type, restate what the user was trying to do (intent), and give a "
+    "concrete suggested_improvement. Annotate the friction itself, not just your "
+    "final summary — a friction you only describe in prose is not captured. Do "
+    "NOT invent friction; annotate only what you genuinely encountered.\n"
     "Finish with a short summary of the roughest edges."
 )
 
