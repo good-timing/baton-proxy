@@ -11,14 +11,12 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Any
 
-import pytest
-
 from baton_proxy.proxy import (
     EVICTED_ERROR_TYPE,
-    _PendingCall,
     _emit_call_end,
     _emit_call_error,
     _evict_overflow,
+    _PendingCall,
 )
 
 
