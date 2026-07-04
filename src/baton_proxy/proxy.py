@@ -801,15 +801,30 @@ def _configure_logging(log_file: str | None) -> None:
             logger.warning("baton-proxy: cannot open log file %r: %s", log_file, e)
 
 
+def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
+    """Shared per-transport startup.
+
+    Reads config, configures logging, resolves the injection set, starts the
+    emitter, and builds the processor that ties them together — the identical
+    preamble both transports need. Callers do the transport-specific work (spawn
+    a subprocess / open an HTTP client) and log their own startup line.
+    """
+    config = Config.from_env()
+    _configure_logging(config.log_file)
+    injection = _Injection.create(config.event_sink, tenant_type=config.tenant_type)
+    emitter = Emitter(config)
+    emitter.start()
+    processor = MessageProcessor(emitter, injection, config.session_id)
+    return config, injection, emitter, processor
+
+
 def run_proxy(argv: list[str]) -> int:
     """Spawn the upstream stdio MCP server and pump bidirectionally.
 
     `argv` is the upstream command (e.g. `["npx", "@vendor/mcp-server"]`).
     Returns the upstream's exit code.
     """
-    config = Config.from_env()
-    _configure_logging(config.log_file)
-    injection = _Injection.create(config.event_sink, tenant_type=config.tenant_type)
+    config, injection, emitter, processor = _bootstrap()
     logger.info(
         "baton-proxy starting (session=%s, emission=%s, tools=%s, upstream=%s)",
         config.session_id,
@@ -817,9 +832,6 @@ def run_proxy(argv: list[str]) -> int:
         sorted(injection.names),
         " ".join(argv),
     )
-
-    emitter = Emitter(config)
-    emitter.start()
 
     try:
         child = subprocess.Popen(
@@ -835,8 +847,6 @@ def run_proxy(argv: list[str]) -> int:
         logger.error("baton-proxy: cannot spawn upstream %r: %s", argv, e)
         emitter.stop()
         return 127
-
-    processor = MessageProcessor(emitter, injection, config.session_id)
 
     t_in = threading.Thread(
         target=_pump_client_to_server,
@@ -891,10 +901,7 @@ def run_http_proxy(url: str) -> int:
     """
     from baton_proxy.transport_http import StreamableHttpClient
 
-    config = Config.from_env()
-    _configure_logging(config.log_file)
-    injection = _Injection.create(config.event_sink, tenant_type=config.tenant_type)
-
+    config, injection, emitter, processor = _bootstrap()
     auth_token = os.environ.get("BATON_UPSTREAM_AUTH_TOKEN")
     logger.info(
         "baton-proxy starting (session=%s, emission=%s, tools=%s, upstream=%s, transport=http, auth=%s)",
@@ -909,10 +916,6 @@ def run_http_proxy(url: str) -> int:
         "not captured; requests are serialised"
     )
 
-    emitter = Emitter(config)
-    emitter.start()
-
-    processor = MessageProcessor(emitter, injection, config.session_id)
     client = StreamableHttpClient(url, auth_token=auth_token)
 
     try:
