@@ -32,26 +32,19 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from baton_proxy import USER_AGENT as _USER_AGENT
+
 logger = logging.getLogger("baton_proxy")
 
-
-# Identify ourselves. urllib's default ``Python-urllib/X.Y`` User-Agent is
+# Identify ourselves on every POST. urllib's default ``Python-urllib/X.Y`` UA is
 # banned outright by Cloudflare's bot filter (HTTP 403, error 1010
-# "browser_signature_banned") — and hosted MCP servers commonly sit behind
-# Cloudflare (Notion does). Without a real UA the bridge would fail before it
-# ever reaches the origin's auth check, EVEN with a valid token. Verified
-# against mcp.notion.com: Python-urllib UA → 403, a named UA → 401 (reaches
-# origin). Value is filled in at import time from the package version.
-def _user_agent() -> str:
-    try:
-        from baton_proxy import __version__
+# "browser_signature_banned"), and hosted MCP servers commonly sit behind
+# Cloudflare (Notion does) — so without a named UA the bridge fails before it
+# ever reaches the origin's auth check, EVEN with a valid token. Verified against
+# mcp.notion.com: Python-urllib UA → 403, a named UA → 401 (reaches origin).
+# ``_USER_AGENT`` is the single-sourced product token (see baton_proxy.__init__),
+# so it can't drift from the emitter's sdk_version field.
 
-        return f"baton-proxy/{__version__}"
-    except Exception:
-        return "baton-proxy"
-
-
-_USER_AGENT = _user_agent()
 
 # Announce ourselves as an intermediary per RFC 9110 §7.6.3. Unlike a
 # transparent forward proxy — which preserves the client's request and adds Via

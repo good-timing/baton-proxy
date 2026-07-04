@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from baton_proxy import __version__ as _PKG_VERSION
+from baton_proxy import USER_AGENT as _SDK_VERSION
 from baton_proxy.config import Config
 from baton_proxy.scrub import Scrubber
 from baton_proxy.sinks import Sink, make_sink
@@ -41,7 +41,8 @@ logger = logging.getLogger(__name__)
 # 1000 events buys a decent buffer for typical 5-10 RPS tool-call workloads.
 _QUEUE_MAXSIZE = 1000
 
-_SDK_VERSION = f"baton-proxy/{_PKG_VERSION}"
+# Product/version token, single-sourced in baton_proxy.__init__ (imported above
+# as _SDK_VERSION) so it can't drift from the HTTP bridge's User-Agent.
 _AGENT_RUNTIME = "mcp-proxy"
 
 
@@ -255,7 +256,12 @@ class Emitter:
     ) -> None:
         self._enqueue(
             event_type="resource_read_error",
-            payload={"uri": uri, "error_type": error_type, "error_body": error_body, "duration_ms": duration_ms},
+            payload={
+                "uri": uri,
+                "error_type": error_type,
+                "error_body": error_body,
+                "duration_ms": duration_ms,
+            },
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
         )
 
@@ -293,7 +299,11 @@ class Emitter:
     ) -> None:
         self._enqueue(
             event_type="resource_list_error",
-            payload={"error_type": error_type, "error_body": error_body, "duration_ms": duration_ms},
+            payload={
+                "error_type": error_type,
+                "error_body": error_body,
+                "duration_ms": duration_ms,
+            },
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
         )
 
@@ -334,7 +344,12 @@ class Emitter:
     ) -> None:
         self._enqueue(
             event_type="prompt_get_error",
-            payload={"name": name, "error_type": error_type, "error_body": error_body, "duration_ms": duration_ms},
+            payload={
+                "name": name,
+                "error_type": error_type,
+                "error_body": error_body,
+                "duration_ms": duration_ms,
+            },
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
         )
 
@@ -372,7 +387,11 @@ class Emitter:
     ) -> None:
         self._enqueue(
             event_type="prompt_list_error",
-            payload={"error_type": error_type, "error_body": error_body, "duration_ms": duration_ms},
+            payload={
+                "error_type": error_type,
+                "error_body": error_body,
+                "duration_ms": duration_ms,
+            },
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
         )
 
