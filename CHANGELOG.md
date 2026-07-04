@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-07-04
+
+### Added
+- **HTTPS bridge** (`baton-proxy --url <url>`): wrap a remote Streamable HTTP MCP server (spec 2025-03-26), not just a local stdio subprocess. The proxy stays stdio-facing to the client and forwards each message as an HTTP POST, streaming the JSON or SSE response back. Bearer auth via `BATON_UPSTREAM_AUTH_TOKEN`; read timeout via `BATON_UPSTREAM_TIMEOUT` (default 60s); captures and echoes `Mcp-Session-Id` and pins `MCP-Protocol-Version` after the handshake; sends a named `User-Agent` + `Via` header (urllib's default UA is Cloudflare-banned on many hosted endpoints). Stdlib only — no new dependencies.
+- **Resource & prompt capture (A1)**: the proxy now emits lifecycle events for `resources/read`, `resources/list`, `prompts/get`, and `prompts/list`, alongside the existing `tools/call` capture.
+
+### Fixed
+- HTTP bridge fail-open: a 2xx upstream reply that answers nothing (empty body, `202`, or an SSE stream with no matching frame) no longer leaves the client blocked on that request; a malformed or non-object client message no longer crashes the bridge. Both now emit a synthetic error event and hand the client a JSON-RPC error rather than hanging.
+- SSE responses: only `event: message` frames are parsed as JSON-RPC — a server interleaving a keepalive/ping/custom event with a data payload no longer injects a bogus message to the client.
+- stdio: the two pump threads are serialized on stdout, so a synthesized `baton_annotate` response can no longer interleave with a real upstream response and corrupt the wire.
+- `BATON_UPSTREAM_TIMEOUT=inf`/`nan` falls back to the default instead of silently disabling the read timeout.
+- Calls still in flight at shutdown are resolved with a synthetic error, so a mid-call upstream exit no longer leaves a dangling `*_start` with no end/error.
+
+### Packaging
+- `pyproject.toml` references the `LICENSE` file instead of inline SPDX text.
+
 ## [0.2.1] — 2026-06-23
 
 ### Changed
