@@ -380,6 +380,20 @@ def _write_line(stream: Any, payload: dict[str, Any] | str) -> None:
     stream.flush()
 
 
+# stdout is the single MCP wire back to the client. The stdio transport has TWO
+# pump threads writing to it — the client pump writes synthesised injected-tool
+# responses, the server pump writes upstream responses — so their lines can
+# interleave without a lock. Route every sys.stdout write through this lock. The
+# HTTP path is single-threaded, so the lock is uncontended there.
+_stdout_lock = threading.Lock()
+
+
+def _write_stdout(payload: dict[str, Any] | str) -> None:
+    """Write one framed line to sys.stdout under the shared stdout lock."""
+    with _stdout_lock:
+        _write_line(sys.stdout, payload)
+
+
 def _write_client_error(req_id: Any, code: int, message: str) -> None:
     """Hand the client a JSON-RPC error for a request id, so it never hangs.
 
@@ -390,9 +404,8 @@ def _write_client_error(req_id: Any, code: int, message: str) -> None:
     if req_id is None:
         return
     try:
-        _write_line(
-            sys.stdout,
-            {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}},
+        _write_stdout(
+            {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
         )
     except Exception:
         logger.exception("baton-proxy: forward error to client failed")
@@ -690,7 +703,7 @@ def _pump_client_to_server(child_stdin: Any, processor: MessageProcessor) -> Non
 
         if action.respond is not None:
             try:
-                _write_line(sys.stdout, action.respond)
+                _write_stdout(action.respond)
             except Exception:
                 logger.exception("baton-proxy: forward to client failed")
             continue
@@ -712,15 +725,14 @@ def _pump_server_to_client(child_stdout: Any, processor: MessageProcessor) -> No
             msg = json.loads(line)
         except json.JSONDecodeError:
             try:
-                sys.stdout.write(line + "\n")
-                sys.stdout.flush()
+                _write_stdout(line)
             except Exception:
                 logger.exception("baton-proxy: forward to client failed")
             continue
 
         out = processor.handle_server_message(msg)
         try:
-            _write_line(sys.stdout, out)
+            _write_stdout(out)
         except Exception:
             logger.exception("baton-proxy: forward to client failed")
 
@@ -898,7 +910,7 @@ def _run_http_loop(processor: MessageProcessor, client: Any) -> int:
 
         if action.respond is not None:
             try:
-                _write_line(sys.stdout, action.respond)
+                _write_stdout(action.respond)
             except Exception:
                 logger.exception("baton-proxy: forward to client failed")
             continue
@@ -928,7 +940,7 @@ def _run_http_loop(processor: MessageProcessor, client: Any) -> int:
                 responded = True
             out = processor.handle_server_message(msg)
             try:
-                _write_line(sys.stdout, out)
+                _write_stdout(out)
             except Exception:
                 logger.exception("baton-proxy: forward to client failed")
 
