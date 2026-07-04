@@ -404,9 +404,7 @@ def _write_client_error(req_id: Any, code: int, message: str) -> None:
     if req_id is None:
         return
     try:
-        _write_stdout(
-            {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
-        )
+        _write_stdout({"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}})
     except Exception:
         logger.exception("baton-proxy: forward error to client failed")
 
@@ -424,6 +422,16 @@ class _ClientAction:
 
     respond: dict[str, Any] | None = None
     forward: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        # Enforce the "exactly one set" invariant structurally, so a future
+        # intercept branch that forgets to set forward (or sets both) fails loudly
+        # at construction rather than silently forwarding the wrong object. Both
+        # call sites are inside handle_client_message, which the transports wrap
+        # in try/except — so a violation degrades to a logged error + client
+        # error, never a dangling request.
+        if (self.respond is None) == (self.forward is None):
+            raise ValueError("_ClientAction requires exactly one of respond/forward")
 
 
 class MessageProcessor:
@@ -672,6 +680,28 @@ class MessageProcessor:
         except Exception:
             logger.exception("baton-proxy: enqueue synthetic error failed")
 
+    def drain_pending(self, error_type: str, error_body: str) -> None:
+        """Emit a synthetic *_error for every still-pending call, then clear.
+
+        Called on shutdown so an upstream that died mid-call doesn't leave
+        dangling *_start events with no matching end/error pair. Both transports
+        call this on their teardown path.
+        """
+        with self._pending_lock:
+            outstanding = list(self._pending.values())
+            self._pending.clear()
+        for call in outstanding:
+            try:
+                _emit_call_error(
+                    self._emitter,
+                    call,
+                    error_type,
+                    error_body,
+                    max(0, utc_now_ms() - call.started_ms),
+                )
+            except Exception:
+                logger.exception("baton-proxy: enqueue drain error failed")
+
 
 def _pump_client_to_server(child_stdin: Any, processor: MessageProcessor) -> None:
     """stdio client->server I/O loop. Message logic lives in the processor."""
@@ -823,6 +853,11 @@ def run_proxy(argv: list[str]) -> int:
     # sys.stdin and can't be unblocked from Python; daemon=True takes care
     # of it at process exit.
     t_out.join(timeout=2.0)
+    # The upstream is gone; any calls still in flight will never get a response.
+    # Drain them so each *_start has a matching error rather than dangling.
+    processor.drain_pending(
+        "proxy_upstream_closed", "upstream connection closed with the request in flight"
+    )
     emitter.stop()
     logger.info("baton-proxy exiting (upstream rc=%d)", rc)
     return rc
@@ -876,6 +911,12 @@ def run_http_proxy(url: str) -> int:
     try:
         rc = _run_http_loop(processor, client)
     finally:
+        # Symmetric with the stdio path: resolve any call still pending at
+        # teardown (serialisation makes this rare, but a mid-call exit is
+        # possible) so no *_start dangles.
+        processor.drain_pending(
+            "proxy_upstream_closed", "bridge shut down with the request in flight"
+        )
         emitter.stop()
     logger.info("baton-proxy exiting (http bridge rc=%d)", rc)
     return rc
@@ -915,7 +956,10 @@ def _run_http_loop(processor: MessageProcessor, client: Any) -> int:
                 logger.exception("baton-proxy: forward to client failed")
             continue
 
-        forward = action.forward or req
+        # Invariant (enforced in _ClientAction.__post_init__): respond is None
+        # here, so forward is set. No `or req` fallback — that would silently
+        # mask a processor bug by forwarding the unprocessed request.
+        forward = action.forward
         req_id = forward.get("id")
         is_notification = req_id is None
         try:
