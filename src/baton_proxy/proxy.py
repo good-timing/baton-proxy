@@ -1,21 +1,28 @@
-"""Subprocess-wrap MCP proxy.
+"""MCP proxy — stdio subprocess wrap or HTTPS bridge.
 
-Wraps a stdio MCP server as a child process. From Claude's perspective the
-proxy *is* the MCP server; from the upstream server's perspective the proxy
-is the client. This lets the proxy inject an annotation tool + instructions
-into the handshake and emit friction events without the vendor changing a
-single line of code.
+From Claude's perspective the proxy *is* the MCP server; from the upstream
+server's perspective the proxy is the client. This lets the proxy inject an
+annotation tool + instructions into the handshake and emit friction events
+without the vendor changing a single line of code.
 
-The proxy is two unidirectional pumps:
-  - client -> server : forwards stdin lines, intercepts `tools/call` for the
-                       injected annotation tool, enqueues `tool_call_start`
-                       for forwarded calls.
-  - server -> client : forwards stdout lines, modifies the `initialize` and
-                       `tools/list` responses, enqueues `tool_call_end` /
-                       `tool_call_error` based on the response.
+Two upstream transports, one shared message layer:
+  - **stdio** (`run_proxy`): wraps a stdio MCP server as a child process; two
+    threads pump client<->server byte streams.
+  - **HTTPS bridge** (`run_http_proxy`): stays stdio-facing to Claude but
+    forwards each client message as an HTTP POST to a Streamable-HTTP upstream
+    (spec 2025-03-26), streaming the JSON/SSE response back to stdout.
+
+The interception / emission / correlation logic lives in `MessageProcessor`,
+which never touches a pipe — so both transports capture identically and a
+change to a signal type or injection rule moves them together. The processor
+decides, per client message: intercept-and-synthesise (injected tool) or
+forward; and per server message: correlate to a pending start, emit the
+matching end/error, and inject into `initialize` / `tools/list` responses.
 
 Errors anywhere in the proxy MUST NOT propagate to either pipe. Fail-open
-means: if instrumentation breaks, MCP traffic still flows.
+means: if instrumentation breaks, MCP traffic still flows. For the HTTP bridge
+that extends to the network — a timed-out / dropped / rejected POST yields a
+synthetic error event + a JSON-RPC error to Claude, never a hang.
 """
 
 from __future__ import annotations
@@ -177,7 +184,10 @@ def _emit_call_end(
     """Dispatch the correct *_end event for any pending-call kind."""
     if call.kind == "tool":
         emitter.enqueue_tool_call_end(
-            tool_name=call.subject, result=result, duration_ms=duration_ms, runtime_meta=call.runtime_meta
+            tool_name=call.subject,
+            result=result,
+            duration_ms=duration_ms,
+            runtime_meta=call.runtime_meta,
         )
     elif call.kind == "resource_read":
         emitter.enqueue_resource_read_end(
@@ -209,28 +219,41 @@ def _emit_call_error(
     """Dispatch the correct *_error event for any pending-call kind."""
     if call.kind == "tool":
         emitter.enqueue_tool_call_error(
-            tool_name=call.subject, error_type=error_type, error_body=error_body,
-            duration_ms=duration_ms, runtime_meta=call.runtime_meta,
+            tool_name=call.subject,
+            error_type=error_type,
+            error_body=error_body,
+            duration_ms=duration_ms,
+            runtime_meta=call.runtime_meta,
         )
     elif call.kind == "resource_read":
         emitter.enqueue_resource_read_error(
-            uri=call.subject, error_type=error_type, error_body=error_body,
-            duration_ms=duration_ms, runtime_meta=call.runtime_meta,
+            uri=call.subject,
+            error_type=error_type,
+            error_body=error_body,
+            duration_ms=duration_ms,
+            runtime_meta=call.runtime_meta,
         )
     elif call.kind == "resource_list":
         emitter.enqueue_resource_list_error(
-            error_type=error_type, error_body=error_body,
-            duration_ms=duration_ms, runtime_meta=call.runtime_meta,
+            error_type=error_type,
+            error_body=error_body,
+            duration_ms=duration_ms,
+            runtime_meta=call.runtime_meta,
         )
     elif call.kind == "prompt_get":
         emitter.enqueue_prompt_get_error(
-            name=call.subject, error_type=error_type, error_body=error_body,
-            duration_ms=duration_ms, runtime_meta=call.runtime_meta,
+            name=call.subject,
+            error_type=error_type,
+            error_body=error_body,
+            duration_ms=duration_ms,
+            runtime_meta=call.runtime_meta,
         )
     elif call.kind == "prompt_list":
         emitter.enqueue_prompt_list_error(
-            error_type=error_type, error_body=error_body,
-            duration_ms=duration_ms, runtime_meta=call.runtime_meta,
+            error_type=error_type,
+            error_body=error_body,
+            duration_ms=duration_ms,
+            runtime_meta=call.runtime_meta,
         )
 
 
@@ -357,15 +380,270 @@ def _write_line(stream: Any, payload: dict[str, Any] | str) -> None:
     stream.flush()
 
 
-def _pump_client_to_server(
-    child_stdin: Any,
-    pending: OrderedDict[Any, _PendingCall],
-    pending_lock: threading.Lock,
-    emitter: Emitter,
-    injection: _Injection,
-    session_id: str,
-) -> None:
-    """Forward client->server, with injection interception + start emission."""
+@dataclass
+class _ClientAction:
+    """What a transport should do with one client->server message.
+
+    Exactly one field is set. ``respond`` means the proxy owns this message
+    (an injected tool call) — synthesise the response back to the client and
+    do NOT forward upstream. ``forward`` is the message to hand to the upstream
+    server (unchanged from the input; returned so the transport's job is
+    uniform whichever branch fired).
+    """
+
+    respond: dict[str, Any] | None = None
+    forward: dict[str, Any] | None = None
+
+
+class MessageProcessor:
+    """Transport-independent MCP message layer.
+
+    Holds the per-process interception + emission + correlation state and
+    exposes two pure-ish handlers that never touch a pipe. Both the stdio and
+    HTTP transports feed it parsed JSON-RPC messages, so the logic that decides
+    what to intercept, what to emit, and how to pair responses lives in exactly
+    ONE place regardless of how bytes reach it. Add a signal_type or change an
+    injection rule here and both transports move together.
+
+    The handlers own the same fail-open contract as the old pumps: any
+    instrumentation error is logged and swallowed, never raised into a
+    transport, so MCP traffic keeps flowing even if capture breaks.
+    """
+
+    def __init__(self, emitter: Emitter, injection: _Injection, session_id: str) -> None:
+        self._emitter = emitter
+        self._injection = injection
+        self._session_id = session_id
+        self._pending: OrderedDict[Any, _PendingCall] = OrderedDict()
+        self._pending_lock = threading.Lock()
+
+    def _track(self, req_id: Any, call: _PendingCall) -> None:
+        """Register an in-flight call + evict overflow, under the pending lock."""
+        with self._pending_lock:
+            self._pending[req_id] = call
+            _evict_overflow(self._pending, self._emitter)
+
+    def handle_client_message(self, req: dict[str, Any]) -> _ClientAction:
+        """Intercept/emit for a client->server message; return the transport's action."""
+        method = req.get("method")
+
+        if method == "tools/call":
+            params = req.get("params", {}) or {}
+            tool_name = params.get("name")
+            if tool_name in self._injection.names:
+                # The proxy owns this tool — don't forward. For annotate
+                # calls, emit the annotation event before synthesising the
+                # response; that's the whole point of intercepting it.
+                if tool_name == ANNOTATE_TOOL_NAME:
+                    args = params.get("arguments", {}) or {}
+                    ann_meta = (
+                        params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+                    )
+                    ctx = args.get("context") if isinstance(args.get("context"), dict) else None
+                    try:
+                        self._emitter.enqueue_annotation(
+                            signal_type=args.get("signal_type"),
+                            intent=args.get("intent"),
+                            suggested_improvement=args.get("suggested_improvement"),
+                            expected_outcome=args.get("expected_outcome"),
+                            workflow=args.get("workflow"),
+                            context=ctx,
+                            runtime_meta=ann_meta,
+                        )
+                    except Exception:
+                        logger.exception("baton-proxy: enqueue annotation failed")
+                try:
+                    response = _handle_injected_call(
+                        req,
+                        injection=self._injection,
+                        session_id=self._session_id,
+                        emitter=self._emitter,
+                    )
+                except Exception:
+                    logger.exception("baton-proxy: synthesising injected response failed")
+                    # Fail-open: a synthesis bug must still return *something*
+                    # to the client rather than dangle the request id.
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": req.get("id"),
+                        "result": {
+                            "content": [{"type": "text", "text": "baton_annotate recorded"}]
+                        },
+                    }
+                return _ClientAction(respond=response)
+
+            # Real tool call — emit start FIRST, then track for end/error.
+            # Order matters: if enqueue throws we MUST NOT have a pending
+            # entry, otherwise the eventual response would emit an orphan
+            # tool_call_end the worker can't pair with a start. (Forwarding
+            # to the upstream happens after this returns, so there's no risk
+            # of the response arriving before we add to pending on success.)
+            req_id = req.get("id")
+            # TODO: MCP also permits a top-level `_meta` on the request envelope;
+            # we currently only capture `params._meta`. Revisit if a vendor runtime
+            # surfaces correlation ids at the request level instead.
+            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            safe_tool_name = str(tool_name) if tool_name else ""
+            try:
+                self._emitter.enqueue_tool_call_start(
+                    tool_name=safe_tool_name,
+                    params=params.get("arguments"),
+                    runtime_meta=runtime_meta,
+                )
+            except Exception:
+                logger.exception("baton-proxy: enqueue tool_call_start failed")
+            else:
+                self._track(
+                    req_id,
+                    _PendingCall(
+                        kind="tool",
+                        subject=safe_tool_name,
+                        started_ms=utc_now_ms(),
+                        runtime_meta=runtime_meta,
+                    ),
+                )
+
+        elif method == "resources/read":
+            params = req.get("params", {}) or {}
+            uri = str(params.get("uri") or "")
+            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            req_id = req.get("id")
+            try:
+                self._emitter.enqueue_resource_read_start(
+                    uri=uri,
+                    params={k: v for k, v in params.items() if k != "_meta"} or None,
+                    runtime_meta=runtime_meta,
+                )
+            except Exception:
+                logger.exception("baton-proxy: enqueue resource_read_start failed")
+            else:
+                self._track(
+                    req_id,
+                    _PendingCall(
+                        kind="resource_read",
+                        subject=uri,
+                        started_ms=utc_now_ms(),
+                        runtime_meta=runtime_meta,
+                    ),
+                )
+
+        elif method == "resources/list":
+            params = req.get("params", {}) or {}
+            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            req_id = req.get("id")
+            try:
+                self._emitter.enqueue_resource_list_start(runtime_meta=runtime_meta)
+            except Exception:
+                logger.exception("baton-proxy: enqueue resource_list_start failed")
+            else:
+                self._track(
+                    req_id,
+                    _PendingCall(
+                        kind="resource_list",
+                        subject="",
+                        started_ms=utc_now_ms(),
+                        runtime_meta=runtime_meta,
+                    ),
+                )
+
+        elif method == "prompts/get":
+            params = req.get("params", {}) or {}
+            name = str(params.get("name") or "")
+            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            req_id = req.get("id")
+            try:
+                self._emitter.enqueue_prompt_get_start(
+                    name=name,
+                    params=params.get("arguments"),
+                    runtime_meta=runtime_meta,
+                )
+            except Exception:
+                logger.exception("baton-proxy: enqueue prompt_get_start failed")
+            else:
+                self._track(
+                    req_id,
+                    _PendingCall(
+                        kind="prompt_get",
+                        subject=name,
+                        started_ms=utc_now_ms(),
+                        runtime_meta=runtime_meta,
+                    ),
+                )
+
+        elif method == "prompts/list":
+            params = req.get("params", {}) or {}
+            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            req_id = req.get("id")
+            try:
+                self._emitter.enqueue_prompt_list_start(runtime_meta=runtime_meta)
+            except Exception:
+                logger.exception("baton-proxy: enqueue prompt_list_start failed")
+            else:
+                self._track(
+                    req_id,
+                    _PendingCall(
+                        kind="prompt_list",
+                        subject="",
+                        started_ms=utc_now_ms(),
+                        runtime_meta=runtime_meta,
+                    ),
+                )
+
+        return _ClientAction(forward=req)
+
+    def handle_server_message(self, msg: dict[str, Any]) -> dict[str, Any]:
+        """Correlate/emit for a server->client message; return the message to write out."""
+        # Correlate this response to a pending call (by id) and emit the
+        # matching end/error event.
+        msg_id = msg.get("id")
+        if msg_id is not None:
+            with self._pending_lock:
+                call = self._pending.pop(msg_id, None)
+            if call is not None:
+                try:
+                    duration_ms = max(0, utc_now_ms() - call.started_ms)
+                    if "error" in msg:
+                        err = msg["error"] or {}
+                        _emit_call_error(
+                            self._emitter,
+                            call,
+                            str(err.get("code", "")) or "unknown",
+                            str(err.get("message", "")),
+                            duration_ms,
+                        )
+                    else:
+                        _emit_call_end(self._emitter, call, msg.get("result"), duration_ms)
+                except Exception:
+                    logger.exception("baton-proxy: enqueue end/error failed")
+
+        return _inject_into_response(msg, self._injection)
+
+    def synthesize_pending_error(self, req_id: Any, error_type: str, error_body: str) -> None:
+        """Emit a synthetic *_error for a tracked call the upstream never answered.
+
+        Used by the HTTP transport's fail-open path: when a POST times out or the
+        connection drops mid-request, the pending start would otherwise dangle
+        with no end/error pair. Pop it and emit the matching error so the wire
+        stream stays well-formed. No-op if the id isn't tracked.
+        """
+        with self._pending_lock:
+            call = self._pending.pop(req_id, None)
+        if call is None:
+            return
+        try:
+            _emit_call_error(
+                self._emitter,
+                call,
+                error_type,
+                error_body,
+                max(0, utc_now_ms() - call.started_ms),
+            )
+        except Exception:
+            logger.exception("baton-proxy: enqueue synthetic error failed")
+
+
+def _pump_client_to_server(child_stdin: Any, processor: MessageProcessor) -> None:
+    """stdio client->server I/O loop. Message logic lives in the processor."""
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -380,174 +658,23 @@ def _pump_client_to_server(
                 logger.exception("baton-proxy: forward to upstream failed")
             continue
 
-        method = req.get("method")
-
-        if method == "tools/call":
-            params = req.get("params", {}) or {}
-            tool_name = params.get("name")
-            if tool_name in injection.names:
-                # The proxy owns this tool — don't forward. For annotate
-                # calls, emit the annotation event before synthesising the
-                # response; that's the whole point of intercepting it.
-                if tool_name == ANNOTATE_TOOL_NAME:
-                    args = params.get("arguments", {}) or {}
-                    ann_meta = (
-                        params.get("_meta") if isinstance(params.get("_meta"), dict) else None
-                    )
-                    ctx = args.get("context") if isinstance(args.get("context"), dict) else None
-                    try:
-                        emitter.enqueue_annotation(
-                            signal_type=args.get("signal_type"),
-                            intent=args.get("intent"),
-                            suggested_improvement=args.get("suggested_improvement"),
-                            expected_outcome=args.get("expected_outcome"),
-                            workflow=args.get("workflow"),
-                            context=ctx,
-                            runtime_meta=ann_meta,
-                        )
-                    except Exception:
-                        logger.exception("baton-proxy: enqueue annotation failed")
-                try:
-                    _write_line(
-                        sys.stdout,
-                        _handle_injected_call(
-                            req,
-                            injection=injection,
-                            session_id=session_id,
-                            emitter=emitter,
-                        ),
-                    )
-                except Exception:
-                    logger.exception("baton-proxy: synthesising injected response failed")
-                continue
-
-            # Real tool call — emit start FIRST, then track for end/error.
-            # Order matters: if enqueue throws we MUST NOT have a pending
-            # entry, otherwise the eventual response would emit an orphan
-            # tool_call_end the worker can't pair with a start. (Forwarding
-            # to the upstream happens after this block, so there's no risk
-            # of the response arriving before we add to pending on success.)
-            req_id = req.get("id")
-            # TODO: MCP also permits a top-level `_meta` on the request envelope;
-            # we currently only capture `params._meta`. Revisit if a vendor runtime
-            # surfaces correlation ids at the request level instead.
-            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
-            safe_tool_name = str(tool_name) if tool_name else ""
+        action = processor.handle_client_message(req)
+        if action.respond is not None:
             try:
-                emitter.enqueue_tool_call_start(
-                    tool_name=safe_tool_name,
-                    params=params.get("arguments"),
-                    runtime_meta=runtime_meta,
-                )
+                _write_line(sys.stdout, action.respond)
             except Exception:
-                logger.exception("baton-proxy: enqueue tool_call_start failed")
-            else:
-                with pending_lock:
-                    pending[req_id] = _PendingCall(
-                        kind="tool",
-                        subject=safe_tool_name,
-                        started_ms=utc_now_ms(),
-                        runtime_meta=runtime_meta,
-                    )
-                    _evict_overflow(pending, emitter)
-
-        elif method == "resources/read":
-            params = req.get("params", {}) or {}
-            uri = str(params.get("uri") or "")
-            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
-            req_id = req.get("id")
-            try:
-                emitter.enqueue_resource_read_start(
-                    uri=uri,
-                    params={k: v for k, v in params.items() if k != "_meta"} or None,
-                    runtime_meta=runtime_meta,
-                )
-            except Exception:
-                logger.exception("baton-proxy: enqueue resource_read_start failed")
-            else:
-                with pending_lock:
-                    pending[req_id] = _PendingCall(
-                        kind="resource_read",
-                        subject=uri,
-                        started_ms=utc_now_ms(),
-                        runtime_meta=runtime_meta,
-                    )
-                    _evict_overflow(pending, emitter)
-
-        elif method == "resources/list":
-            params = req.get("params", {}) or {}
-            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
-            req_id = req.get("id")
-            try:
-                emitter.enqueue_resource_list_start(runtime_meta=runtime_meta)
-            except Exception:
-                logger.exception("baton-proxy: enqueue resource_list_start failed")
-            else:
-                with pending_lock:
-                    pending[req_id] = _PendingCall(
-                        kind="resource_list",
-                        subject="",
-                        started_ms=utc_now_ms(),
-                        runtime_meta=runtime_meta,
-                    )
-                    _evict_overflow(pending, emitter)
-
-        elif method == "prompts/get":
-            params = req.get("params", {}) or {}
-            name = str(params.get("name") or "")
-            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
-            req_id = req.get("id")
-            try:
-                emitter.enqueue_prompt_get_start(
-                    name=name,
-                    params=params.get("arguments"),
-                    runtime_meta=runtime_meta,
-                )
-            except Exception:
-                logger.exception("baton-proxy: enqueue prompt_get_start failed")
-            else:
-                with pending_lock:
-                    pending[req_id] = _PendingCall(
-                        kind="prompt_get",
-                        subject=name,
-                        started_ms=utc_now_ms(),
-                        runtime_meta=runtime_meta,
-                    )
-                    _evict_overflow(pending, emitter)
-
-        elif method == "prompts/list":
-            params = req.get("params", {}) or {}
-            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
-            req_id = req.get("id")
-            try:
-                emitter.enqueue_prompt_list_start(runtime_meta=runtime_meta)
-            except Exception:
-                logger.exception("baton-proxy: enqueue prompt_list_start failed")
-            else:
-                with pending_lock:
-                    pending[req_id] = _PendingCall(
-                        kind="prompt_list",
-                        subject="",
-                        started_ms=utc_now_ms(),
-                        runtime_meta=runtime_meta,
-                    )
-                    _evict_overflow(pending, emitter)
+                logger.exception("baton-proxy: forward to client failed")
+            continue
 
         try:
-            child_stdin.write(json.dumps(req) + "\n")
+            child_stdin.write(json.dumps(action.forward) + "\n")
             child_stdin.flush()
         except Exception:
             logger.exception("baton-proxy: forward to upstream failed")
 
 
-def _pump_server_to_client(
-    child_stdout: Any,
-    pending: OrderedDict[Any, _PendingCall],
-    pending_lock: threading.Lock,
-    emitter: Emitter,
-    injection: _Injection,
-) -> None:
-    """Forward server->client, with response modification + end/error emission."""
+def _pump_server_to_client(child_stdout: Any, processor: MessageProcessor) -> None:
+    """stdio server->client I/O loop. Message logic lives in the processor."""
     for line in child_stdout:
         line = line.strip()
         if not line:
@@ -562,33 +689,9 @@ def _pump_server_to_client(
                 logger.exception("baton-proxy: forward to client failed")
             continue
 
-        # Correlate this response to a pending tool call (by id) and emit
-        # the matching end/error event.
-        msg_id = msg.get("id")
-        if msg_id is not None:
-            call: _PendingCall | None = None
-            with pending_lock:
-                call = pending.pop(msg_id, None)
-            if call is not None:
-                try:
-                    duration_ms = max(0, utc_now_ms() - call.started_ms)
-                    if "error" in msg:
-                        err = msg["error"] or {}
-                        _emit_call_error(
-                            emitter,
-                            call,
-                            str(err.get("code", "")) or "unknown",
-                            str(err.get("message", "")),
-                            duration_ms,
-                        )
-                    else:
-                        _emit_call_end(emitter, call, msg.get("result"), duration_ms)
-                except Exception:
-                    logger.exception("baton-proxy: enqueue end/error failed")
-
-        modified = _inject_into_response(msg, injection)
+        out = processor.handle_server_message(msg)
         try:
-            _write_line(sys.stdout, modified)
+            _write_line(sys.stdout, out)
         except Exception:
             logger.exception("baton-proxy: forward to client failed")
 
@@ -621,7 +724,7 @@ def _configure_logging(log_file: str | None) -> None:
 
 
 def run_proxy(argv: list[str]) -> int:
-    """Spawn the upstream MCP server and pump bidirectionally.
+    """Spawn the upstream stdio MCP server and pump bidirectionally.
 
     `argv` is the upstream command (e.g. `["npx", "@vendor/mcp-server"]`).
     Returns the upstream's exit code.
@@ -655,18 +758,17 @@ def run_proxy(argv: list[str]) -> int:
         emitter.stop()
         return 127
 
-    pending: OrderedDict[Any, _PendingCall] = OrderedDict()
-    pending_lock = threading.Lock()
+    processor = MessageProcessor(emitter, injection, config.session_id)
 
     t_in = threading.Thread(
         target=_pump_client_to_server,
-        args=(child.stdin, pending, pending_lock, emitter, injection, config.session_id),
+        args=(child.stdin, processor),
         name="baton-proxy-in",
         daemon=True,
     )
     t_out = threading.Thread(
         target=_pump_server_to_client,
-        args=(child.stdout, pending, pending_lock, emitter, injection),
+        args=(child.stdout, processor),
         name="baton-proxy-out",
         daemon=True,
     )
@@ -685,6 +787,122 @@ def run_proxy(argv: list[str]) -> int:
     return rc
 
 
+def run_http_proxy(url: str) -> int:
+    """Bridge a stdio-facing Claude client to an HTTPS Streamable-HTTP upstream.
+
+    The proxy stays stdio-facing to Claude (reads JSON-RPC from stdin, writes to
+    stdout) but forwards each client message as an HTTP POST to ``url`` per the
+    MCP Streamable HTTP transport (spec 2025-03-26), and streams the response
+    (JSON body or SSE) back to stdout. The message layer (injection, emission,
+    correlation) is shared with the stdio path via ``MessageProcessor``.
+
+    v0 scope (logged at startup): the single POST-driven loop handles the
+    client-initiated request/response case only. It does NOT open the standing
+    GET SSE channel, so server-*initiated* messages (sampling, elicitation,
+    server notifications) are not captured; and requests are serialised (no
+    duplex pipelining). Both are irrelevant to the request/response tool-call
+    MCP servers this bridge targets first.
+
+    Returns 0 on clean shutdown (stdin EOF), 1 if the upstream is unreachable
+    at startup.
+    """
+    from baton_proxy.transport_http import StreamableHttpClient
+
+    config = Config.from_env()
+    _configure_logging(config.log_file)
+    injection = _Injection.create(config.event_sink, tenant_type=config.tenant_type)
+
+    auth_token = os.environ.get("BATON_UPSTREAM_AUTH_TOKEN")
+    logger.info(
+        "baton-proxy starting (session=%s, emission=%s, tools=%s, upstream=%s, transport=http, auth=%s)",
+        config.session_id,
+        "on" if config.emission_enabled else "off",
+        sorted(injection.names),
+        url,
+        "bearer" if auth_token else "none",
+    )
+    logger.info(
+        "baton-proxy http bridge v0: server-initiated messages (standing GET SSE) "
+        "not captured; requests are serialised"
+    )
+
+    emitter = Emitter(config)
+    emitter.start()
+
+    processor = MessageProcessor(emitter, injection, config.session_id)
+    client = StreamableHttpClient(url, auth_token=auth_token)
+
+    try:
+        rc = _run_http_loop(processor, client)
+    finally:
+        emitter.stop()
+    logger.info("baton-proxy exiting (http bridge rc=%d)", rc)
+    return rc
+
+
+def _run_http_loop(processor: MessageProcessor, client: Any) -> int:
+    """Read stdin → POST upstream → write responses to stdout. Fail-open throughout."""
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError:
+            # Non-JSON on the wire is pathological for an HTTP bridge (there is
+            # no raw byte channel to an HTTP endpoint). Drop with a log rather
+            # than POST garbage; matches the stdio path's best-effort framing.
+            logger.warning("baton-proxy: dropping non-JSON client line on http bridge")
+            continue
+
+        action = processor.handle_client_message(req)
+        if action.respond is not None:
+            try:
+                _write_line(sys.stdout, action.respond)
+            except Exception:
+                logger.exception("baton-proxy: forward to client failed")
+            continue
+
+        forward = action.forward or req
+        req_id = forward.get("id")
+        is_notification = req_id is None
+        try:
+            responses = client.post(forward)
+        except Exception as e:
+            # Fail-open: a network timeout / drop / non-2xx must not hang Claude
+            # or kill the loop. Emit a synthetic error for the dangling start
+            # (if this was a tracked call) and hand Claude a JSON-RPC error so
+            # it gets a result instead of waiting forever.
+            logger.warning("baton-proxy: upstream POST failed: %s", e)
+            if not is_notification:
+                processor.synthesize_pending_error(req_id, "proxy_upstream_unreachable", str(e))
+                try:
+                    _write_line(
+                        sys.stdout,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {
+                                "code": -32001,
+                                "message": f"baton-proxy: upstream request failed: {e}",
+                            },
+                        },
+                    )
+                except Exception:
+                    logger.exception("baton-proxy: forward error to client failed")
+            continue
+
+        # Notifications get a 202/no-body; nothing to correlate or write back.
+        for msg in responses:
+            out = processor.handle_server_message(msg)
+            try:
+                _write_line(sys.stdout, out)
+            except Exception:
+                logger.exception("baton-proxy: forward to client failed")
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -700,9 +918,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="baton-proxy",
         description=(
-            "Subprocess-wrap MCP proxy. Wraps a stdio MCP server, injects an "
-            "annotation tool into the handshake, and emits friction events to "
-            "baton-console."
+            "MCP proxy. Wraps a stdio MCP server (subprocess) OR bridges to an "
+            "HTTPS Streamable-HTTP MCP server (--url), injects an annotation "
+            "tool into the handshake, and emits friction events to baton-console."
+        ),
+    )
+    parser.add_argument(
+        "--url",
+        default=None,
+        help=(
+            "Upstream MCP server URL for the HTTPS bridge (Streamable HTTP "
+            "transport). Mutually exclusive with the `-- <command>` stdio form. "
+            "Auth via BATON_UPSTREAM_AUTH_TOKEN (sent as `Authorization: Bearer`)."
         ),
     )
     parser.add_argument(
@@ -715,8 +942,16 @@ def main(argv: list[str] | None = None) -> int:
     upstream = list(args.upstream or [])
     if upstream and upstream[0] == "--":
         upstream = upstream[1:]
+
+    if args.url:
+        if upstream:
+            parser.error("--url and the `-- <command>` stdio form are mutually exclusive")
+        return run_http_proxy(args.url)
+
     if not upstream:
-        parser.error("upstream command required, after `--`")
+        parser.error(
+            "upstream command required (after `--`), or pass --url <url> for the HTTP bridge"
+        )
 
     return run_proxy(upstream)
 
