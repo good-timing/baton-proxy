@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import urllib.error
 import urllib.request
@@ -190,7 +191,14 @@ def _env_timeout() -> float:
     except ValueError:
         logger.warning("baton-proxy: bad BATON_UPSTREAM_TIMEOUT %r, using default", raw)
         return _DEFAULT_TIMEOUT_S
-    return val if val > 0 else _DEFAULT_TIMEOUT_S
+    # Reject non-finite (inf/nan): urlopen(timeout=inf) blocks forever, which
+    # would silently defeat the fail-open guarantee the timeout exists for.
+    if not math.isfinite(val) or val <= 0:
+        logger.warning(
+            "baton-proxy: non-positive/non-finite BATON_UPSTREAM_TIMEOUT %r, using default", raw
+        )
+        return _DEFAULT_TIMEOUT_S
+    return val
 
 
 def _safe_read_snippet(resp: Any, limit: int = 500) -> str:
@@ -231,12 +239,23 @@ def _parse_sse(resp: Any) -> list[dict[str, Any]]:
     """
     messages: list[dict[str, Any]] = []
     data_lines: list[str] = []
+    # SSE default event type when no `event:` field is present is "message".
+    event_type = "message"
 
     def flush() -> None:
+        nonlocal event_type
+        current = event_type
+        event_type = "message"  # reset for the next frame, per the SSE spec
         if not data_lines:
             return
         payload = "\n".join(data_lines)
         data_lines.clear()
+        # Only `message` events carry JSON-RPC per the MCP Streamable HTTP
+        # transport. A server may interleave keepalive/ping/custom event types
+        # (with a data payload) on the same stream; parsing those as JSON-RPC
+        # would inject a bogus message to the client — skip them.
+        if current != "message":
+            return
         try:
             parsed = json.loads(payload)
         except ValueError:
@@ -245,7 +264,7 @@ def _parse_sse(resp: Any) -> list[dict[str, Any]]:
         messages.extend(_normalize(parsed))
 
     for raw_line in resp:
-        line = raw_line.decode("utf-8", "replace").rstrip("\n").rstrip("\r")
+        line = raw_line.decode("utf-8", "replace").rstrip("\r\n")
         if line == "":
             # Blank line = end of one event; flush the accumulated data.
             flush()
@@ -254,10 +273,13 @@ def _parse_sse(resp: Any) -> list[dict[str, Any]]:
             # SSE comment / keep-alive; ignore.
             continue
         field, _, value = line.partition(":")
+        # A single leading space after the colon is stripped per the SSE spec.
+        value = value[1:] if value.startswith(" ") else value
         if field == "data":
-            # A single leading space after the colon is stripped per spec.
-            data_lines.append(value[1:] if value.startswith(" ") else value)
-        # Other fields (event, id, retry) are irrelevant to JSON-RPC payloads.
+            data_lines.append(value)
+        elif field == "event":
+            event_type = value or "message"
+        # Other fields (id, retry) are irrelevant to JSON-RPC payloads.
     # Flush a trailing frame not terminated by a blank line.
     flush()
     return messages

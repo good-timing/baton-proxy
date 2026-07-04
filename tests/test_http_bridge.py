@@ -529,3 +529,48 @@ def test_malformed_message_does_not_kill_the_bridge(http_server: str) -> None:
     echo = next((m for m in stdout_msgs if m.get("id") == 51), None)
     assert echo is not None, "bridge died on the malformed message — later call never answered"
     assert echo["result"]["content"][0]["text"] == "Echo: still alive"
+
+
+# --------------------------------------------------------------------------- #
+# Transport-client unit tests — SSE parsing + timeout resolution              #
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_sse_skips_non_message_events() -> None:
+    """Only event:message frames are JSON-RPC; keepalive/ping data is ignored."""
+    from baton_proxy.transport_http import _parse_sse
+
+    raw = [
+        b"event: ping\n",
+        b'data: {"keepalive": true}\n',
+        b"\n",
+        b"event: message\n",
+        b'data: {"jsonrpc": "2.0", "id": 1, "result": {}}\n',
+        b"\n",
+    ]
+    msgs = _parse_sse(iter(raw))
+    assert len(msgs) == 1, f"ping frame leaked through: {msgs}"
+    assert msgs[0]["id"] == 1
+
+
+def test_parse_sse_treats_eventless_data_as_message() -> None:
+    """A data frame with no event: field defaults to the 'message' type (SSE spec)."""
+    from baton_proxy.transport_http import _parse_sse
+
+    raw = [b'data: {"jsonrpc": "2.0", "id": 2, "result": {}}\n', b"\n"]
+    msgs = _parse_sse(iter(raw))
+    assert len(msgs) == 1 and msgs[0]["id"] == 2
+
+
+def test_env_timeout_rejects_non_finite(monkeypatch: Any) -> None:
+    """inf/nan must fall back to the default — urlopen(timeout=inf) blocks forever."""
+    from baton_proxy.transport_http import _DEFAULT_TIMEOUT_S, _env_timeout
+
+    monkeypatch.setenv("BATON_UPSTREAM_TIMEOUT", "inf")
+    assert _env_timeout() == _DEFAULT_TIMEOUT_S
+    monkeypatch.setenv("BATON_UPSTREAM_TIMEOUT", "nan")
+    assert _env_timeout() == _DEFAULT_TIMEOUT_S
+    monkeypatch.setenv("BATON_UPSTREAM_TIMEOUT", "-3")
+    assert _env_timeout() == _DEFAULT_TIMEOUT_S
+    monkeypatch.setenv("BATON_UPSTREAM_TIMEOUT", "5")
+    assert _env_timeout() == 5.0
