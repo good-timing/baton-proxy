@@ -380,6 +380,24 @@ def _write_line(stream: Any, payload: dict[str, Any] | str) -> None:
     stream.flush()
 
 
+def _write_client_error(req_id: Any, code: int, message: str) -> None:
+    """Hand the client a JSON-RPC error for a request id, so it never hangs.
+
+    No-op for notifications (``req_id is None``) — those get no response by
+    definition. Swallows write errors (fail-open: a broken stdout must not
+    take down the loop).
+    """
+    if req_id is None:
+        return
+    try:
+        _write_line(
+            sys.stdout,
+            {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}},
+        )
+    except Exception:
+        logger.exception("baton-proxy: forward error to client failed")
+
+
 @dataclass
 class _ClientAction:
     """What a transport should do with one client->server message.
@@ -658,7 +676,18 @@ def _pump_client_to_server(child_stdin: Any, processor: MessageProcessor) -> Non
                 logger.exception("baton-proxy: forward to upstream failed")
             continue
 
-        action = processor.handle_client_message(req)
+        # Fail-open: a bug processing one message must not kill this pump thread
+        # (which would silently stop all capture). Log, error the client so it
+        # doesn't hang, move on.
+        try:
+            action = processor.handle_client_message(req)
+        except Exception:
+            logger.exception("baton-proxy: handle_client_message failed")
+            _write_client_error(
+                req.get("id"), -32603, "baton-proxy: internal error processing the request"
+            )
+            continue
+
         if action.respond is not None:
             try:
                 _write_line(sys.stdout, action.respond)
@@ -855,7 +884,18 @@ def _run_http_loop(processor: MessageProcessor, client: Any) -> int:
             logger.warning("baton-proxy: dropping non-JSON client line on http bridge")
             continue
 
-        action = processor.handle_client_message(req)
+        # Fail-open: a bug processing one message must never propagate out and
+        # kill the whole bridge process (unlike the stdio path, this loop runs
+        # on the main thread). Log, error the client so it doesn't hang, move on.
+        try:
+            action = processor.handle_client_message(req)
+        except Exception:
+            logger.exception("baton-proxy: handle_client_message failed")
+            _write_client_error(
+                req.get("id"), -32603, "baton-proxy: internal error processing the request"
+            )
+            continue
+
         if action.respond is not None:
             try:
                 _write_line(sys.stdout, action.respond)
@@ -875,30 +915,35 @@ def _run_http_loop(processor: MessageProcessor, client: Any) -> int:
             # it gets a result instead of waiting forever.
             logger.warning("baton-proxy: upstream POST failed: %s", e)
             if not is_notification:
-                processor.synthesize_pending_error(req_id, "proxy_upstream_unreachable", str(e))
-                try:
-                    _write_line(
-                        sys.stdout,
-                        {
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "error": {
-                                "code": -32001,
-                                "message": f"baton-proxy: upstream request failed: {e}",
-                            },
-                        },
-                    )
-                except Exception:
-                    logger.exception("baton-proxy: forward error to client failed")
+                err = str(e)
+                processor.synthesize_pending_error(req_id, "proxy_upstream_unreachable", err)
+                _write_client_error(req_id, -32001, f"baton-proxy: upstream request failed: {err}")
             continue
 
-        # Notifications get a 202/no-body; nothing to correlate or write back.
+        # Write every returned message; track whether one actually answered this
+        # request's id.
+        responded = False
         for msg in responses:
+            if isinstance(msg, dict) and msg.get("id") == req_id:
+                responded = True
             out = processor.handle_server_message(msg)
             try:
                 _write_line(sys.stdout, out)
             except Exception:
                 logger.exception("baton-proxy: forward to client failed")
+
+        # The upstream accepted the request (2xx) but returned nothing that
+        # answers it — an empty 200 body, a 202, or an SSE stream with no
+        # matching frame. Without this, the client blocks forever on this id and
+        # the pending start dangles. Resolve both.
+        if not is_notification and not responded:
+            logger.warning("baton-proxy: upstream returned no response for id=%r", req_id)
+            processor.synthesize_pending_error(
+                req_id, "proxy_no_response", "upstream returned no response for this request"
+            )
+            _write_client_error(
+                req_id, -32001, "baton-proxy: upstream returned no response for this request"
+            )
 
     return 0
 

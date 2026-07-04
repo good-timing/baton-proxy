@@ -474,3 +474,58 @@ def test_slow_upstream_read_timeout_fails_open(http_server: str) -> None:
     assert tool_err is not None, "no JSON-RPC error returned for the timed-out call"
     synth = _of(events, "tool_call_error")
     assert any(e["payload"].get("error_type") == "proxy_upstream_unreachable" for e in synth)
+
+
+def test_accepted_but_no_response_does_not_hang_client(http_server: str) -> None:
+    """A 2xx upstream response that carries no answer must not deadlock the client.
+
+    The `noresponse` tool makes the fixture return 202 (no body) for a request
+    that carried an id. Without handling, the client blocks forever on that id
+    and the pending start dangles. The bridge must instead hand back a JSON-RPC
+    error and resolve the pending entry.
+    """
+    reqs = [
+        REQUESTS[0],  # initialize
+        {
+            "jsonrpc": "2.0",
+            "id": 40,
+            "method": "tools/call",
+            "params": {"name": "noresponse", "arguments": {}},
+        },
+    ]
+    # If the client hung on id=40, _drive_proxy's 20s guard would trip.
+    stdout_msgs, events = _drive_proxy(http_server, reqs)
+
+    tool_err = next((m for m in stdout_msgs if m.get("id") == 40 and "error" in m), None)
+    assert tool_err is not None, "client got no response for an accepted-but-empty upstream reply"
+    # The dangling tool_call_start is resolved with a synthetic error.
+    synth = _of(events, "tool_call_error")
+    assert any(e["payload"].get("error_type") == "proxy_no_response" for e in synth)
+
+
+def test_malformed_message_does_not_kill_the_bridge(http_server: str) -> None:
+    """A message that makes handle_client_message raise must not down the process.
+
+    Non-dict `params` makes params.get("name") raise inside the processor. The
+    HTTP loop runs on the main thread, so an unguarded raise would exit the whole
+    bridge. The client must get an error for the bad id AND a following valid
+    call must still succeed (proving the loop survived).
+    """
+    reqs = [
+        REQUESTS[0],  # initialize
+        {"jsonrpc": "2.0", "id": 50, "method": "tools/call", "params": ["not", "a", "dict"]},
+        # A valid call AFTER the bad one — only reaches the server if the loop lived.
+        {
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "tools/call",
+            "params": {"name": "echo", "arguments": {"text": "still alive"}},
+        },
+    ]
+    stdout_msgs, _events = _drive_proxy(http_server, reqs)
+
+    bad_err = next((m for m in stdout_msgs if m.get("id") == 50 and "error" in m), None)
+    assert bad_err is not None, "no error returned for the malformed message"
+    echo = next((m for m in stdout_msgs if m.get("id") == 51), None)
+    assert echo is not None, "bridge died on the malformed message — later call never answered"
+    assert echo["result"]["content"][0]["text"] == "Echo: still alive"

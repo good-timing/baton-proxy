@@ -49,6 +49,11 @@ _SSE_METHODS = frozenset({"resources/read", "prompts/get"})
 _SLOW_TOOL = "slow"
 _SLOW_SLEEP_S = 3.0
 
+# A tools/call for this name makes the server answer a request-with-id with a
+# bare 202 (no body) — an upstream that accepts the request but returns nothing
+# that answers it. Exercises the bridge's "don't leave the client hanging" path.
+_NO_RESPONSE_TOOL = "noresponse"
+
 _SESSION_HEADER = "Mcp-Session-Id"
 
 
@@ -294,6 +299,11 @@ class _Handler(BaseHTTPRequestHandler):
         # test can't cover.
         if method == "tools/call" and (req.get("params") or {}).get("name") == _SLOW_TOOL:
             time.sleep(_SLOW_SLEEP_S)
+
+        # Accept-but-answer-nothing: 202 for a request that carried an id.
+        if method == "tools/call" and (req.get("params") or {}).get("name") == _NO_RESPONSE_TOOL:
+            self._send_status(202)
+            return
 
         result = _result_for(req)
 
