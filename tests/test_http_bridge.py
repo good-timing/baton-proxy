@@ -531,6 +531,59 @@ def test_malformed_message_does_not_kill_the_bridge(http_server: str) -> None:
     assert echo["result"]["content"][0]["text"] == "Echo: still alive"
 
 
+def test_non_object_json_line_does_not_kill_the_bridge(http_server: str) -> None:
+    """A top-level non-object JSON line (bare array/scalar) must not down the bridge.
+
+    json.loads accepts `[1,2,3]` / `42` without raising, so it slips past the
+    JSONDecodeError guard; the message layer's req.get(...) — and, before the
+    seam guard, the except path's own req.get('id') — would then raise on a
+    non-dict. Feed both a bare array and a scalar, then a valid call that only
+    lands if the loop survived.
+    """
+    # Hand-craft the input so we can inject raw non-object JSON lines.
+    raw_lines = [
+        json.dumps(REQUESTS[0]),  # initialize
+        "[1, 2, 3]",  # bare array — valid JSON, not an object
+        "42",  # bare scalar
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 61,
+                "method": "tools/call",
+                "params": {"name": "echo", "arguments": {"text": "survived"}},
+            }
+        ),
+    ]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
+    env.update(
+        {
+            "PYTHONPATH": str(REPO / "src"),
+            "BATON_VENDOR_ID": "acme",
+            "BATON_EVENT_SINK": "stderr:",
+        }
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "baton_proxy", "--url", http_server],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        stdout, _stderr = proc.communicate(
+            input="".join(line + "\n" for line in raw_lines), timeout=20
+        )
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        raise AssertionError("bridge hung on a non-object JSON line") from None
+
+    msgs = [json.loads(x) for x in stdout.splitlines() if x.strip()]
+    echo = next((m for m in msgs if m.get("id") == 61), None)
+    assert echo is not None, "bridge died on a non-object JSON line — later call never answered"
+    assert echo["result"]["content"][0]["text"] == "Echo: survived"
+
+
 # --------------------------------------------------------------------------- #
 # Transport-client unit tests — SSE parsing + timeout resolution              #
 # --------------------------------------------------------------------------- #

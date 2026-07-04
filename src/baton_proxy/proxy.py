@@ -712,6 +712,13 @@ def _pump_client_to_server(child_stdin: Any, processor: MessageProcessor) -> Non
         try:
             req = json.loads(line)
         except json.JSONDecodeError:
+            req = None
+        # Not a single JSON-RPC object: non-JSON, or valid JSON that is a bare
+        # array/scalar (json.loads accepts those without raising). Neither is a
+        # message we process — forward the raw line to the upstream (best-effort
+        # passthrough, keeps any JSON-RPC batch intact). Guarding here makes
+        # every later req.get(...) provably safe.
+        if not isinstance(req, dict):
             try:
                 child_stdin.write(line + "\n")
                 child_stdin.flush()
@@ -931,10 +938,14 @@ def _run_http_loop(processor: MessageProcessor, client: Any) -> int:
         try:
             req = json.loads(line)
         except json.JSONDecodeError:
-            # Non-JSON on the wire is pathological for an HTTP bridge (there is
-            # no raw byte channel to an HTTP endpoint). Drop with a log rather
-            # than POST garbage; matches the stdio path's best-effort framing.
-            logger.warning("baton-proxy: dropping non-JSON client line on http bridge")
+            req = None
+        # Drop anything that isn't a single JSON-RPC object: non-JSON, or valid
+        # JSON that is a bare array/scalar (json.loads accepts those without
+        # raising). There's no raw byte channel to an HTTP endpoint, so we can't
+        # forward it; drop with a log. Guarding here makes every later
+        # req.get(...) provably safe (so the except path below can't re-raise).
+        if not isinstance(req, dict):
+            logger.warning("baton-proxy: dropping non-object client line on http bridge")
             continue
 
         # Fail-open: a bug processing one message must never propagate out and
