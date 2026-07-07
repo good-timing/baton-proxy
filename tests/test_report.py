@@ -112,9 +112,7 @@ def test_should_NOT_inject_report_tool_for_customer_mode_http_only() -> None:
 def test_should_inject_report_tool_for_customer_mode_file_only() -> None:
     """File-only is the same as default install — customer mode doesn't
     change it."""
-    assert (
-        should_inject_report_tool("file:///tmp/a.jsonl", tenant_type="customer") is True
-    )
+    assert should_inject_report_tool("file:///tmp/a.jsonl", tenant_type="customer") is True
 
 
 # =============================================================================

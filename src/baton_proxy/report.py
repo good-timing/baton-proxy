@@ -813,9 +813,7 @@ def _merge_findings(
     return mechanical + standalone
 
 
-def _infer_error_tool(
-    reactive: dict[str, Any], err_by_tool: dict[str, dict[str, Any]]
-) -> str:
+def _infer_error_tool(reactive: dict[str, Any], err_by_tool: dict[str, dict[str, Any]]) -> str:
     """Recover the tool a reactive is about when it set no explicit ``tool``.
 
     The agent's annotation on an errored call routinely *names* that tool in

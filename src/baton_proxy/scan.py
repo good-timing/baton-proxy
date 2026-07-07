@@ -46,6 +46,7 @@ _BATON_PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
 class ScanConfigError(Exception):
     """A ``--config`` resolution failure carrying a user-facing message."""
 
+
 # The driver prompt for every scan — the "scan YOUR server" path. Reliability
 # on an arbitrary server comes from HOW we drive, not from a task library:
 # adversarial framing (find friction, don't just use it), full-surface

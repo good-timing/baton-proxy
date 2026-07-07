@@ -284,10 +284,16 @@ def test_prompt_get_error_emitted_for_boom_prompt(events: list[dict]) -> None:
 # --------------------------------------------------------------------------- #
 
 _A1_TYPES = {
-    "resource_list_start", "resource_list_end",
-    "resource_read_start", "resource_read_end", "resource_read_error",
-    "prompt_list_start", "prompt_list_end",
-    "prompt_get_start", "prompt_get_end", "prompt_get_error",
+    "resource_list_start",
+    "resource_list_end",
+    "resource_read_start",
+    "resource_read_end",
+    "resource_read_error",
+    "prompt_list_start",
+    "prompt_list_end",
+    "prompt_get_start",
+    "prompt_get_end",
+    "prompt_get_error",
 }
 
 
@@ -314,13 +320,18 @@ def test_annotations_emitted_with_real_intents(events: list[dict]) -> None:
     annotations = _of(events, "annotation")
     assert len(annotations) >= 4, f"expected >=4 annotations, got {len(annotations)}"
     intents = {a["payload"].get("intent") for a in annotations}
-    assert "Read a github UI resource to verify proxy captures resource_read_start/end lifecycle events in A1" in intents
-    assert "Inventory existing teams and projects in goodtiming-inc before creating a baton project." in intents
+    assert (
+        "Read a github UI resource to verify proxy captures resource_read_start/end lifecycle events in A1"
+        in intents
+    )
+    assert (
+        "Inventory existing teams and projects in goodtiming-inc before creating a baton project."
+        in intents
+    )
 
 
 def test_reactive_annotation_signal_types_present(events: list[dict]) -> None:
     reactive = [
-        e for e in _of(events, "annotation")
-        if e["payload"].get("signal_type") == "failure"
+        e for e in _of(events, "annotation") if e["payload"].get("signal_type") == "failure"
     ]
     assert len(reactive) == 2, f"expected 2 failure annotations, got {len(reactive)}"

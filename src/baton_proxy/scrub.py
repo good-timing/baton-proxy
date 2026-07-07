@@ -121,9 +121,7 @@ class Scrubber:
                 for k, v in value.items()
             }
         if isinstance(value, list):
-            return [
-                self._walk(item, depth=depth + 1, force_field=force_field) for item in value
-            ]
+            return [self._walk(item, depth=depth + 1, force_field=force_field) for item in value]
         if isinstance(value, str):
             if force_field is not None:
                 self.counts[f"field:{force_field}"] += 1
