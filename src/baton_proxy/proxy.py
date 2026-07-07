@@ -43,6 +43,7 @@ from baton_proxy._llm_text import (
     SIGNAL_TYPES,
     build_annotation_tool_description,
     build_instructions_suffix,
+    build_intent_param_description,
 )
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter, utc_now_ms
@@ -71,6 +72,20 @@ ANNOTATE_TOOL_NAME = "baton_annotate"
 # vendor production (http sink) = no report tool, the vendor's own
 # pipeline renders the report instead.
 REPORT_TOOL_NAME = "baton_session_report"
+
+# Per-tool injected intent param. Namespaced (vs a generic `intent`/`context`)
+# because: (1) the fail-open path forwards messages UNTOUCHED, so the param can
+# reach the vendor server — a generic name risks silently activating the
+# vendor's own semantics, a namespaced one at worst draws a loud unknown-param
+# error; (2) generic names collide with real tool params, punching holes in
+# capture coverage exactly where the concept is loaded; (3) the reserved name
+# makes strip-by-default safe when the registry is cold.
+INTENT_PARAM_NAME = "baton_intent"
+
+# Provenance value for intent captured via the injected param (vs a real
+# annotate-tool call). Recorded on both the tool_call_start payload and the
+# synthesised proactive annotation.
+INTENT_SOURCE_PARAM = "injected_param"
 
 
 def _build_injected_tool(tool_name: str) -> dict[str, Any]:
@@ -131,13 +146,22 @@ class _Injection:
     tools: list[dict[str, Any]]
     instructions_suffix: str
     sink_path: str | None  # path of the file sink to read for the report, if any
+    # Intent-param injection mode: "optional" | "required" | "off". Defaulted
+    # so tests that build _Injection directly keep their existing shape.
+    intent_param_mode: str = "optional"
 
     @property
     def names(self) -> set[str]:
         return {t["name"] for t in self.tools}
 
     @classmethod
-    def create(cls, event_sink_url: str | None, *, tenant_type: str = "vendor") -> _Injection:
+    def create(
+        cls,
+        event_sink_url: str | None,
+        *,
+        tenant_type: str = "vendor",
+        intent_param_mode: str = "optional",
+    ) -> _Injection:
         from baton_proxy.report import find_file_sink_path, should_inject_report_tool
 
         tools = [_build_injected_tool(ANNOTATE_TOOL_NAME)]
@@ -149,6 +173,7 @@ class _Injection:
             tools=tools,
             instructions_suffix=build_instructions_suffix(ANNOTATE_TOOL_NAME),
             sink_path=sink_path,
+            intent_param_mode=intent_param_mode,
         )
 
 
@@ -275,6 +300,41 @@ def _evict_overflow(pending: OrderedDict[Any, _PendingCall], emitter: Emitter) -
             )
         except Exception:
             logger.exception("baton-proxy: enqueue evicted error failed")
+
+
+def _inject_intent_param_into_tool(tool: Any, mode: str) -> str | None:
+    """Add the intent param to one tool's inputSchema; return its disposition.
+
+    Returns "injected" (param added), "native" (the tool already had a
+    param with our name — left untouched, per skip-if-exists), or None
+    (not a recognisable tool object; nothing recorded). Mutates the tool
+    in place. ``mode`` is "optional" or "required" — "off" is gated by
+    the caller.
+    """
+    if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+        return None
+    schema = tool.get("inputSchema")
+    if not isinstance(schema, dict):
+        schema = {"type": "object", "properties": {}}
+        tool["inputSchema"] = schema
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        props = {}
+        schema["properties"] = props
+    if INTENT_PARAM_NAME in props:
+        return "native"
+    props[INTENT_PARAM_NAME] = {
+        "type": "string",
+        "description": build_intent_param_description(),
+    }
+    if mode == "required":
+        required = schema.get("required")
+        if isinstance(required, list):
+            if INTENT_PARAM_NAME not in required:
+                required.append(INTENT_PARAM_NAME)
+        else:
+            schema["required"] = [INTENT_PARAM_NAME]
+    return "injected"
 
 
 def _inject_into_response(msg: dict[str, Any], injection: _Injection) -> dict[str, Any]:
@@ -455,6 +515,22 @@ class MessageProcessor:
         self._session_id = session_id
         self._pending: OrderedDict[Any, _PendingCall] = OrderedDict()
         self._pending_lock = threading.Lock()
+        # Intent-param registry: tool_name -> "injected" | "native", UPSERTED
+        # per tools/list response (never cleared — tools/list paginates via
+        # cursor, Desktop lazily re-lists, listChanged refires; a clear-per-
+        # response would forget dispositions for tools on other pages).
+        # Written on the server-message path, read on the client-message path —
+        # different pump threads on the stdio transport, hence the lock.
+        self._param_registry: dict[str, str] = {}
+        self._registry_lock = threading.Lock()
+        # True once ANY proactive annotation has been emitted this session —
+        # from a real annotate-tool call or synthesised from the first param
+        # intent. Gates the param->annotation synthesis so a session gets at
+        # most one param-sourced proactive (each proactive opens a new turn in
+        # the console; one per tool call would splinter the session view).
+        # Only touched on the client-message path, which is single-threaded
+        # on both transports — no lock needed.
+        self._proactive_emitted = False
 
     def _track(self, req_id: Any, call: _PendingCall) -> None:
         """Register an in-flight call + evict overflow, under the pending lock."""
@@ -491,6 +567,12 @@ class MessageProcessor:
                         )
                     except Exception:
                         logger.exception("baton-proxy: enqueue annotation failed")
+                    else:
+                        # A real proactive (intent, no signal_type) claims the
+                        # session's turn-opener slot — the param->annotation
+                        # synthesis below must not double-open it.
+                        if args.get("intent") and not args.get("signal_type"):
+                            self._proactive_emitted = True
                 try:
                     response = _handle_injected_call(
                         req,
@@ -523,10 +605,37 @@ class MessageProcessor:
             # surfaces correlation ids at the request level instead.
             runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
             safe_tool_name = str(tool_name) if tool_name else ""
+
+            # Strip the injected intent param BEFORE the start event is built,
+            # so captured params == the vendor-visible arguments exactly.
+            call_intent = self._extract_intent_param(safe_tool_name, params)
+
+            # The session's FIRST param intent also becomes a proactive
+            # annotation — enqueued BEFORE the tool_call_start so sequence-
+            # order correlation holds downstream ("proactive before the tool
+            # calls it covers"). Later param intents ride only the start
+            # events; per-call proactives would open one console turn per
+            # tool call.
+            if call_intent is not None and not self._proactive_emitted:
+                try:
+                    self._emitter.enqueue_annotation(
+                        signal_type=None,
+                        intent=call_intent,
+                        suggested_improvement=None,
+                        intent_source=INTENT_SOURCE_PARAM,
+                        tool_name=safe_tool_name,
+                    )
+                except Exception:
+                    logger.exception("baton-proxy: enqueue param-intent annotation failed")
+                else:
+                    self._proactive_emitted = True
+
             try:
                 self._emitter.enqueue_tool_call_start(
                     tool_name=safe_tool_name,
                     params=params.get("arguments"),
+                    call_intent=call_intent,
+                    intent_source=INTENT_SOURCE_PARAM if call_intent is not None else None,
                     runtime_meta=runtime_meta,
                 )
             except Exception:
@@ -630,6 +739,42 @@ class MessageProcessor:
 
         return _ClientAction(forward=req)
 
+    def _extract_intent_param(self, tool_name: str, params: dict[str, Any]) -> str | None:
+        """Strip the injected intent param from a tools/call; return its value.
+
+        Mutates ``params["arguments"]`` in place (the same object the transport
+        forwards, so the upstream never sees the param). Registry dispositions:
+        "injected" -> strip + capture; "native" -> the param belongs to the
+        vendor's tool, forward untouched and capture nothing; unknown (cold
+        registry — proxy respawned mid-session, or a client calling without a
+        tools/list through us) -> strip + capture with a log line, safe only
+        because the name is namespaced. Never raises; on any error the call
+        proceeds with whatever state it has (fail-open).
+        """
+        if self._injection.intent_param_mode == "off":
+            return None
+        try:
+            args = params.get("arguments")
+            if not isinstance(args, dict) or INTENT_PARAM_NAME not in args:
+                return None
+            with self._registry_lock:
+                disposition = self._param_registry.get(tool_name)
+            if disposition == "native":
+                return None
+            if disposition is None:
+                logger.warning(
+                    "baton-proxy: stripping %s from unlisted tool %r (cold registry)",
+                    INTENT_PARAM_NAME,
+                    tool_name,
+                )
+            raw = args.pop(INTENT_PARAM_NAME, None)
+            if isinstance(raw, str) and raw.strip():
+                return raw
+            return None
+        except Exception:
+            logger.exception("baton-proxy: intent param extraction failed")
+            return None
+
     def handle_server_message(self, msg: dict[str, Any]) -> dict[str, Any]:
         """Correlate/emit for a server->client message; return the message to write out."""
         # Correlate this response to a pending call (by id) and emit the
@@ -655,7 +800,43 @@ class MessageProcessor:
                 except Exception:
                     logger.exception("baton-proxy: enqueue end/error failed")
 
+        self._inject_intent_params(msg)
         return _inject_into_response(msg, self._injection)
+
+    def _inject_intent_params(self, msg: dict[str, Any]) -> None:
+        """Add the intent param to every upstream tool in a tools/list response.
+
+        Runs BEFORE ``_inject_into_response`` appends the proxy's own tools, so
+        those never grow the param. Records each tool's disposition in the
+        registry (upsert — see __init__). Fail-open: any error is logged and
+        the response is forwarded as-is.
+        """
+        if self._injection.intent_param_mode == "off":
+            return
+        try:
+            result = msg.get("result")
+            if not isinstance(result, dict):
+                return
+            tools = result.get("tools")
+            if not isinstance(tools, list):
+                return
+            dispositions: dict[str, str] = {}
+            for tool in tools:
+                # Defensive: a pathological upstream could name a tool after
+                # one of ours; those calls are intercepted pre-upstream, so
+                # param-injecting them would only confuse the schema.
+                if isinstance(tool, dict) and tool.get("name") in self._injection.names:
+                    continue
+                disposition = _inject_intent_param_into_tool(
+                    tool, self._injection.intent_param_mode
+                )
+                if disposition is not None:
+                    dispositions[tool["name"]] = disposition
+            if dispositions:
+                with self._registry_lock:
+                    self._param_registry.update(dispositions)
+        except Exception:
+            logger.exception("baton-proxy: intent param injection failed")
 
     def synthesize_pending_error(self, req_id: Any, error_type: str, error_body: str) -> None:
         """Emit a synthetic *_error for a tracked call the upstream never answered.
@@ -811,7 +992,11 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     """
     config = Config.from_env()
     _configure_logging(config.log_file)
-    injection = _Injection.create(config.event_sink, tenant_type=config.tenant_type)
+    injection = _Injection.create(
+        config.event_sink,
+        tenant_type=config.tenant_type,
+        intent_param_mode=config.intent_param_mode,
+    )
     emitter = Emitter(config)
     emitter.start()
     processor = MessageProcessor(emitter, injection, config.session_id)
@@ -826,10 +1011,11 @@ def run_proxy(argv: list[str]) -> int:
     """
     config, injection, emitter, processor = _bootstrap()
     logger.info(
-        "baton-proxy starting (session=%s, emission=%s, tools=%s, upstream=%s)",
+        "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, upstream=%s)",
         config.session_id,
         "on" if config.emission_enabled else "off",
         sorted(injection.names),
+        injection.intent_param_mode,
         " ".join(argv),
     )
 
@@ -904,10 +1090,11 @@ def run_http_proxy(url: str) -> int:
     config, injection, emitter, processor = _bootstrap()
     auth_token = os.environ.get("BATON_UPSTREAM_AUTH_TOKEN")
     logger.info(
-        "baton-proxy starting (session=%s, emission=%s, tools=%s, upstream=%s, transport=http, auth=%s)",
+        "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, upstream=%s, transport=http, auth=%s)",
         config.session_id,
         "on" if config.emission_enabled else "off",
         sorted(injection.names),
+        injection.intent_param_mode,
         url,
         "bearer" if auth_token else "none",
     )

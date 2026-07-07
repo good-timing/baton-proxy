@@ -63,6 +63,19 @@ def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
                         "description": "Always errors. Used to test tool_call_error emission.",
                         "inputSchema": {"type": "object", "properties": {}, "required": []},
                     },
+                    {
+                        "name": "argkeys",
+                        "description": (
+                            "Return the sorted argument keys received. Lets a test "
+                            "prove exactly which arguments reached the upstream "
+                            "(e.g., that an injected param was stripped)."
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"text": {"type": "string"}},
+                            "required": [],
+                        },
+                    },
                 ]
             },
         }
@@ -153,6 +166,16 @@ def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "error": {"code": -32000, "message": "boom"},
+            }
+        if tool_name == "argkeys":
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [
+                        {"type": "text", "text": "keys: " + ",".join(sorted(tool_args or {}))}
+                    ]
+                },
             }
         return {
             "jsonrpc": "2.0",

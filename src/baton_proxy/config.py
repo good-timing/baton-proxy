@@ -41,6 +41,16 @@ DEFAULT_TENANT_TYPE = "vendor"
 # (Console renders reports server-side), customer mode keeps it.
 _TENANT_TYPES: frozenset[str] = frozenset({"vendor", "customer"})
 
+# Valid values for BATON_INTENT_PARAM — the per-tool intent-param injection
+# mode. ``optional`` (default) injects `baton_intent` as an optional param
+# on every upstream tool; ``required`` additionally marks it required in
+# the schema; ``off`` disables injection entirely. Clients fill the param
+# even when optional (Desktop, verified 2026-07-07), while ignoring
+# initialize-instructions — so param injection is the reliable intent
+# channel and instructions remain a best-effort extra.
+DEFAULT_INTENT_PARAM_MODE = "optional"
+_INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
+
 
 @dataclass(frozen=True)
 class Config:
@@ -85,6 +95,10 @@ class Config:
     # always populates it explicitly from BATON_TENANT_TYPE.
     tenant_type: str = DEFAULT_TENANT_TYPE
 
+    # Per-tool intent-param injection mode: optional | required | off.
+    # See DEFAULT_INTENT_PARAM_MODE above.
+    intent_param_mode: str = DEFAULT_INTENT_PARAM_MODE
+
     @property
     def emission_enabled(self) -> bool:
         """True when the envelope-essential fields are populated. With
@@ -112,8 +126,13 @@ class Config:
         tenant_type = _env("BATON_TENANT_TYPE") or DEFAULT_TENANT_TYPE
         if tenant_type not in _TENANT_TYPES:
             raise ValueError(
-                f"BATON_TENANT_TYPE must be one of {sorted(_TENANT_TYPES)}; "
-                f"got {tenant_type!r}."
+                f"BATON_TENANT_TYPE must be one of {sorted(_TENANT_TYPES)}; got {tenant_type!r}."
+            )
+        intent_param_mode = _env("BATON_INTENT_PARAM") or DEFAULT_INTENT_PARAM_MODE
+        if intent_param_mode not in _INTENT_PARAM_MODES:
+            raise ValueError(
+                f"BATON_INTENT_PARAM must be one of {sorted(_INTENT_PARAM_MODES)}; "
+                f"got {intent_param_mode!r}."
             )
         return cls(
             session_id=str(uuid.uuid4()),
@@ -123,6 +142,7 @@ class Config:
             consent_token=_env("BATON_CONSENT_TOKEN") or DEFAULT_CONSENT_TOKEN,
             vendor_id=vendor_id,
             tenant_type=tenant_type,
+            intent_param_mode=intent_param_mode,
             log_file=_env("BATON_PROXY_LOG_FILE"),
         )
 

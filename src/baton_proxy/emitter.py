@@ -177,11 +177,25 @@ class Emitter:
         *,
         tool_name: str,
         params: Mapping[str, Any] | None,
+        call_intent: str | None = None,
+        intent_source: str | None = None,
         runtime_meta: Mapping[str, Any] | None = None,
     ) -> None:
+        # `call_intent` is the value stripped from the injected per-tool intent
+        # param. It rides the payload as a SIBLING of params — params must stay
+        # exactly the vendor-visible arguments. The console ignores unknown
+        # payload keys (opaque JSONB), so this is additive on the wire.
+        payload: dict[str, Any] = {
+            "tool_name": tool_name,
+            "params": dict(params) if params else {},
+        }
+        if call_intent is not None:
+            payload["call_intent"] = call_intent
+        if intent_source is not None:
+            payload["intent_source"] = intent_source
         self._enqueue(
             event_type="tool_call_start",
-            payload={"tool_name": tool_name, "params": dict(params) if params else {}},
+            payload=payload,
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
         )
 
@@ -404,9 +418,16 @@ class Emitter:
         expected_outcome: str | None = None,
         workflow: str | None = None,
         context: Mapping[str, Any] | None = None,
+        intent_source: str | None = None,
+        tool_name: str | None = None,
         runtime_meta: Mapping[str, Any] | None = None,
     ) -> None:
-        """Annotation event per SPEC §11.4; nullable keys omitted when None."""
+        """Annotation event per SPEC §11.4; nullable keys omitted when None.
+
+        ``intent_source``/``tool_name`` mark annotations synthesised from the
+        injected per-tool intent param (vs a real annotate-tool call). Extra
+        payload keys are safe — the console's annotation payload is opaque.
+        """
         candidates: dict[str, Any] = {
             "signal_type": signal_type,
             "intent": intent,
@@ -414,6 +435,8 @@ class Emitter:
             "expected_outcome": expected_outcome,
             "workflow": workflow,
             "context": dict(context) if context is not None else None,
+            "intent_source": intent_source,
+            "tool_name": tool_name,
         }
         payload = {k: v for k, v in candidates.items() if v is not None}
         self._enqueue(

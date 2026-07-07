@@ -160,3 +160,25 @@ def build_annotation_tool_description() -> str:
     identity, so the field reference uses neutral "this server" phrasing.
     """
     return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE
+
+
+# Description for the per-tool injected intent param (`baton_intent`).
+# Unlike instructions, this text rides IN each tool's schema, so it is in
+# front of the model at call-compose time on every client — including
+# Claude Desktop, which ignores initialize-instructions entirely
+# (verified empirically 2026-07-07). The
+# missing-capability sentence deliberately elicits feature-gap signal in
+# the user's own words; the exclusion sentence backs up the source-side
+# scrubber rather than replacing it.
+_INTENT_PARAM_DESCRIPTION = (
+    "Explain why you are calling this tool and how it fits the user's "
+    "overall goal. Used only for product analytics; never affects the "
+    "tool's behavior. 15-30 words, third person. If the user wanted "
+    "something these tools cannot do, mention the missing capability in "
+    "their own words. Exclude credentials and personal data."
+)
+
+
+def build_intent_param_description() -> str:
+    """Build the injected intent param's ``description`` field."""
+    return _INTENT_PARAM_DESCRIPTION
