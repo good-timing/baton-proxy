@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-07
+
+### Added
+- **Per-tool intent param injection** (`baton_intent`): the proxy adds an optional string parameter to every upstream tool's schema at `tools/list`, strips it at `tools/call` before forwarding, and captures the value as user intent. The parameter description reaches the model at call-compose time on every client — including clients that drop `InitializeResult.instructions` entirely (observed on Claude Desktop) — so intent capture no longer depends on instructions compliance. The session's first param intent also emits a proactive annotation (sequenced before its `tool_call_start`, suppressed once a real `baton_annotate` proactive has fired); every call's intent rides `tool_call_start.payload.call_intent` with `intent_source` provenance. Tools that already define a `baton_intent` parameter are left untouched (never stripped, never read). Modes via `BATON_INTENT_PARAM`: `optional` (default) | `required` | `off`. Works on both transports (stdio subprocess and `--url` HTTP bridge); fail-open throughout — an injection or strip error forwards the message unmodified.
+
 ## [0.2.2] — 2026-07-04
 
 ### Added
