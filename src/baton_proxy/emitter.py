@@ -199,6 +199,33 @@ class Emitter:
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
         )
 
+    def enqueue_surface_snapshot(
+        self,
+        *,
+        surface_hash: str,
+        server_info: Any,
+        capabilities: Any,
+        instructions: str | None,
+        tools: list[dict[str, Any]],
+        seam_augmentations: dict[str, Any],
+    ) -> None:
+        # The vendor-true surface (pre-injection), emitted at most once per
+        # hash per process — see MessageProcessor._capture_surface for the
+        # trigger/dedupe rules. `seam_augmentations` records the as-served
+        # delta Baton added, so a consumer can render both layers.
+        self._enqueue(
+            event_type="surface_snapshot",
+            payload={
+                "surface_hash": surface_hash,
+                "server_info": server_info,
+                "capabilities": capabilities,
+                "instructions": instructions,
+                "tools": tools,
+                "seam_augmentations": seam_augmentations,
+            },
+            runtime_meta=None,
+        )
+
     def enqueue_tool_call_end(
         self,
         *,

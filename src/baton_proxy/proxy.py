@@ -28,6 +28,8 @@ synthetic error event + a JSON-RPC error to Claude, never a hang.
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
 import logging
 import os
@@ -86,6 +88,22 @@ INTENT_PARAM_NAME = "baton_intent"
 # annotate-tool call). Recorded on both the tool_call_start payload and the
 # synthesised proactive annotation.
 INTENT_SOURCE_PARAM = "injected_param"
+
+# Cap the tools/list request-id correlation dict (see MessageProcessor).
+# Same rationale as MAX_PENDING, sized smaller — clients re-list occasionally,
+# they don't fan out hundreds of concurrent list requests.
+MAX_PENDING_TOOLLISTS = 64
+
+
+def _surface_hash(surface: Mapping[str, Any]) -> str:
+    """Content hash of the vendor-true surface, canonical-JSON keyed.
+
+    This is the identity changes and recipes are authored against
+    (``base_surface_hash`` in the change spec) — it must be stable across
+    proxy restarts and key ordering, hence sorted keys + compact separators.
+    """
+    canonical = json.dumps(surface, sort_keys=True, separators=(",", ":"), default=str)
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _build_injected_tool(tool_name: str) -> dict[str, Any]:
@@ -531,6 +549,23 @@ class MessageProcessor:
         # Only touched on the client-message path, which is single-threaded
         # on both transports — no lock needed.
         self._proactive_emitted = False
+        # --- Surface-snapshot state (design-note: server_surface_and_change_spec) ---
+        # initialize result captured PRE-suffix — the vendor-true instructions,
+        # serverInfo and capabilities that belong in the snapshot. Written on
+        # the server-message path only.
+        self._server_meta: dict[str, Any] | None = None
+        # Request ids of first-page tools/list requests (no cursor param) —
+        # only their responses are snapshot candidates; a cursor-continuation
+        # page is a fragment, never a surface. Insertion-ordered dict so
+        # overflow evicts oldest. Written on the client path, popped on the
+        # server path — different pump threads on stdio, hence the lock.
+        self._toollist_first_page_ids: dict[Any, None] = {}
+        # Hashes already emitted this process — a Desktop-style lazy re-list
+        # of an unchanged surface must not re-emit. A CHANGED surface (e.g.
+        # listChanged refire after an upstream mutation) hashes fresh and
+        # emits again by design.
+        self._emitted_surface_hashes: set[str] = set()
+        self._surface_lock = threading.Lock()
 
     def _track(self, req_id: Any, call: _PendingCall) -> None:
         """Register an in-flight call + evict overflow, under the pending lock."""
@@ -541,6 +576,24 @@ class MessageProcessor:
     def handle_client_message(self, req: dict[str, Any]) -> _ClientAction:
         """Intercept/emit for a client->server message; return the transport's action."""
         method = req.get("method")
+
+        if method == "tools/list":
+            # Remember first-page requests (no cursor) so the server path can
+            # tell a snapshot candidate from a pagination fragment. Forwarded
+            # unchanged either way; fail-open on any shape surprise.
+            try:
+                params = req.get("params") or {}
+                cursor = params.get("cursor") if isinstance(params, dict) else None
+                req_id = req.get("id")
+                if req_id is not None and not cursor:
+                    with self._surface_lock:
+                        self._toollist_first_page_ids[req_id] = None
+                        while len(self._toollist_first_page_ids) > MAX_PENDING_TOOLLISTS:
+                            oldest = next(iter(self._toollist_first_page_ids))
+                            del self._toollist_first_page_ids[oldest]
+            except Exception:
+                logger.exception("baton-proxy: tools/list tracking failed")
+            return _ClientAction(forward=req)
 
         if method == "tools/call":
             params = req.get("params", {}) or {}
@@ -800,8 +853,87 @@ class MessageProcessor:
                 except Exception:
                     logger.exception("baton-proxy: enqueue end/error failed")
 
+        # Surface capture runs BEFORE both injections below, so the snapshot
+        # records the vendor-true surface (no baton_* tools, no intent param,
+        # pre-suffix instructions).
+        self._capture_surface(msg)
+
         self._inject_intent_params(msg)
         return _inject_into_response(msg, self._injection)
+
+    def _capture_surface(self, msg: dict[str, Any]) -> None:
+        """Snapshot the upstream surface from initialize + tools/list responses.
+
+        initialize responses stash serverInfo/capabilities/instructions;
+        a COMPLETE first-page tools/list response (tracked id, no nextCursor)
+        emits one ``surface_snapshot`` event, deduped on the surface hash for
+        the process lifetime. Multi-page surfaces are skipped in v0 — a
+        partial page must never masquerade as the surface. Fail-open: any
+        error is logged and the message flows on untouched.
+        """
+        try:
+            msg_id = msg.get("id")
+            result = msg.get("result")
+            if not isinstance(result, dict):
+                # Error (or shapeless) response — forget any tracked list id
+                # so the dict doesn't accumulate dead entries.
+                if msg_id is not None:
+                    with self._surface_lock:
+                        self._toollist_first_page_ids.pop(msg_id, None)
+                return
+
+            if "protocolVersion" in result or "serverInfo" in result:
+                instructions = result.get("instructions")
+                self._server_meta = {
+                    "server_info": copy.deepcopy(result.get("serverInfo")),
+                    "capabilities": copy.deepcopy(result.get("capabilities")),
+                    "instructions": instructions if isinstance(instructions, str) else None,
+                }
+                return
+
+            tools = result.get("tools")
+            if not isinstance(tools, list):
+                return
+            with self._surface_lock:
+                first_page = msg_id is not None and (
+                    self._toollist_first_page_ids.pop(msg_id, "absent") is None
+                )
+            if not first_page or result.get("nextCursor"):
+                return
+
+            meta = self._server_meta or {}
+            surface: dict[str, Any] = {
+                # server_info/capabilities/instructions are None when the
+                # proxy never saw initialize (respawned mid-session) — the
+                # snapshot is still worth having; the hash reflects it.
+                "server_info": meta.get("server_info"),
+                "capabilities": meta.get("capabilities"),
+                "instructions": meta.get("instructions"),
+                "tools": copy.deepcopy(tools),
+            }
+            digest = _surface_hash(surface)
+            with self._surface_lock:
+                if digest in self._emitted_surface_hashes:
+                    return
+                self._emitted_surface_hashes.add(digest)
+
+            mode = self._injection.intent_param_mode
+            self._emitter.enqueue_surface_snapshot(
+                surface_hash=digest,
+                server_info=surface["server_info"],
+                capabilities=surface["capabilities"],
+                instructions=surface["instructions"],
+                tools=surface["tools"],
+                seam_augmentations={
+                    "injected_tools": sorted(self._injection.names),
+                    "intent_param": (
+                        {"name": INTENT_PARAM_NAME, "mode": mode} if mode != "off" else None
+                    ),
+                    "instructions_suffix": bool(self._injection.instructions_suffix),
+                },
+            )
+        except Exception:
+            logger.exception("baton-proxy: surface snapshot capture failed")
 
     def _inject_intent_params(self, msg: dict[str, Any]) -> None:
         """Add the intent param to every upstream tool in a tools/list response.
