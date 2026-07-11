@@ -71,7 +71,7 @@ def _initialize_response(msg_id: int = 1) -> dict[str, Any]:
         "id": msg_id,
         "result": {
             "protocolVersion": "2025-03-26",
-            "serverInfo": {"name": "mock-6sense", "version": "0.9"},
+            "serverInfo": {"name": "mock-upstream", "version": "0.9"},
             "capabilities": {"tools": {"listChanged": True}},
             "instructions": "Vendor-authored instructions.",
         },
@@ -122,7 +122,7 @@ def test_snapshot_captures_vendor_true_surface() -> None:
 
     # Pre-suffix instructions and initialize metadata.
     assert snap["instructions"] == "Vendor-authored instructions."
-    assert snap["server_info"] == {"name": "mock-6sense", "version": "0.9"}
+    assert snap["server_info"] == {"name": "mock-upstream", "version": "0.9"}
     assert snap["capabilities"] == {"tools": {"listChanged": True}}
 
     # Vendor tools only, and WITHOUT the injected intent param — even though

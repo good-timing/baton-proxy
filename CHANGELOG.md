@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-07-11
+
+### Added
+- **Surface snapshot capture** (`surface_snapshot` event): on each session's first complete `tools/list`, the proxy emits one snapshot of the upstream server's surface — serverInfo, capabilities, instructions, and the full tool list (names, descriptions, input schemas, annotations) — hashed over the **vendor-true** (pre-injection) surface, with a `seam_augmentations` block recording what the proxy adds (injected tools, the intent param, the instructions suffix). Emission is suppressed when the hash matches the last-emitted hash for the session, so a stable surface costs one event per session at most. Pagination-safe: partial `tools/list` pages are never snapshot. Consumers can materialize surface history from these events (a new hash = the surface changed) and pin proposed changes to the exact surface version they were authored against.
+
 ## [0.3.0] — 2026-07-07
 
 ### Added
