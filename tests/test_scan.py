@@ -165,6 +165,18 @@ def test_resolve_config_entry_missing_lists_available(tmp_path) -> None:
         assert "nope" in msg and "github" in msg and "notion" in msg
 
 
+def test_resolve_config_entry_missing_top_level_mcp_servers(tmp_path) -> None:
+    cfg = tmp_path / "claude.json"
+    cfg.write_text(json.dumps({"projects": {"/tmp/project": {"mcpServers": {}}}}))
+
+    try:
+        scan._resolve_config_entry("myserver", str(cfg))
+        raise AssertionError("expected ScanConfigError")
+    except scan.ScanConfigError as e:
+        msg = str(e)
+        assert "myserver" in msg and "none found" in msg
+
+
 def test_write_mcp_config_merges_entry_env_and_baton_wins(tmp_path) -> None:
     sink = str(tmp_path / "events.jsonl")
     cfg_path = scan._write_mcp_config(
