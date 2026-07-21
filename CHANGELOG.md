@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **HTTP bridge graceful degradation**: when the upstream is unreachable (connection failure, non-2xx, timeout, or an accepted-but-empty reply), the `--url` bridge now degrades the two handshake methods — `initialize` and `tools/list` — to a synthetic healthy response instead of a JSON-RPC error. Erroring `initialize` put some clients (notably Claude Cowork) into a permanent failed-connection state, wedging the entire session including the proxy's own injected tools; degrading it lets the client attach and keeps `baton_annotate` usable. `tools/list` returns just the injected baton tools (no phantom vendor tools). Every other method still degrades per-call (a JSON-RPC error for that id, which clients tolerate), so real tool calls against a dead upstream still surface as errors rather than a wedge. Fail-open throughout.
+
 ## [0.4.0] — 2026-07-21
 
 ### Added

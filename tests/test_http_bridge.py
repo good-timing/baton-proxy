@@ -448,6 +448,83 @@ def test_unreachable_upstream_fails_open_without_hang() -> None:
     assert any(e["payload"].get("error_type") == "proxy_upstream_unreachable" for e in synth)
 
 
+def test_unreachable_upstream_degrades_handshake_keeping_session_alive() -> None:
+    """A dead upstream must NOT wedge the client (the Claude Cowork fix).
+
+    ``initialize`` + ``tools/list`` degrade to a healthy synthetic surface so
+    the client attaches and the injected baton tools stay usable — while real
+    upstream tool calls still degrade per-call (an error, not a wedge).
+    """
+    dead_url = f"http://127.0.0.1:{_free_port()}/mcp"
+    reqs = [
+        REQUESTS[0],  # initialize
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 12, "method": "tools/list", "params": {}},
+        REQUESTS[3],  # baton_annotate call (id=2) — proxy-owned, must still work
+        {
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {"name": "echo", "arguments": {"text": "hi"}},
+        },
+    ]
+    stdout_msgs, events = _drive_proxy(dead_url, reqs)
+
+    # initialize degrades to a healthy result (NOT an error) with injection.
+    init = next((m for m in stdout_msgs if m.get("id") == 1), None)
+    assert init is not None and "error" not in init, "initialize was not degraded to success"
+    assert "baton_annotate" in init["result"]["instructions"]
+
+    # tools/list surfaces the injected tools despite the dead upstream, and does
+    # NOT invent phantom vendor tools.
+    tl = next((m for m in stdout_msgs if m.get("id") == 12), None)
+    assert tl is not None and "error" not in tl
+    names = {t["name"] for t in tl["result"]["tools"]}
+    assert "baton_annotate" in names
+    assert "echo" not in names, "a dead upstream must not surface phantom vendor tools"
+
+    # the proxy-owned annotate call still works — proves the session is usable.
+    annotate = next((m for m in stdout_msgs if m.get("id") == 2), None)
+    assert annotate is not None and "baton_annotate recorded" in json.dumps(annotate)
+
+    # a real upstream tool call still degrades per-call (error, not a wedge).
+    tool_err = next((m for m in stdout_msgs if m.get("id") == 10 and "error" in m), None)
+    assert tool_err is not None, "real tool call should still error against a dead upstream"
+    assert any(
+        e["payload"].get("error_type") == "proxy_upstream_unreachable"
+        for e in _of(events, "tool_call_error")
+    )
+
+
+def test_build_degraded_response_shapes() -> None:
+    """Unit-lock the synthetic-response shapes the HTTP loop degrades to."""
+    from baton_proxy.proxy import _DEGRADED_PROTOCOL_VERSION, _build_degraded_response
+
+    # initialize echoes the client's requested protocol version...
+    init = _build_degraded_response(
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-06-18"}}
+    )
+    assert init is not None
+    assert init["result"]["protocolVersion"] == "2025-06-18"
+    assert init["result"]["serverInfo"]["name"] == "baton-proxy"
+    assert "tools" in init["result"]["capabilities"]
+
+    # ...and falls back to the transport default when none was sent.
+    init2 = _build_degraded_response({"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {}})
+    assert init2 is not None
+    assert init2["result"]["protocolVersion"] == _DEGRADED_PROTOCOL_VERSION
+
+    # tools/list degrades to an empty catalogue (injector appends baton tools).
+    tl = _build_degraded_response({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}})
+    assert tl is not None and tl["result"]["tools"] == []
+
+    # every other method returns None → the caller degrades it per-call.
+    assert _build_degraded_response(
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {}}
+    ) is None
+
+
 def test_slow_upstream_read_timeout_fails_open(http_server: str) -> None:
     """A live-but-silent upstream must be bounded by the read timeout, not hang.
 

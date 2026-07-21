@@ -41,6 +41,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from baton_proxy import __version__
 from baton_proxy._llm_text import (
     SIGNAL_TYPES,
     build_annotation_tool_description,
@@ -379,6 +380,55 @@ def _inject_into_response(msg: dict[str, Any], injection: _Injection) -> dict[st
     except Exception:
         logger.exception("baton-proxy: injection failed, forwarding response unmodified")
     return msg
+
+
+# Protocol version advertised on a degraded initialize when the client didn't
+# send one to echo. Matches the transport client's default (transport_http).
+_DEGRADED_PROTOCOL_VERSION = "2025-03-26"
+
+
+def _build_degraded_response(req: dict[str, Any]) -> dict[str, Any] | None:
+    """Synthesise a healthy result for a handshake method with a dead upstream.
+
+    Graceful degradation for the two methods whose *failure* wedges the whole
+    client session rather than failing a single call:
+
+    * ``initialize`` — erroring it puts some clients (notably Claude Cowork)
+      into a permanent failed-connection state, so the entire session, including
+      the proxy's own injected tools, becomes unusable. A minimal valid result
+      lets the client attach; ``_inject_into_response`` still grafts the
+      annotate tool + instructions suffix on the way out.
+    * ``tools/list`` — a dead upstream has no vendor tools, but the injected
+      baton tools must still surface (else the server is a zero-tool brick and
+      annotate can't be called). An empty catalogue for the injector to extend.
+
+    Returns a JSON-RPC result message, or None for any other method (those
+    degrade per-call — a JSON-RPC error for that id, which clients tolerate).
+    """
+    method = req.get("method")
+    req_id = req.get("id")
+    if method == "initialize":
+        params = req.get("params")
+        # Echo the client's requested protocol version when present so the
+        # handshake stays compatible; fall back to the transport default.
+        version = params.get("protocolVersion") if isinstance(params, dict) else None
+        if not isinstance(version, str) or not version:
+            version = _DEGRADED_PROTOCOL_VERSION
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": version,
+                "serverInfo": {"name": "baton-proxy", "version": __version__},
+                # Advertise only the tools capability — the surface the proxy
+                # can still serve (its injected tools) while the upstream is down.
+                "capabilities": {"tools": {}},
+                "instructions": "",
+            },
+        }
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": []}}
+    return None
 
 
 def _handle_injected_call(
@@ -1238,7 +1288,7 @@ def run_http_proxy(url: str) -> int:
     client = StreamableHttpClient(url, auth_token=auth_token)
 
     try:
-        rc = _run_http_loop(processor, client)
+        rc = _run_http_loop(processor, client, injection)
     finally:
         # Symmetric with the stdio path: resolve any call still pending at
         # teardown (serialisation makes this rare, but a mid-call exit is
@@ -1251,8 +1301,31 @@ def run_http_proxy(url: str) -> int:
     return rc
 
 
-def _run_http_loop(processor: MessageProcessor, client: Any) -> int:
+def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injection) -> int:
     """Read stdin → POST upstream → write responses to stdout. Fail-open throughout."""
+
+    def _degrade(forward: dict[str, Any]) -> bool:
+        """Serve a synthetic healthy response for a handshake method whose
+        upstream failure would wedge the client; return True if handled.
+
+        Bypasses ``handle_server_message`` (no correlation/surface-capture — a
+        degraded reply is not the vendor's real surface) and runs only
+        ``_inject_into_response`` so the annotate tool + instructions still land.
+        """
+        degraded = _build_degraded_response(forward)
+        if degraded is None:
+            return False
+        logger.warning(
+            "baton-proxy: upstream unavailable — serving a degraded %s so the "
+            "client stays connected (injected tools remain usable)",
+            forward.get("method"),
+        )
+        try:
+            _write_stdout(_inject_into_response(degraded, injection))
+        except Exception:
+            logger.exception("baton-proxy: forward to client failed")
+        return True
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -1299,10 +1372,13 @@ def _run_http_loop(processor: MessageProcessor, client: Any) -> int:
             responses = client.post(forward)
         except Exception as e:
             # Fail-open: a network timeout / drop / non-2xx must not hang Claude
-            # or kill the loop. Emit a synthetic error for the dangling start
-            # (if this was a tracked call) and hand Claude a JSON-RPC error so
-            # it gets a result instead of waiting forever.
+            # or kill the loop. Handshake methods (initialize/tools/list) degrade
+            # to a synthetic healthy response so the session isn't wedged; every
+            # other method emits a synthetic error for the dangling start (if
+            # tracked) and hands Claude a JSON-RPC error rather than waiting.
             logger.warning("baton-proxy: upstream POST failed: %s", e)
+            if _degrade(forward):
+                continue
             if not is_notification:
                 err = str(e)
                 processor.synthesize_pending_error(req_id, "proxy_upstream_unreachable", err)
@@ -1327,12 +1403,15 @@ def _run_http_loop(processor: MessageProcessor, client: Any) -> int:
         # the pending start dangles. Resolve both.
         if not is_notification and not responded:
             logger.warning("baton-proxy: upstream returned no response for id=%r", req_id)
-            processor.synthesize_pending_error(
-                req_id, "proxy_no_response", "upstream returned no response for this request"
-            )
-            _write_client_error(
-                req_id, -32001, "baton-proxy: upstream returned no response for this request"
-            )
+            # Same wedge risk as an outright failure: an unanswered initialize/
+            # tools/list must degrade to a healthy surface rather than error.
+            if not _degrade(forward):
+                processor.synthesize_pending_error(
+                    req_id, "proxy_no_response", "upstream returned no response for this request"
+                )
+                _write_client_error(
+                    req_id, -32001, "baton-proxy: upstream returned no response for this request"
+                )
 
     return 0
 
