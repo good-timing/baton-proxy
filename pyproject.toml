@@ -58,6 +58,9 @@ ignore = ["E501"]
 # scan.py is a user-facing CLI subcommand; printing to stdout is its job
 # (the report headline + progress lines). T20 (no-print) guards library code.
 "src/baton_proxy/scan.py" = ["T201"]
+# deploy/ holds standalone operational scripts (smoke test, toy backend) run
+# from a shell, not library code — printing to stdout is their job.
+"deploy/**" = ["T201"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
