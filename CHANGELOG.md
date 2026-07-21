@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-21
+
+### Added
+- **S3 event sink** (`pip install baton-proxy[s3]`): `s3://bucket/prefix` is now a valid `BATON_EVENT_SINK` scheme, usable on its own or in the comma-separated `MultiSink` fan-out. `boto3` is lazy-imported and gated behind the `[s3]` extra, so the base package stays zero-dependency. The placeholder-consent guard treats `s3://` as a remote sink (refuses to ship under `BATON_CONSENT_TOKEN='local'`).
+
+### Changed
+- Emitter `enqueue_*` methods accept an optional per-call `session_id`, so a single processor serving many sessions stamps each event with the session read from that request rather than one process-wide id. Omitting it preserves the previous one-session-per-process behavior — backward compatible for the stdio and `--url` transports. (Enables out-of-tree processors, e.g. `baton-extmcp`, to reuse the emitter.)
+
 ## [0.3.1] — 2026-07-11
 
 ### Added

@@ -132,6 +132,59 @@ class HttpSink(Sink):
         return
 
 
+class S3Sink(Sink):
+    """PUT one JSON object per event to a customer-owned S3 bucket.
+
+    Key layout matches the enterprise residency design:
+    ``{prefix/}{tenant_id}/{session_id}/{event_id}.json``. This is the
+    data-residency fork — payloads land in the customer's bucket, never
+    Baton's. boto3 is lazy-imported (optional extra ``[s3]``) so the base
+    package stays zero-dep; a real client is built from the ambient AWS
+    credential chain unless one is injected (tests pass a fake)."""
+
+    def __init__(self, bucket: str, prefix: str = "", *, client: Any = None) -> None:
+        if not bucket:
+            raise ValueError("S3Sink requires a bucket")
+        self._bucket = bucket
+        self._prefix = prefix.strip("/")
+        if client is None:
+            try:
+                import boto3  # noqa: PLC0415 — lazy so base package stays zero-dep
+            except ImportError as e:  # pragma: no cover - exercised via message only
+                raise ValueError(
+                    "s3:// event sink requires boto3 — install 'baton-proxy[s3]'"
+                ) from e
+            client = boto3.client("s3")
+        self._client = client
+
+    def key_for(self, event: dict[str, Any]) -> str:
+        parts = [
+            p
+            for p in (
+                self._prefix,
+                event.get("tenant_id"),
+                event.get("session_id"),
+                event.get("event_id"),
+            )
+            if p
+        ]
+        return "/".join(parts) + ".json"
+
+    def ref_for(self, event: dict[str, Any]) -> str:
+        return f"s3://{self._bucket}/{self.key_for(event)}"
+
+    def write(self, event: dict[str, Any]) -> None:
+        self._client.put_object(
+            Bucket=self._bucket,
+            Key=self.key_for(event),
+            Body=json.dumps(event).encode("utf-8"),
+            ContentType="application/json",
+        )
+
+    def close(self) -> None:
+        return
+
+
 class MultiSink(Sink):
     """Fan out each event to every sink in the list.
 
@@ -175,6 +228,7 @@ def make_sink(url_spec: str, *, api_key: str | None) -> Sink:
       - ``stderr:``                  -> StderrSink
       - ``file:///path/to/x.jsonl``  -> FileSink
       - ``http://``, ``https://``    -> HttpSink (requires api_key)
+      - ``s3://bucket/prefix``       -> S3Sink (requires boto3, extra [s3])
 
     Multiple URLs joined by ``,`` produce a MultiSink. Unsupported schemes
     raise ValueError; HTTP sinks raise if api_key is None — all caught at
@@ -202,6 +256,11 @@ def _make_one(url: str, *, api_key: str | None) -> Sink:
         if api_key is None:
             raise ValueError(f"BATON_API_KEY required for http(s) event sinks (sink: {url})")
         return HttpSink(url, api_key=api_key)
+    if scheme == "s3":
+        # s3://bucket/prefix -> netloc = bucket, path = /prefix
+        if not parsed.netloc:
+            raise ValueError(f"s3 sink URL is missing a bucket: {url}")
+        return S3Sink(parsed.netloc, parsed.path.lstrip("/"))
     raise ValueError(f"unsupported BATON_EVENT_SINK scheme: {scheme!r} (in {url})")
 
 
@@ -209,6 +268,7 @@ __all__ = [
     "FileSink",
     "HttpSink",
     "MultiSink",
+    "S3Sink",
     "Sink",
     "StderrSink",
     "make_sink",

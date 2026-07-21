@@ -24,6 +24,9 @@ dependencies = []
 baton-proxy = "baton_proxy.__main__:main"
 
 [project.optional-dependencies]
+# Data-residency: s3:// event sink (customer-owned bucket). boto3 is lazy-imported
+# in S3Sink, so the base package stays zero-dep without it.
+s3 = ["boto3>=1.34"]
 dev = ["pytest>=7.0", "ruff>=0.4"]
 
 [tool.hatch.version]
