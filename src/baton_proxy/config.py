@@ -99,6 +99,13 @@ class Config:
     # See DEFAULT_INTENT_PARAM_MODE above.
     intent_param_mode: str = DEFAULT_INTENT_PARAM_MODE
 
+    # Optional data-residency split. When set (BATON_PAYLOAD_SINK), the raw
+    # event PAYLOAD is written to this sink (typically ``s3://customer-bucket``,
+    # in the customer's perimeter) while only the METADATA envelope goes to
+    # ``event_sink`` (the console). Unset = single-sink (payload inline). The
+    # switch is a config flip, not a code change — see sinks.SplitSink.
+    payload_sink: str | None = None
+
     @property
     def emission_enabled(self) -> bool:
         """True when the envelope-essential fields are populated. With
@@ -143,6 +150,7 @@ class Config:
             vendor_id=vendor_id,
             tenant_type=tenant_type,
             intent_param_mode=intent_param_mode,
+            payload_sink=_env("BATON_PAYLOAD_SINK"),
             log_file=_env("BATON_PROXY_LOG_FILE"),
         )
 

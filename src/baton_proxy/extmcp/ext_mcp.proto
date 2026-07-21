@@ -1,0 +1,79 @@
+// Vendored VERBATIM from agentgateway/agentgateway.
+//   path:   crates/protos/proto/ext_mcp.proto
+//   pinned: agentgateway v1.3.1, git dbaaf7ed73671e7aec9195e35e7f726c0b14b84a
+//   fetched: 2026-07-15
+//
+// This is the contract our processor MUST implement. Do not edit — re-vendor to
+// bump (see gen_protos.sh; regeneration re-applies the package-relative import fix).
+syntax = "proto3";
+
+package agentgateway.dev.ext_mcp;
+
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/agentgateway/agentgateway/go/api;api";
+
+// ExtMcp is the wire protocol for an MCP-aware external policy server.
+// Modeled on Envoy ext_authz, but at the MCP method layer.
+// Covers both gating and mutation.
+service ExtMcp {
+  rpc CheckRequest(McpRequest) returns (McpRequestResult);
+  rpc CheckResponse(McpResponse) returns (McpResponseResult);
+}
+
+message McpRequest {
+  repeated string service_names = 1;
+  string method = 2;
+  google.protobuf.Struct metadata_context = 3;
+  optional bytes mcp_request = 4;
+  repeated McpHeader headers = 5;
+}
+
+message McpResponse {
+  repeated string service_names = 1;
+  string method = 2;
+  google.protobuf.Struct metadata_context = 3;
+  bytes mcp_response = 4;
+}
+
+message McpRequestResult {
+  oneof result {
+    Pass pass = 1;
+    bytes mutated = 2;
+    AuthorizationError error = 3;
+  }
+  HeaderMutation header_mutation = 4;
+  google.protobuf.Struct metadata = 5;
+}
+
+message McpResponseResult {
+  oneof result {
+    Pass pass = 1;
+    bytes mutated = 2;
+    AuthorizationError error = 3;
+  }
+}
+
+message HeaderMutation {
+  repeated McpHeader set = 1;
+  repeated string remove = 2;
+}
+
+message McpHeader {
+  string key = 1;
+  bytes value = 2;
+}
+
+message Pass {}
+
+message AuthorizationError {
+  enum Code {
+    UNKNOWN = 0;
+    PERMISSION_DENIED = 1;
+    RESOURCE_EXHAUSTED = 2;
+    INVALID = 3;
+  }
+  Code code = 1;
+  string reason = 2;
+  optional bytes mcp_error = 3;
+}

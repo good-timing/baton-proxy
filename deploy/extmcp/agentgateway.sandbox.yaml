@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+# All-in-one SANDBOX config (standalone agentgateway form). Binds :8080 (Cloud
+# Run PORT), fronts the toy backend over stdio, with the Baton ExtMCP processor
+# attached in the PROD shape:
+#   tools/list: response  -> inject user_goal / expected_result
+#   tools/call: request   -> capture + strip  (NO response hook — v1.3.1 gives no
+#                            response-side correlation; the timeline is OTLP-later)
+# Client path: any MCP client -> Streamable-HTTP -> http://<host>:8080/mcp
+binds:
+  - port: 8080
+    listeners:
+      - name: mcp
+        routes:
+          - backends:
+              - mcp:
+                  targets:
+                    - name: toy
+                      stdio:
+                        cmd: /usr/local/bin/python
+                        args: ["/app/toy_backend.py"]
+            policies:
+              mcpGuardrails:
+                processors:
+                  - kind: remote
+                    host: "127.0.0.1:4445"
+                    failureMode: failOpen   # capture best-effort — never break real work
+                    methods:
+                      tools/list: response
+                      tools/call: request

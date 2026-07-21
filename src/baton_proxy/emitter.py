@@ -33,7 +33,7 @@ from typing import Any
 from baton_proxy import USER_AGENT as _SDK_VERSION
 from baton_proxy.config import Config
 from baton_proxy.scrub import Scrubber
-from baton_proxy.sinks import Sink, make_sink
+from baton_proxy.sinks import Sink, SplitSink, make_sink
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,15 @@ class Emitter:
             return
         assert self._config.event_sink is not None  # emission_enabled gates this
         self._guard_remote_consent()
-        self._sink = make_sink(self._config.event_sink, api_key=self._config.api_key)
+        metadata_sink = make_sink(self._config.event_sink, api_key=self._config.api_key)
+        if self._config.payload_sink:
+            # Data-residency split: raw payload -> payload_sink (customer bucket),
+            # metadata envelope -> event_sink (console). A config flip, not a
+            # code change (see sinks.SplitSink).
+            payload_sink = make_sink(self._config.payload_sink, api_key=self._config.api_key)
+            self._sink = SplitSink(metadata_sink, payload_sink)
+        else:
+            self._sink = metadata_sink
         self._thread = threading.Thread(target=self._drain, name="baton-proxy-emitter", daemon=True)
         self._thread.start()
 
@@ -138,12 +146,16 @@ class Emitter:
         if not self._config.using_placeholder_consent:
             return
         assert self._config.event_sink is not None
-        parts = [p.strip() for p in self._config.event_sink.split(",") if p.strip()]
-        if any(p.startswith(("http://", "https://")) for p in parts):
+        # Any sink that leaves the machine is "remote" — http(s) and s3.
+        specs = self._config.event_sink.split(",")
+        if self._config.payload_sink:
+            specs += self._config.payload_sink.split(",")
+        parts = [p.strip() for p in specs if p.strip()]
+        if any(p.startswith(("http://", "https://", "s3://")) for p in parts):
             raise ValueError(
-                "Refusing to ship events to an http(s) sink with placeholder "
-                "BATON_CONSENT_TOKEN='local' — set BATON_CONSENT_TOKEN to the "
-                "real per-install consent token before pointing at a remote "
+                "Refusing to ship events to a remote sink (http/https/s3) with "
+                "placeholder BATON_CONSENT_TOKEN='local' — set BATON_CONSENT_TOKEN "
+                "to the real per-install consent token before pointing at a remote "
                 "endpoint."
             )
 
@@ -180,6 +192,7 @@ class Emitter:
         call_intent: str | None = None,
         intent_source: str | None = None,
         runtime_meta: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> None:
         # `call_intent` is the value stripped from the injected per-tool intent
         # param. It rides the payload as a SIBLING of params — params must stay
@@ -197,6 +210,7 @@ class Emitter:
             event_type="tool_call_start",
             payload=payload,
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
+            session_id=session_id,
         )
 
     def enqueue_surface_snapshot(
@@ -208,6 +222,7 @@ class Emitter:
         instructions: str | None,
         tools: list[dict[str, Any]],
         seam_augmentations: dict[str, Any],
+        session_id: str | None = None,
     ) -> None:
         # The vendor-true surface (pre-injection), emitted at most once per
         # hash per process — see MessageProcessor._capture_surface for the
@@ -224,6 +239,7 @@ class Emitter:
                 "seam_augmentations": seam_augmentations,
             },
             runtime_meta=None,
+            session_id=session_id,
         )
 
     def enqueue_tool_call_end(
@@ -448,6 +464,7 @@ class Emitter:
         intent_source: str | None = None,
         tool_name: str | None = None,
         runtime_meta: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> None:
         """Annotation event per SPEC §11.4; nullable keys omitted when None.
 
@@ -470,6 +487,7 @@ class Emitter:
             event_type="annotation",
             payload=payload,
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
+            session_id=session_id,
         )
 
     def _enqueue(
@@ -478,7 +496,13 @@ class Emitter:
         event_type: str,
         payload: dict[str, Any],
         runtime_meta: dict[str, Any] | None,
+        session_id: str | None = None,
     ) -> None:
+        # `session_id` overrides the per-process session for callers that
+        # carry their own session identity per event (the ExtMCP adapter keys
+        # every event on the gateway's mcp-session-id header, not a process
+        # uuid). Defaults to the config's process-lifetime session for the
+        # stdio-proxy path, which is 1-process-per-user.
         if not self._config.emission_enabled or self._thread is None:
             return
 
@@ -494,7 +518,7 @@ class Emitter:
         event = _Event(
             event_id=str(uuid.uuid4()),
             event_type=event_type,
-            session_id=self._config.session_id,
+            session_id=session_id or self._config.session_id,
             sequence_number=seq,
             captured_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             tenant_id=self._config.tenant_id,  # type: ignore[arg-type]
