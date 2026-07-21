@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-21
+
+### Added
+- **ExtMCP processor** (`pip install baton-proxy[extmcp]`, `baton-extmcp` console script): capture at a gateway seam instead of a subprocess/HTTP wrap. Runs as a gRPC external processor for a gateway's ExternalMCP hook (agentgateway `mcpGuardrails`) — injects the intent param on the `tools/list` response, captures the value and strips it on the `tools/call` request, and emits the same friction events as the two existing transports. New code is only the gRPC adapter (`baton_proxy/extmcp/`); emission, injection, config, consent, and scrubbing are reused unchanged. Config = `tools/list: response` + `tools/call: request`, fail-open; session/identity/intent/args all read from the request, so capture is correlation-safe under concurrency. gRPC (`grpcio`, `protobuf`) is gated behind the `[extmcp]` extra so the base package stays zero-dependency. Deploy artifacts (sidecar + sandbox Dockerfiles, gateway policy, smoke test, runbook) under `deploy/extmcp/`.
+- **Data-residency split sink** (`pip install baton-proxy[s3]`): `BATON_PAYLOAD_SINK` routes raw tool payloads to a customer-owned sink (e.g. `s3://bucket/prefix`) while the metadata envelope still goes to the console — a config flip, not a code change (`sinks.SplitSink` + `sinks.S3Sink`). `boto3` is lazy-imported and gated behind the `[s3]` extra. The placeholder-consent guard now treats `s3://` as a remote sink (refuses to ship under `BATON_CONSENT_TOKEN='local'`).
+
+### Changed
+- Emitter `enqueue_*` methods accept an optional per-call `session_id`, so a single processor serving many sessions (the ExtMCP path) stamps each event with the session read from that request rather than one process-wide id. Omitting it preserves the previous one-session-per-process behavior — backward compatible for the stdio and `--url` transports.
+
 ## [0.3.1] — 2026-07-11
 
 ### Added
