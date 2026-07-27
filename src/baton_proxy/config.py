@@ -99,6 +99,14 @@ class Config:
     # See DEFAULT_INTENT_PARAM_MODE above.
     intent_param_mode: str = DEFAULT_INTENT_PARAM_MODE
 
+    # Per-tenant secret keying the end-user ``user_id`` HMAC (identity.py).
+    # Raw identity is hashed at the edge with this key before an event reaches
+    # any console-bound sink (residency contract). None → user_id capture is
+    # fail-open-skipped (events still emit, just without the actor field);
+    # user_id is additive analytics, never a consent/authz gate. Populated from
+    # BATON_USER_ID_HMAC_KEY (raw UTF-8 secret) by from_env().
+    user_id_hmac_key: bytes | None = None
+
     @property
     def emission_enabled(self) -> bool:
         """True when the envelope-essential fields are populated. With
@@ -134,6 +142,7 @@ class Config:
                 f"BATON_INTENT_PARAM must be one of {sorted(_INTENT_PARAM_MODES)}; "
                 f"got {intent_param_mode!r}."
             )
+        hmac_key = _env("BATON_USER_ID_HMAC_KEY")
         return cls(
             session_id=str(uuid.uuid4()),
             event_sink=_env("BATON_EVENT_SINK") or DEFAULT_EVENT_SINK,
@@ -143,6 +152,7 @@ class Config:
             vendor_id=vendor_id,
             tenant_type=tenant_type,
             intent_param_mode=intent_param_mode,
+            user_id_hmac_key=hmac_key.encode("utf-8") if hmac_key else None,
             log_file=_env("BATON_PROXY_LOG_FILE"),
         )
 

@@ -32,6 +32,7 @@ from typing import Any
 
 from baton_proxy import USER_AGENT as _SDK_VERSION
 from baton_proxy.config import Config
+from baton_proxy.identity import Principal, hash_user_id
 from baton_proxy.scrub import Scrubber
 from baton_proxy.sinks import Sink, make_sink
 
@@ -67,6 +68,11 @@ class _Event:
     agent_runtime: str
     payload: dict[str, Any]
     runtime_meta: dict[str, Any] | None = None
+    # Hashed end-user actor (HMAC-SHA256, per-tenant, hashed at the edge — the
+    # raw principal is never emitted). None when no identity resolved or no
+    # HMAC key configured. Additive + nullable: omitted from the wire when
+    # None, so a v0.4.x console sees byte-identical output.
+    user_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -84,6 +90,8 @@ class _Event:
         }
         if self.runtime_meta is not None:
             d["runtime_meta"] = self.runtime_meta
+        if self.user_id is not None:
+            d["user_id"] = self.user_id
         return d
 
 
@@ -107,6 +115,8 @@ class Emitter:
         # the queue between our get and put.
         self._enqueue_lock = threading.Lock()
         self._drop_count = 0
+        # One-shot guard so a missing HMAC key logs once, not per event.
+        self._warned_no_hmac_key = False
         # Sink set up in start(); None until then.
         self._sink: Sink | None = None
         # Source-side PII scrubber. Stateful — accumulates per-category
@@ -182,6 +192,7 @@ class Emitter:
         intent_source: str | None = None,
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
+        principal: Principal | None = None,
     ) -> None:
         # `call_intent` is the value stripped from the injected per-tool intent
         # param. It rides the payload as a SIBLING of params — params must stay
@@ -200,6 +211,7 @@ class Emitter:
             payload=payload,
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
             session_id=session_id,
+            principal=principal,
         )
 
     def enqueue_surface_snapshot(
@@ -454,6 +466,7 @@ class Emitter:
         tool_name: str | None = None,
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
+        principal: Principal | None = None,
     ) -> None:
         """Annotation event per SPEC §11.4; nullable keys omitted when None.
 
@@ -477,6 +490,7 @@ class Emitter:
             payload=payload,
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
             session_id=session_id,
+            principal=principal,
         )
 
     def _enqueue(
@@ -486,6 +500,7 @@ class Emitter:
         payload: dict[str, Any],
         runtime_meta: dict[str, Any] | None,
         session_id: str | None = None,
+        principal: Principal | None = None,
     ) -> None:
         # `session_id` overrides the per-process session for callers that
         # carry their own session identity per event (the ExtMCP adapter keys
@@ -494,6 +509,27 @@ class Emitter:
         # stdio-proxy path, which is 1-process-per-user.
         if not self._config.emission_enabled or self._thread is None:
             return
+
+        # Hash the end-user principal AT THE EDGE — the console DB is
+        # metadata-only and may only ever see the hash (residency contract). The
+        # raw principal never survives this method. No key configured → fail-open:
+        # drop user_id, keep emitting, warn once (user_id is additive analytics,
+        # never a consent/authz gate).
+        user_id: str | None = None
+        if principal is not None:
+            key = self._config.user_id_hmac_key
+            if key:
+                user_id = hash_user_id(
+                    principal.user_id,
+                    tenant_id=self._config.tenant_id or "",
+                    key=key,
+                )
+            elif not self._warned_no_hmac_key:
+                self._warned_no_hmac_key = True
+                logger.warning(
+                    "baton-proxy: identity resolved but BATON_USER_ID_HMAC_KEY "
+                    "is unset — dropping user_id (events still emit)"
+                )
 
         # Scrub PII from the payload before anything else touches it. Both
         # the file sink and any HTTP sink will see only the scrubbed copy,
@@ -517,6 +553,7 @@ class Emitter:
             agent_runtime=_AGENT_RUNTIME,
             payload=payload,
             runtime_meta=runtime_meta,
+            user_id=user_id,
         )
 
         with self._enqueue_lock:

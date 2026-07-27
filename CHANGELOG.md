@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-27
+
+### Added
+- **End-user identity capture (`user_id`).** New `baton_proxy.identity` module: `hash_user_id()` (HMAC-SHA256, keyed per tenant with the `tenant_id` folded into the message so the same principal never collides across tenants; `h1:` scheme prefix as the key-rotation seam) plus a `Principal` / `IdentityResolver` seam so each capture modality resolves a raw principal that the core hashes. Hashing happens **at the edge** in `Emitter._enqueue` — the raw principal never survives the method, so a console-bound sink only ever sees the hash.
+- **`user_id` on the event envelope** — additive and nullable: emitted only when a principal resolves and an HMAC key is set, so output is byte-identical to 0.4.x when unused.
+- **`BATON_USER_ID_HMAC_KEY`** config (per-tenant secret). Unset → fail-open: `user_id` is dropped, events still emit (it is additive analytics, never a consent/authz gate); logged once.
+
+### Changed
+- Scrubber `REDACT_FIELD_NAMES` now includes `user_name` (defence-in-depth for the identity PII half). `name` is deliberately excluded — it collides with legitimate payload keys (prompt names, tool names in surface snapshots).
+
 ## [0.4.1] — 2026-07-21
 
 ### Changed

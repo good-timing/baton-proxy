@@ -45,8 +45,12 @@ DEPTH_LIMIT = 10
 # match. Case-insensitive exact match (no plural / prefix matching to keep
 # false positives down). Kept narrow on purpose — too broad and we wreck
 # legitimate fields like ``Slack:channel_token_string_id``.
+# ``user_name`` guards the PII half of a resolved end-user identity
+# (identity.Principal) in the event it ever lands in a payload — defence in
+# depth for the console path (residency contract). NOT ``name``: that collides with
+# legitimate payload keys (prompt names, tool names in surface snapshots).
 REDACT_FIELD_NAMES: frozenset[str] = frozenset(
-    {"email", "phone", "ssn", "api_key", "token", "secret", "password"}
+    {"email", "phone", "ssn", "api_key", "token", "secret", "password", "user_name"}
 )
 
 # Ordered list of (category, pattern). Order matters where patterns can
