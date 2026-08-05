@@ -82,8 +82,27 @@ uvx baton-proxy scan --config github --config-file ./.mcp.json
 Details:
 - The resolved entry's credentials (its `env`, including `${VAR}` references) flow to the wrapped server untouched.
 - An entry that's already `baton-proxy`-wrapped is unwrapped automatically, and its `BATON_*` vars are dropped so the scan session stays local rather than shipping to your real Console.
-- Remote/OAuth (`http`/`sse`) entries aren't supported yet — scan wraps stdio servers.
+- A remote (`http`/`sse`) entry in your config isn't wrapped by `--config` — pass its URL to `--url` instead (below).
 - `--timeout` bounds the run (default 300s; a partial report renders on expiry). `--out` sets the report path.
+
+### Scanning a server you don't operate: `--url`
+
+```bash
+uvx baton-proxy scan --url https://example.com/api/mcp
+```
+
+This is a **different mode for a different job**. `--config` is a self-scan: you point it at your own server and the report is for you. `--url` points the same machinery at a *remote server you do not operate*, over its public endpoint, to produce a report you'd hand to whoever does. The bare `-- <server>` form remains a hard error — `--url` isn't that rule relaxed, it's a separate path that says on the report's face who ran the scan.
+
+Because the target is someone else's production server, `--url` runs as a **guest**, and the limits are enforced in the proxy rather than merely requested of the agent:
+
+- **Nothing that already exists gets touched.** A `tools/call` whose tool name is write-shaped (`create_*`, `delete_*`, `slack_send_message`, …) is refused before it reaches the wire; classification is name-based and errs toward refusing. The driver prompt draws the finer line the guard can't: never update, delete or send, and never pass an id it wasn't just handed — but on a server whose only meaningful tool mints a new object, it may create one self-scoped throwaway rather than scan a server it never calls.
+- **Low volume.** A hard ceiling on upstream tool calls — `--max-calls N` (default 30).
+- **Honest identification.** The outbound `User-Agent` becomes `baton-proxy/<version> (+https://github.com/good-timing/baton-proxy; preflight friction scan; read-only)`, so an operator who finds it in their access log can tell who called and why.
+- **Disclosed, not hidden.** Withheld calls are recorded as `guest_guard_refusal` events, listed in the report's header, and never counted as the server's friction — a call we blocked is our restriction, not their defect.
+
+The report states its own provenance: scan mode, endpoint, guest limits, and that no account or credentials were used. Auth, if the endpoint needs it, comes from `BATON_UPSTREAM_AUTH_TOKEN` (same as the `--url` bridge).
+
+The guest guard is off unless `BATON_GUEST_MODE` is set, which `scan --url` does for you. The permanent wrap on your own server is never read-only or rate-limited.
 
 ## What gets emitted
 

@@ -673,12 +673,24 @@ def _no_events_template(session_id: str, sink_path: str) -> str:
 # =============================================================================
 
 
+# Which invocation produced this report. Not cosmetic: a self-scan and a
+# third-party scan differ in who ran it, whose credentials were used, whether
+# anything left the machine, and who the reader is. A third-party report that
+# reads like the operator's own is a falsehood in a document we hand to a
+# stranger, so the mode is stated on the face of the report, not inferred.
+SCAN_MODE_SELF = "self"
+SCAN_MODE_THIRD_PARTY = "third_party"
+
+
 def synthesize_scan(
     sink_path: str,
     session_id: str,
     *,
     server_label: str | None = None,
     scrub_counts: dict[str, int] | None = None,
+    mode: str = SCAN_MODE_SELF,
+    target: str | None = None,
+    max_calls: int | None = None,
 ) -> str:
     """Render a scan friction report anchored on mechanical signals.
 
@@ -686,6 +698,9 @@ def synthesize_scan(
     stub when errors/retries are present — a captured ``tool_call_error``
     always surfaces as a friction point. Reactive annotations, if the agent
     happened to file any, enrich finding labels but are not required.
+
+    ``mode`` selects the provenance block (see the module constants). ``target``
+    and ``max_calls`` describe a third-party scan's endpoint and guest budget.
     """
     events = _read_session_events(sink_path, session_id)
     if not events:
@@ -706,6 +721,9 @@ def synthesize_scan(
         findings,
         server_label=server_label,
         scrub_counts=scrub_counts,
+        mode=mode,
+        target=target,
+        max_calls=max_calls,
     )
 
 
@@ -878,31 +896,41 @@ def _render_scan_markdown(
     *,
     server_label: str | None = None,
     scrub_counts: dict[str, int] | None = None,
+    mode: str = SCAN_MODE_SELF,
+    target: str | None = None,
+    max_calls: int | None = None,
 ) -> list[str] | str:
     starts = [e for e in events if e.get("event_type") == "tool_call_start"]
     ends = [e for e in events if e.get("event_type") == "tool_call_end"]
     errors = [e for e in events if e.get("event_type") == "tool_call_error"]
+    refusals = [e for e in events if e.get("event_type") == "guest_guard_refusal"]
     n_calls = len(starts)
     n_err = len(errors)
     decided = len(ends) + n_err
     success = round(100 * len(ends) / decided) if decided else 100
     label = server_label or _first_meta(events, "vendor_id") or "the scanned server"
+    third_party = mode == SCAN_MODE_THIRD_PARTY
 
     lines: list[str] = [
         "# Baton scan — preflight friction report",
         "",
-        (
-            "> ⚠️ **Inferred, not real-user data.** This previews the friction a "
-            "driven agent is *likely* to hit on this server. The permanent wrap "
-            "captures what your real users actually hit."
-        ),
+    ]
+    lines += _scan_provenance_banner(third_party)
+    lines += [
         "",
         f"**Server** `{label}`  ",
+    ]
+    if third_party and target:
+        lines.append(f"**Endpoint** `{target}` (remote, Streamable HTTP)  ")
+    lines.append(_scan_mode_line(third_party))
+    lines += [
         f"**This run** {n_calls} {_plural(n_calls, 'call')} · "
         f"{n_err} {_plural(n_err, 'error')} · {success}% success  ",
         f"**Friction points found** {len(findings)} "
         "_(errors & retries, plus model-flagged silent-success / gaps)_",
     ]
+    if third_party:
+        lines.append(_scan_guest_line(refusals, max_calls))
     scrub_line = _format_scrub_counts(scrub_counts)
     if scrub_line:
         lines.append(f"**Scrubbed fields** {scrub_line}  ")
@@ -920,13 +948,93 @@ def _render_scan_markdown(
             ),
             "",
         ]
-        lines += _render_scan_footer()
+        lines += _render_scan_footer(third_party)
         return "\n".join(lines)
 
     for i, f in enumerate(findings, start=1):
         lines += _render_scan_finding(f, i)
-    lines += _render_scan_footer()
+    lines += _render_scan_footer(third_party)
     return "\n".join(lines)
+
+
+def _scan_provenance_banner(third_party: bool) -> list[str]:
+    """The honesty banner. Both modes disclose that the findings are inferred
+    from one driven run; the third-party mode additionally discloses who ran it,
+    because that report's reader did not."""
+    if third_party:
+        return [
+            (
+                "> ⚠️ **Third-party scan — inferred, not real-user data.** An "
+                "outside client pointed a driven agent at this server's public "
+                "endpoint and wrote up what it hit. Nobody from this server's "
+                "team ran it, no account or credentials were used, and it "
+                "previews the friction an agent is *likely* to meet — it is not a "
+                "record of what real users hit."
+            ),
+        ]
+    return [
+        (
+            "> ⚠️ **Inferred, not real-user data.** This previews the friction a "
+            "driven agent is *likely* to hit on this server. The permanent wrap "
+            "captures what your real users actually hit."
+        ),
+    ]
+
+
+def _scan_mode_line(third_party: bool) -> str:
+    if third_party:
+        return (
+            "**Scan mode** `--url` — third-party: run from the outside by someone "
+            "who does not operate this server  "
+        )
+    return "**Scan mode** `--config` — self-scan: run by the server's own operator  "
+
+
+def _scan_guest_line(refusals: list[dict[str, Any]], max_calls: int | None) -> str:
+    """Disclose the guest limits and what they actually blocked.
+
+    Stated even when nothing was refused: the point is to tell the operator what
+    this client would and would not do on their server, which is exactly the
+    question they'd ask on finding us in their logs.
+    """
+    budget = f"≤{max_calls} upstream calls" if max_calls else "a capped number of calls"
+    parts = [f"read-only guard · {budget} · no credentials sent"]
+    if refusals:
+        names = sorted({str((e.get("payload") or {}).get("tool_name") or "?") for e in refusals})
+        shown = ", ".join(f"`{n}`" for n in names[:6])
+        more = f" +{len(names) - 6} more" if len(names) > 6 else ""
+        parts.append(
+            f"{len(refusals)} {_plural(len(refusals), 'call')} withheld by the guard "
+            f"({shown}{more}) — not counted as friction"
+        )
+    return "**Guest limits** " + " · ".join(parts) + "  "
+
+
+def _render_scan_footer(third_party: bool = False) -> list[str]:
+    if third_party:
+        return [
+            "---",
+            "",
+            (
+                "_Preflight third-party scan: friction inferred from one driven agent "
+                "run against this server's public endpoint, rendered locally. The "
+                "agent's calls reached the server; nothing else did, and no data left "
+                "the machine that ran the scan. To see what your **real** users hit "
+                "instead of a robot — including the requests your server can't answer "
+                "— put the wrap on your server (`pipx install baton-proxy`) and the "
+                "capture is continuous._"
+            ),
+        ]
+    return [
+        "---",
+        "",
+        (
+            "_Preflight scan: friction inferred mechanically from one driven "
+            "agent run, rendered locally — nothing left your machine. Install the "
+            "wrap (`pipx install baton-proxy`, prepend `baton-proxy --` to your "
+            "MCP entry) to capture what your real users hit, continuously._"
+        ),
+    ]
 
 
 def _render_scan_finding(f: dict[str, Any], index: int) -> list[str]:
@@ -987,16 +1095,3 @@ def _render_scan_finding(f: dict[str, Any], index: int) -> list[str]:
 
     # Only "error" and "reactive" findings exist; any other kind is a bug.
     return [f"## Friction {index} — `{tool}`", "", "*unrecognized finding kind*", ""]
-
-
-def _render_scan_footer() -> list[str]:
-    return [
-        "---",
-        "",
-        (
-            "_Preflight scan: friction inferred mechanically from one driven "
-            "agent run, rendered locally — nothing left your machine. Install the "
-            "wrap (`pipx install baton-proxy`, prepend `baton-proxy --` to your "
-            "MCP entry) to capture what your real users hit, continuously._"
-        ),
-    ]

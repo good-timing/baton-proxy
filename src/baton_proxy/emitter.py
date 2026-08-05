@@ -505,6 +505,28 @@ class Emitter:
             principal=principal,
         )
 
+    def enqueue_guest_guard_refusal(
+        self,
+        *,
+        tool_name: str,
+        reason: str,
+    ) -> None:
+        """Record a call the proxy's guest guard refused to make upstream.
+
+        Emitted only under ``BATON_GUEST_MODE`` (see ``baton_proxy.guest``), and
+        deliberately NOT a ``tool_call_error``: this call never reached the
+        server, so it is our restriction and not the target's friction. Keeping
+        it a distinct event type means the mechanical finding pass — which
+        matches on the error/start types — can never render it as a defect of a
+        server we don't own, while the scan report can still disclose that we
+        held back.
+        """
+        self._enqueue(
+            event_type="guest_guard_refusal",
+            payload={"tool_name": tool_name, "reason": reason},
+            runtime_meta=None,
+        )
+
     def _enqueue(
         self,
         *,

@@ -19,8 +19,15 @@ def test_scan_main_requires_config() -> None:
 
 def test_scan_main_rejects_bare_server_form() -> None:
     # The bare `-- <server>` form is intentionally unsupported; require --config.
+    # `--url` did NOT relax this — it added a separate, explicitly-labeled mode.
     with pytest.raises(SystemExit):
         scan.scan_main(["--", "npx", "-y", "@vendor/mcp-server"])
+
+
+def test_scan_main_rejects_url_with_config() -> None:
+    # Two different modes for two different operators; picking both is a mistake.
+    with pytest.raises(SystemExit):
+        scan.scan_main(["--url", "https://example.com/mcp", "--config", "github"])
 
 
 def test_write_mcp_config_wraps_server_in_proxy(tmp_path) -> None:
@@ -163,6 +170,71 @@ def test_resolve_config_entry_missing_lists_available(tmp_path) -> None:
     except scan.ScanConfigError as e:
         msg = str(e)
         assert "nope" in msg and "github" in msg and "notion" in msg
+
+
+# --- --url (third-party) mode ------------------------------------------------
+
+
+def test_resolve_url_target_returns_host_and_url() -> None:
+    label, url = scan._resolve_url_target("https://stopful.com/api/mcp")
+    assert label == "stopful.com"  # the host is the report's server name
+    assert url == "https://stopful.com/api/mcp"
+
+
+@pytest.mark.parametrize(
+    "raw", ["stopful.com/api/mcp", "npx @vendor/server", "ftp://x/mcp", "https://"]
+)
+def test_resolve_url_target_rejects_non_http_urls(raw: str) -> None:
+    with pytest.raises(scan.ScanConfigError):
+        scan._resolve_url_target(raw)
+
+
+def test_resolve_url_target_rejects_plaintext_http_to_a_remote_host() -> None:
+    # We may be sending a bearer token; a scan shouldn't be what puts one on the
+    # wire in the clear.
+    with pytest.raises(scan.ScanConfigError):
+        scan._resolve_url_target("http://stopful.com/api/mcp")
+
+
+def test_resolve_url_target_allows_plaintext_http_to_loopback() -> None:
+    label, _url = scan._resolve_url_target("http://localhost:8080/mcp")
+    assert label == "localhost"
+
+
+def test_write_mcp_config_url_form_uses_the_http_bridge(tmp_path) -> None:
+    sink = str(tmp_path / "events.jsonl")
+    cfg_path = scan._write_mcp_config(
+        str(tmp_path),
+        [],
+        "stopful.com",
+        sink,
+        extra_env=scan._guest_env(12),
+        url="https://stopful.com/api/mcp",
+    )
+    target = json.loads(open(cfg_path).read())["mcpServers"]["scan_target"]
+    # The agent still talks stdio to a local baton-proxy — only the upstream leg
+    # changes — so capture/injection/rendering stay the one code path.
+    assert target["command"] == sys.executable
+    assert target["args"] == ["-m", "baton_proxy", "--url", "https://stopful.com/api/mcp"]
+    assert target["env"]["BATON_GUEST_MODE"] == "1"
+    assert target["env"]["BATON_GUEST_MAX_CALLS"] == "12"
+    assert target["env"]["BATON_EVENT_SINK"] == f"file://{sink}"
+
+
+def test_guest_env_is_not_set_for_the_config_path(tmp_path) -> None:
+    """A self-scan on your own server must not be silently read-only."""
+    cfg_path = scan._write_mcp_config(
+        str(tmp_path), ["npx", "-y", "@scope/pkg"], "vendor", str(tmp_path / "e.jsonl")
+    )
+    env = json.loads(open(cfg_path).read())["mcpServers"]["scan_target"]["env"]
+    assert "BATON_GUEST_MODE" not in env
+
+
+def test_no_events_guidance_differs_by_mode(tmp_path) -> None:
+    remote = scan._no_events_guidance("stopful.com", str(tmp_path), remote=True)
+    local = scan._no_events_guidance("github", str(tmp_path))
+    assert "authentication" in remote and "BATON_UPSTREAM_AUTH_TOKEN" in remote
+    assert "failed to start" in local and "npx" in local
 
 
 def test_write_mcp_config_merges_entry_env_and_baton_wins(tmp_path) -> None:

@@ -2,15 +2,26 @@
 
 Drives a headless agent through a wrapped MCP server and renders a friction
 report, with **no permanent install and no change to the user's Claude config**.
-This is the activation CTA: ``uvx baton-proxy scan --config <name>`` — it targets
-a server the user has already configured in Claude, reusing that entry's saved
-credentials (a friction report only lands on a server they actually run).
 
-Pipeline — all local, nothing leaves the machine:
+Two modes, for two different people, deliberately kept apart:
+
+* ``--config <name>`` — **self-scan** (the activation CTA). The operator scans a
+  server *they* configured and run, reusing that entry's saved credentials. The
+  aha only lands on a server you own and understand, which is why the bare
+  ``-- <server>`` form is a hard error and stays one (2026-06-23 decision).
+* ``--url <url>`` — **third-party scan** (outreach). We point the same machinery
+  at a stranger's public MCP server to produce a cold-outreach artifact. Not a
+  relaxation of the rule above: different operator, different purpose. It is not
+  reachable by accident, it runs under the ``guest`` module's read-only + low-
+  volume guard, and the report says on its face which mode produced it — because
+  a report that reads like the operator's own is a lie to whoever receives it.
+
+Pipeline — all local, nothing but the MCP calls themselves leaves the machine:
 
   1. write an ephemeral MCP config in a temp dir pointing a headless agent at
-     ``baton-proxy -- <server>`` with a file event sink (the proxy captures
-     friction exactly as in the live wrap);
+     ``baton-proxy -- <server>`` (or ``baton-proxy --url <url>`` for a remote
+     target) with a file event sink — the proxy captures friction exactly as in
+     the live wrap;
   2. drive ``claude -p`` headlessly through that config (the agent is the
      "robot user"; LLM cost lands on the dev's own auth, never Baton's);
   3. render the scan report (``report.synthesize_scan``) → ``./baton-report.md``
@@ -29,8 +40,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlparse
 
-from baton_proxy import report
+from baton_proxy import guest, report
 
 # Wall-clock budget for the agent run. A CTA must always finish in a few
 # minutes; on timeout we still render whatever was captured (partial report)
@@ -46,6 +58,21 @@ _BATON_PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
 class ScanConfigError(Exception):
     """A ``--config`` resolution failure carrying a user-facing message."""
 
+
+# Step 5 of both plans. Shared verbatim because it is the load-bearing bit for
+# report CONTENT (see the GENERIC_PLAN comment) and the two modes must never
+# drift on it — a self-scan and a third-party scan should differ in how hard
+# they push the server, not in how honestly they record what they found.
+_ANNOTATE_STEP = (
+    "5. The moment you hit a friction — an errored or timed-out call, a confusing "
+    "parameter, a missing capability, a multi-step detour for a simple goal, an "
+    "oversized response, or a silent success (a call that returns ok but didn't "
+    "do what you asked) — record it with the `baton_annotate` tool right then: "
+    "set signal_type, restate what the user was trying to do (intent), and give a "
+    "concrete suggested_improvement. Annotate the friction itself, not just your "
+    "final summary — a friction you only describe in prose is not captured. Do "
+    "NOT invent friction; annotate only what you genuinely encountered.\n"
+)
 
 # The driver prompt for every scan — the "scan YOUR server" path. Reliability
 # on an arbitrary server comes from HOW we drive, not from a task library:
@@ -72,15 +99,52 @@ GENERIC_PLAN = (
     "especially ones the tools might not support.\n"
     "4. After each action, VERIFY it did exactly what you intended (read back or "
     "re-query). Watch closely for tools that report success but did not actually "
-    "do what you asked.\n"
-    "5. The moment you hit a friction — an errored or timed-out call, a confusing "
-    "parameter, a missing capability, a multi-step detour for a simple goal, an "
-    "oversized response, or a silent success (a call that returns ok but didn't "
-    "do what you asked) — record it with the `baton_annotate` tool right then: "
-    "set signal_type, restate what the user was trying to do (intent), and give a "
-    "concrete suggested_improvement. Annotate the friction itself, not just your "
-    "final summary — a friction you only describe in prose is not captured. Do "
-    "NOT invent friction; annotate only what you genuinely encountered.\n"
+    "do what you asked.\n" + _ANNOTATE_STEP + "Finish with a short summary of the roughest edges."
+)
+
+# The driver prompt for `--url` — a stranger's production server. Same detection
+# machinery, opposite posture on steps 2-4: the self-scan plan tells the agent to
+# exercise EVERY tool and try things that might not be supported, which on
+# someone else's server means writing to their data and running up their bill.
+# This is the prompt half of the politeness contract; `baton_proxy.guest` is the
+# mechanical half that holds when the model gets enthusiastic anyway.
+#
+# Step 2 draws the line at OTHER PEOPLE'S state rather than at "any write",
+# which is a deliberate call. A flat no-writes rule reads stricter but makes the
+# mode useless on the exact archetype it targets: plenty of public servers have
+# one tool that mints a fresh object for the caller (a route, a diagram, a
+# short link), and refusing it means scanning a server without ever calling it.
+# Creating something self-scoped that nobody else can see is genuinely different
+# from editing, deleting, or sending — so the rule is "touch nothing that
+# existed before you arrived, and reuse no identifier you were not just given",
+# which is the property that actually keeps a stranger's data safe. The blunt
+# name-based guard in `guest` still refuses anything obviously destructive; it
+# can't read a schema, so nuance lives here.
+#
+# The closing line matters — a guard refusal is our restriction, and an agent
+# that logged it as a server defect would put a falsehood in a document we hand
+# to that server's operator.
+GUEST_PLAN = (
+    "You are evaluating the API design of a PUBLIC MCP server that belongs to "
+    "SOMEONE ELSE. You are a guest on production infrastructure you do not own, "
+    "you were not invited, and every call may cost its operator money.\n"
+    "1. List every tool and read its schema carefully — most of what a developer "
+    "needs to know is visible there, at zero cost to the operator.\n"
+    "2. TOUCH NOTHING THAT ALREADY EXISTS. Prefer tools that read, search, list, "
+    "fetch or describe. Never update, delete, overwrite, or send anything, and "
+    "never pass an id, key, or name you were not handed by a call you just made "
+    "— that would edit a stranger's data. If the server's only meaningful tool "
+    "creates something, you may create ONE self-scoped throwaway of your own "
+    "with plainly fictional inputs, and then only read it back.\n"
+    "3. Keep the volume low: a few calls per tool at most. Do not enumerate "
+    "exhaustively, do not loop, and do not retry a failing call more than once.\n"
+    "4. Within those limits, use the surface the way a real user would: chain "
+    "one realistic multi-step task, try the filters and query shapes a user "
+    "would expect, and VERIFY each result is actually what you asked for — watch "
+    "for calls that report success but return nothing useful.\n"
+    + _ANNOTATE_STEP
+    + "If a call is refused by baton-proxy's guest guard, that is OUR restriction "
+    "and not the server's — never record it as friction.\n"
     "Finish with a short summary of the roughest edges."
 )
 
@@ -116,6 +180,27 @@ def scan_main(argv: list[str]) -> int:
         help="Search this MCP config file for --config NAME instead of the standard locations.",
     )
     parser.add_argument(
+        "--url",
+        metavar="URL",
+        help=(
+            "Scan a REMOTE MCP server by URL (Streamable HTTP) that you do not "
+            "operate — the third-party/outreach mode. Runs as a polite guest: "
+            "read-only, a capped number of calls, and identified honestly in the "
+            "User-Agent. The report is labeled third-party, not a self-scan."
+        ),
+    )
+    parser.add_argument(
+        "--max-calls",
+        type=int,
+        default=guest.DEFAULT_MAX_UPSTREAM_CALLS,
+        metavar="N",
+        help=(
+            f"--url only: ceiling on upstream tool calls (default "
+            f"{guest.DEFAULT_MAX_UPSTREAM_CALLS}). Lower it further on a server you "
+            "suspect is expensive to call."
+        ),
+    )
+    parser.add_argument(
         # Accepted only so a bare `-- <server>` invocation gets a tailored error
         # pointing at --config, rather than an opaque argparse failure.
         "server",
@@ -128,32 +213,50 @@ def scan_main(argv: list[str]) -> int:
     if bare_server and bare_server[0] == "--":
         bare_server = bare_server[1:]
 
-    # scan targets a server you've configured in Claude (`--config <name>`),
-    # reusing that entry's saved credentials. A friction report only delivers
-    # its insight on a server you actually run, so the bare `-- <server>` form
-    # (idly scanning a stranger's server) is intentionally not supported.
+    # The bare `-- <server>` form stays a hard error. It was made one because a
+    # self-scan only produces the aha on a server the operator owns and
+    # understands, and that reasoning is untouched by `--url` existing: `--url`
+    # is not "the bare form with the guard rails off", it's a different mode for
+    # a different operator, and it says so in its own report.
     if bare_server:
         parser.error(
             "the bare `-- <server>` form is not supported; scan targets a server "
             "you've configured in Claude. Add it to your config and run "
-            "`baton-proxy scan --config <name>`."
+            "`baton-proxy scan --config <name>`. To scan a remote server you do "
+            "NOT operate, use `--url <url>` (third-party mode)."
         )
+    if args.url and (args.config or args.config_file):
+        parser.error("--url and --config are different scan modes; pass exactly one")
     if args.config_file and not args.config:
         parser.error("--config-file requires --config NAME")
-    if not args.config:
+    if not args.config and not args.url:
         parser.error(
             "scan requires --config NAME — point it at an MCP server you've configured "
             "in Claude (e.g. `--config github`). It reuses that entry's saved "
-            "credentials; nothing leaves your machine."
+            "credentials; nothing leaves your machine. To scan a remote server you "
+            "do NOT operate, use `--url <url>`."
         )
 
-    try:
-        server_cmd, entry_env, label = _resolve_config_entry(args.config, args.config_file)
-    except ScanConfigError as e:
-        print(f"✗ {e}")
-        return 2
-    creds_note = ", reusing its saved credentials" if entry_env else ""
-    source_note = f" (config entry `{args.config}`{creds_note})"
+    server_cmd: list[str] = []
+    entry_env: dict[str, str] = {}
+    if args.url:
+        try:
+            label, target = _resolve_url_target(args.url)
+        except ScanConfigError as e:
+            print(f"✗ {e}")
+            return 2
+        mode = report.SCAN_MODE_THIRD_PARTY
+        source_note = " (remote server, not operated by you)"
+    else:
+        try:
+            server_cmd, entry_env, label = _resolve_config_entry(args.config, args.config_file)
+        except ScanConfigError as e:
+            print(f"✗ {e}")
+            return 2
+        mode = report.SCAN_MODE_SELF
+        target = None
+        creds_note = ", reusing its saved credentials" if entry_env else ""
+        source_note = f" (config entry `{args.config}`{creds_note})"
 
     driver = _resolve_driver()
     if driver is None:
@@ -161,10 +264,28 @@ def scan_main(argv: list[str]) -> int:
 
     workdir = tempfile.mkdtemp(prefix="baton-scan-")
     sink_path = os.path.join(workdir, "events.jsonl")
-    cfg_path = _write_mcp_config(workdir, server_cmd, label, sink_path, extra_env=entry_env)
-    plan = GENERIC_PLAN
+    max_calls = max(1, int(args.max_calls))
+    if args.url:
+        entry_env = _guest_env(max_calls)
+    cfg_path = _write_mcp_config(
+        workdir, server_cmd, label, sink_path, extra_env=entry_env, url=args.url
+    )
+    plan = GUEST_PLAN if args.url else GENERIC_PLAN
 
-    print(f"▸ scanning {label}{source_note} — preflight (inferred; nothing leaves your machine)")
+    # "nothing leaves your machine" is true of a stdio self-scan and false of a
+    # remote one — the agent's calls are exactly what leaves. Say the true thing
+    # for each mode rather than the reassuring one for both.
+    privacy_note = (
+        "the agent's calls reach the server, nothing else leaves"
+        if args.url
+        else "nothing leaves your machine"
+    )
+    print(f"▸ scanning {label}{source_note} — preflight (inferred; {privacy_note})")
+    if args.url:
+        print(
+            f"▸ guest mode: read-only, ≤{max_calls} upstream calls, "
+            f"identifying as {guest.user_agent({guest.GUEST_MODE_ENV: '1'})}"
+        )
     print(f"▸ driving agent through the wrapped server (budget {args.timeout}s)…")
     try:
         timed_out = _run_agent(driver, plan, cfg_path, workdir, args.timeout)
@@ -177,14 +298,16 @@ def scan_main(argv: list[str]) -> int:
 
     sid = _first_session_id(sink_path)
     if sid is None:
-        print(_no_events_guidance(label, workdir))
+        print(_no_events_guidance(label, workdir, remote=bool(args.url)))
         return 1
 
-    md = report.synthesize_scan(sink_path, sid, server_label=label)
+    md = report.synthesize_scan(
+        sink_path, sid, server_label=label, mode=mode, target=target, max_calls=max_calls
+    )
     out_path = args.out
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(md + "\n")
-    _print_headline(md, out_path, timed_out=timed_out)
+    _print_headline(md, out_path, timed_out=timed_out, third_party=bool(args.url))
     # Success: the report is written to out_path; nothing else references the
     # temp dir. Drop the whole thing so no captured events (which can include
     # tool-argument secrets) linger on disk — "creds never move." The
@@ -248,8 +371,9 @@ def _write_mcp_config(
     sink_path: str,
     *,
     extra_env: dict[str, str] | None = None,
+    url: str | None = None,
 ) -> str:
-    """Write an ephemeral MCP config that launches the server wrapped by
+    """Write an ephemeral MCP config that launches the target wrapped by
     baton-proxy with a file sink.
 
     The agent's MCP client merges this ``env`` over the inherited environment
@@ -258,15 +382,21 @@ def _write_mcp_config(
     credentials resolved from a ``--config`` entry; ``${VAR}`` references in
     those values are expanded by the MCP client at launch (also verified). The
     proxy's own vars are set LAST so a stray entry value can never shadow them.
+
+    With ``url`` set the wrapper runs the proxy's existing HTTPS bridge
+    (``baton-proxy --url``) instead of spawning a child process — the agent
+    still talks stdio to a local baton-proxy, so everything downstream (capture,
+    injection, correlation, rendering) is the same code path as the stdio scan.
     """
     env: dict[str, str] = dict(extra_env or {})
     env["BATON_VENDOR_ID"] = label
     env["BATON_EVENT_SINK"] = f"file://{sink_path}"
+    args = ["-m", "baton_proxy", "--url", url] if url else ["-m", "baton_proxy", "--", *server_cmd]
     cfg = {
         "mcpServers": {
             "scan_target": {
                 "command": sys.executable,
-                "args": ["-m", "baton_proxy", "--", *server_cmd],
+                "args": args,
                 "env": env,
             }
         }
@@ -275,6 +405,44 @@ def _write_mcp_config(
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f)
     return path
+
+
+def _guest_env(max_calls: int) -> dict[str, str]:
+    """Environment that switches the wrapped proxy into guest mode.
+
+    Passed through the generated MCP config rather than relying on inheritance,
+    so the guard is on by construction for every ``--url`` scan and can't be
+    silently lost if the client's env layering ever changes.
+    """
+    return {
+        guest.GUEST_MODE_ENV: "1",
+        guest.GUEST_MAX_CALLS_ENV: str(max_calls),
+    }
+
+
+def _resolve_url_target(raw: str) -> tuple[str, str]:
+    """Validate a ``--url`` target and return ``(label, url)``.
+
+    ``label`` is the host — it becomes ``BATON_VENDOR_ID`` and the report's
+    server name, where the full URL would be noise. Refuses a non-HTTP scheme
+    outright, and refuses plain ``http://`` for a non-loopback host: we may be
+    sending an auth token, and a scan of a stranger's server should not be the
+    thing that puts one on the wire in clear text.
+    """
+    parsed = urlparse(raw)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ScanConfigError(
+            f"`{raw}` is not an http(s) URL.\n"
+            "  → pass the server's Streamable HTTP endpoint, e.g. "
+            "`--url https://example.com/api/mcp`."
+        )
+    host = parsed.hostname or parsed.netloc
+    if parsed.scheme == "http" and host not in ("localhost", "127.0.0.1", "::1"):
+        raise ScanConfigError(
+            f"`{raw}` is plain http to a remote host.\n"
+            "  → use https, so credentials and payloads aren't sent in clear text."
+        )
+    return host, raw
 
 
 def _safe_unlink(path: str) -> None:
@@ -462,9 +630,25 @@ def _first_session_id(sink_path: str) -> str | None:
     return None
 
 
-def _no_events_guidance(label: str, workdir: str) -> str:
-    """No events => the wrapped server never produced a tool call. Almost
-    always: it needs credentials to boot, or the command failed to start."""
+def _no_events_guidance(label: str, workdir: str, *, remote: bool = False) -> str:
+    """No events => the wrapped target never produced a tool call. The likely
+    causes differ by mode, so the guidance does too: a configured stdio server
+    usually failed to launch, while a remote endpoint usually answered but
+    wanted auth (or isn't a Streamable HTTP endpoint at all)."""
+    log_hint = f"  Agent log for debugging: {os.path.join(workdir, 'agent.log')}"
+    if remote:
+        return (
+            f"\n✗ no friction captured for `{label}` — the remote server produced no "
+            "tool calls.\n"
+            "  Most likely it needs authentication, exposes no callable tools, or "
+            "isn't a Streamable HTTP MCP endpoint:\n"
+            "    • check the URL is the MCP endpoint itself (often `/mcp`), not the "
+            "docs page.\n"
+            "    • if it needs a bearer token, export BATON_UPSTREAM_AUTH_TOKEN "
+            "before re-running.\n"
+            "    • every tool may have been refused as write-shaped — the guest "
+            "guard is read-only by design.\n" + log_hint
+        )
     return (
         f"\n✗ no friction captured for `{label}` — the wrapped server produced no "
         "tool calls.\n"
@@ -473,12 +657,11 @@ def _no_events_guidance(label: str, workdir: str) -> str:
         "    • confirm the entry works in Claude itself (scan runs the same command "
         "+ env).\n"
         "    • `npx`/`uvx` servers auto-install; a local or private server must be "
-        "built first.\n"
-        f"  Agent log for debugging: {os.path.join(workdir, 'agent.log')}"
+        "built first.\n" + log_hint
     )
 
 
-def _print_headline(md: str, out_path: str, *, timed_out: bool) -> None:
+def _print_headline(md: str, out_path: str, *, timed_out: bool, third_party: bool = False) -> None:
     """Print the report header (through the friction count) + pointers."""
     print()
     for line in md.splitlines():
@@ -489,7 +672,16 @@ def _print_headline(md: str, out_path: str, *, timed_out: bool) -> None:
     if timed_out:
         print("⚠️  agent hit the time budget — report is partial.")
     print(f"Full report   → ./{out_path}")
-    print(
-        "Keep it on    → `pipx install baton-proxy`, then prepend `baton-proxy --` "
-        "to your MCP entry to capture real-user friction continuously."
-    )
+    if third_party:
+        # The next step for a third-party scan is a human deciding whether the
+        # report is worth sending — not an install prompt aimed at an operator
+        # who isn't standing here.
+        print(
+            "Next          → read it before sending. It's addressed to this server's "
+            "operator and says on its face that an outsider ran it."
+        )
+    else:
+        print(
+            "Keep it on    → `pipx install baton-proxy`, then prepend `baton-proxy --` "
+            "to your MCP entry to capture real-user friction continuously."
+        )

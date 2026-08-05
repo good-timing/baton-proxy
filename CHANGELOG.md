@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`baton-proxy scan --url <url>` — third-party scan mode.** `scan` can now target a remote Streamable HTTP MCP server by URL, reusing the existing `--url` bridge as the upstream leg (the driven agent still talks stdio to a local proxy, so capture/injection/correlation/rendering are the same code path as the stdio scan). This is a **separate mode**, not a relaxation of the 2026-06-23 ownership decision: the bare `-- <server>` form remains a hard error, `--url` is mutually exclusive with `--config`, and the two modes render different reports for different readers.
+- **Guest mode** (`baton_proxy.guest`), which `scan --url` enables for the target it scans. Enforced in the proxy, not just requested of the agent: write-shaped tool calls are refused before they reach the wire, upstream tool calls are capped (`--max-calls`, default 30), and the outbound `User-Agent` carries a comment naming the tool, its source URL, and its read-only purpose so a scanned operator can identify us from their access log. The guard fails **closed** — an error in it refuses the call rather than sending an unvetted one to a server we don't own.
+- **`guest_guard_refusal` event.** Records a call the guard withheld. Deliberately not a `tool_call_error`: the call never reached the server, so it is our restriction and must never render as that server's friction. The mechanical finding pass ignores it; the report's header discloses it.
+- **Scan report provenance.** `synthesize_scan()` takes `mode` / `target` / `max_calls` and states on the report's face which invocation produced it — self-scan vs third-party, the endpoint scanned, the guest limits, and what was withheld. The self-scan footer's "nothing left your machine" claim is replaced in third-party mode, where it would be false.
+
+### Changed
+- The HTTP bridge's outbound `User-Agent` is now built by `guest.user_agent()`. Outside guest mode it is byte-identical to before (the bare `baton-proxy/<version>` product token).
+
 ## [0.5.0] — 2026-07-27
 
 ### Added

@@ -413,6 +413,117 @@ def test_sends_identifying_headers() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Guest mode — `scan --url` against a server we don't own                      #
+# --------------------------------------------------------------------------- #
+
+
+def _echo(req_id: int, text: str = "hi") -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "tools/call",
+        "params": {"name": "echo", "arguments": {"text": text}},
+    }
+
+
+def test_guest_mode_refuses_write_shaped_call_before_the_wire(http_server) -> None:
+    """A write-shaped call must never reach a stranger's server, and must leave
+    NO trace in the friction stream — a `tool_call_error` here would be rendered
+    as a defect of a server that never even saw the request."""
+    write_call = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "delete_everything", "arguments": {}},
+    }
+    stdout, events = _drive_proxy(
+        http_server, [REQUESTS[0], write_call], env_extra={"BATON_GUEST_MODE": "1"}
+    )
+
+    refused = [m for m in stdout if m.get("id") == 2 and "error" in m]
+    assert refused, "the guard did not answer the refused call"
+    message = refused[0]["error"]["message"]
+    assert "guest guard" in message
+    assert "OUR restriction" in message
+
+    called = [e for e in events if e.get("event_type", "").startswith("tool_call")]
+    assert called == [], f"a refused call leaked into the friction stream: {called}"
+    refusals = [e for e in events if e.get("event_type") == "guest_guard_refusal"]
+    assert len(refusals) == 1
+    assert refusals[0]["payload"]["tool_name"] == "delete_everything"
+    assert refusals[0]["payload"]["reason"] == "write_shaped_tool"
+
+
+def test_guest_mode_caps_call_volume(http_server) -> None:
+    """The budget is what holds when the driven agent ignores the prompt."""
+    stdout, events = _drive_proxy(
+        http_server,
+        [REQUESTS[0], _echo(2), _echo(3), _echo(4)],
+        env_extra={"BATON_GUEST_MODE": "1", "BATON_GUEST_MAX_CALLS": "2"},
+    )
+
+    starts = [e for e in events if e.get("event_type") == "tool_call_start"]
+    assert len(starts) == 2, "budget did not cap the upstream calls"
+    errors = [m for m in stdout if m.get("id") == 4 and "error" in m]
+    assert errors and "budget" in errors[0]["error"]["message"]
+    refusals = [e for e in events if e.get("event_type") == "guest_guard_refusal"]
+    assert [r["payload"]["reason"] for r in refusals] == ["call_budget_exhausted"]
+
+
+def test_guest_mode_never_refuses_the_injected_annotate_tool(http_server) -> None:
+    """baton_annotate never touches the upstream, and the agent needs it to
+    record what it found — including after the budget is spent."""
+    annotate = {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "baton_annotate",
+            "arguments": {"signal_type": "feature_gap", "intent": "find a thing"},
+        },
+    }
+    _stdout, events = _drive_proxy(
+        http_server,
+        [REQUESTS[0], _echo(2), annotate],
+        env_extra={"BATON_GUEST_MODE": "1", "BATON_GUEST_MAX_CALLS": "1"},
+    )
+    annotations = [e for e in events if e.get("event_type") == "annotation"]
+    assert annotations, "the guard swallowed an injected-tool call"
+    assert not [e for e in events if e.get("event_type") == "guest_guard_refusal"]
+
+
+def test_guest_mode_off_leaves_write_calls_alone(http_server) -> None:
+    """Regression guard for the live wrap: without BATON_GUEST_MODE a
+    write-shaped tool call is forwarded exactly as before."""
+    write_call = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "delete_everything", "arguments": {}},
+    }
+    _stdout, events = _drive_proxy(http_server, [REQUESTS[0], write_call])
+    starts = [e for e in events if e.get("event_type") == "tool_call_start"]
+    assert [s["payload"]["tool_name"] for s in starts] == ["delete_everything"]
+    assert not [e for e in events if e.get("event_type") == "guest_guard_refusal"]
+
+
+def test_guest_mode_user_agent_identifies_the_scan() -> None:
+    """The operator of a scanned server should be able to answer "who is this?"
+    from their access log alone."""
+    httpd, url = _start_server()
+    try:
+        _drive_proxy(url, [REQUESTS[0]], env_extra={"BATON_GUEST_MODE": "1"})
+        ua = httpd.last_user_agent
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert ua is not None
+    assert ua.startswith("baton-proxy")
+    assert "github.com/good-timing/baton-proxy" in ua
+    assert "read-only" in ua
+
+
+# --------------------------------------------------------------------------- #
 # Fail-open — upstream unreachable                                             #
 # --------------------------------------------------------------------------- #
 
@@ -502,8 +613,12 @@ def test_build_degraded_response_shapes() -> None:
 
     # initialize echoes the client's requested protocol version...
     init = _build_degraded_response(
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-         "params": {"protocolVersion": "2025-06-18"}}
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        }
     )
     assert init is not None
     assert init["result"]["protocolVersion"] == "2025-06-18"
@@ -511,7 +626,9 @@ def test_build_degraded_response_shapes() -> None:
     assert "tools" in init["result"]["capabilities"]
 
     # ...and falls back to the transport default when none was sent.
-    init2 = _build_degraded_response({"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {}})
+    init2 = _build_degraded_response(
+        {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {}}
+    )
     assert init2 is not None
     assert init2["result"]["protocolVersion"] == _DEGRADED_PROTOCOL_VERSION
 
@@ -520,9 +637,10 @@ def test_build_degraded_response_shapes() -> None:
     assert tl is not None and tl["result"]["tools"] == []
 
     # every other method returns None → the caller degrades it per-call.
-    assert _build_degraded_response(
-        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {}}
-    ) is None
+    assert (
+        _build_degraded_response({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {}})
+        is None
+    )
 
 
 def test_slow_upstream_read_timeout_fails_open(http_server: str) -> None:

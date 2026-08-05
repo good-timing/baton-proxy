@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 from baton_proxy.report import (
+    SCAN_MODE_THIRD_PARTY,
     find_file_sink_path,
     has_http_sink,
     should_inject_report_tool,
@@ -684,3 +685,89 @@ def test_synthesize_scan_keeps_unrelated_reactive_standalone(tmp_path: Path) -> 
     out = synthesize_scan(str(path), "s1", server_label="github")
     assert "**Friction points found** 2 " in out
     assert out.count("## Friction ") == 2
+
+
+# =============================================================================
+# synthesize_scan() — scan mode provenance
+#
+# The mode is not decoration. A third-party report goes to someone who did not
+# run it and has no way to know an outsider did, so every claim about who ran
+# it, whose credentials were used, and what left the machine has to be true for
+# THAT reader.
+# =============================================================================
+
+
+def _one_error_session(path: Path) -> None:
+    _write_events(
+        path,
+        [
+            _event(1, "tool_call_start", {"tool_name": "search_things"}),
+            _event(
+                2,
+                "tool_call_error",
+                {"tool_name": "search_things", "error_type": "0", "error_body": "boom"},
+            ),
+        ],
+    )
+
+
+def test_synthesize_scan_defaults_to_self_scan_labeling(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    _one_error_session(path)
+    out = synthesize_scan(str(path), "s1", server_label="github")
+    assert "**Scan mode** `--config` — self-scan" in out
+    assert "nothing left your machine" in out
+    assert "Third-party scan" not in out
+    assert "**Guest limits**" not in out
+
+
+def test_synthesize_scan_third_party_states_its_provenance(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    _one_error_session(path)
+    out = synthesize_scan(
+        str(path),
+        "s1",
+        server_label="stopful.com",
+        mode=SCAN_MODE_THIRD_PARTY,
+        target="https://stopful.com/api/mcp",
+        max_calls=30,
+    )
+    assert "**Scan mode** `--url` — third-party" in out
+    assert "does not operate this server" in out
+    assert "**Endpoint** `https://stopful.com/api/mcp`" in out
+    assert "no account or credentials were used" in out
+    assert "**Guest limits**" in out and "≤30 upstream calls" in out
+    # The self-scan footer's claim is false here — the agent's calls DID leave
+    # the machine — so it must not appear.
+    assert "nothing left your machine" not in out
+
+
+def test_synthesize_scan_third_party_discloses_withheld_calls(tmp_path: Path) -> None:
+    """What we declined to do is part of the disclosure, and must never be
+    counted as the server's friction."""
+    path = tmp_path / "events.jsonl"
+    _write_events(
+        path,
+        [
+            _event(1, "tool_call_start", {"tool_name": "search_things"}),
+            _event(2, "tool_call_end", {"tool_name": "search_things", "result": "ok"}),
+            _event(
+                3,
+                "guest_guard_refusal",
+                {"tool_name": "delete_thing", "reason": "write_shaped_tool"},
+            ),
+            _event(
+                4,
+                "guest_guard_refusal",
+                {"tool_name": "create_thing", "reason": "write_shaped_tool"},
+            ),
+        ],
+    )
+    out = synthesize_scan(
+        str(path), "s1", server_label="stopful.com", mode=SCAN_MODE_THIRD_PARTY, max_calls=30
+    )
+    assert "2 calls withheld by the guard" in out
+    assert "`delete_thing`" in out and "`create_thing`" in out
+    assert "not counted as friction" in out
+    # A refusal is not a finding: this session has no errors and no annotations.
+    assert "**Friction points found** 0 " in out

@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from baton_proxy import USER_AGENT as _USER_AGENT
+from baton_proxy import guest
 
 logger = logging.getLogger("baton_proxy")
 
@@ -42,8 +42,10 @@ logger = logging.getLogger("baton_proxy")
 # Cloudflare (Notion does) — so without a named UA the bridge fails before it
 # ever reaches the origin's auth check, EVEN with a valid token. Verified against
 # mcp.notion.com: Python-urllib UA → 403, a named UA → 401 (reaches origin).
-# ``_USER_AGENT`` is the single-sourced product token (see baton_proxy.__init__),
-# so it can't drift from the emitter's sdk_version field.
+# ``guest.user_agent()`` returns the single-sourced product token (see
+# baton_proxy.__init__), so it can't drift from the emitter's sdk_version field;
+# in guest mode it additionally carries a comment naming who we are and why
+# we're calling, since then the log being read belongs to a stranger.
 
 
 # Announce ourselves as an intermediary per RFC 9110 §7.6.3. Unlike a
@@ -99,8 +101,8 @@ class StreamableHttpClient:
             # Advertise willingness to receive either framing so the server may
             # choose SSE for streamed responses.
             "Accept": "application/json, text/event-stream",
-            # Named UA — the urllib default is Cloudflare-banned (see _USER_AGENT).
-            "User-Agent": _USER_AGENT,
+            # Named UA — the urllib default is Cloudflare-banned (see above).
+            "User-Agent": guest.user_agent(),
             # Announce the intermediary hop (see _VIA).
             "Via": _VIA,
         }

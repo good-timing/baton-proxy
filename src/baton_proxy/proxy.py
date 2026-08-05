@@ -41,7 +41,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from baton_proxy import __version__
+from baton_proxy import __version__, guest
 from baton_proxy._llm_text import (
     SIGNAL_TYPES,
     build_annotation_tool_description,
@@ -1270,6 +1270,7 @@ def run_http_proxy(url: str) -> int:
     from baton_proxy.transport_http import StreamableHttpClient
 
     config, injection, emitter, processor = _bootstrap()
+    guest_policy = guest.from_env()
     auth_token = os.environ.get("BATON_UPSTREAM_AUTH_TOKEN")
     logger.info(
         "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, upstream=%s, transport=http, auth=%s)",
@@ -1284,11 +1285,21 @@ def run_http_proxy(url: str) -> int:
         "baton-proxy http bridge v0: server-initiated messages (standing GET SSE) "
         "not captured; requests are serialised"
     )
+    if guest_policy.enabled:
+        # The upstream belongs to someone else (`scan --url`). Say so in the log
+        # the operator of THIS process reads, alongside the User-Agent that says
+        # so in the log the operator of the TARGET reads.
+        logger.info(
+            "baton-proxy guest mode: read-only guard on, max %d upstream tool calls, "
+            "identifying as %r",
+            guest_policy.max_calls,
+            guest.user_agent(),
+        )
 
     client = StreamableHttpClient(url, auth_token=auth_token)
 
     try:
-        rc = _run_http_loop(processor, client, injection)
+        rc = _run_http_loop(processor, client, injection, emitter, guest_policy)
     finally:
         # Symmetric with the stdio path: resolve any call still pending at
         # teardown (serialisation makes this rare, but a mid-call exit is
@@ -1301,8 +1312,19 @@ def run_http_proxy(url: str) -> int:
     return rc
 
 
-def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injection) -> int:
-    """Read stdin → POST upstream → write responses to stdout. Fail-open throughout."""
+def _run_http_loop(
+    processor: MessageProcessor,
+    client: Any,
+    injection: _Injection,
+    emitter: Emitter | None = None,
+    guest_policy: guest.GuestPolicy | None = None,
+) -> int:
+    """Read stdin → POST upstream → write responses to stdout. Fail-open throughout.
+
+    ``guest_policy`` (when enabled) vets each upstream tool call BEFORE the
+    processor sees it — see ``_guest_refuse`` for why the order matters.
+    """
+    policy = guest_policy or guest.GuestPolicy()
 
     def _degrade(forward: dict[str, Any]) -> bool:
         """Serve a synthetic healthy response for a handshake method whose
@@ -1326,6 +1348,55 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
             logger.exception("baton-proxy: forward to client failed")
         return True
 
+    def _guest_refuse(req: dict[str, Any]) -> bool:
+        """Vet one client message against the guest policy; True if refused.
+
+        Runs BEFORE ``handle_client_message`` on purpose. That handler emits the
+        ``tool_call_start`` and registers the pending call, so refusing after it
+        would either leave a dangling start or force us to synthesise a
+        ``tool_call_error`` — and a synthetic error would be attributed to the
+        target server in a report we hand to that server's operator. Refusing
+        first means the call leaves no trace in the friction stream at all; the
+        separate ``guest_guard_refusal`` event is how the report discloses it.
+
+        Injected tools (``baton_annotate``) are never refused: they never touch
+        the upstream, and the agent needs them to record what it did find.
+
+        Unlike the rest of this loop, the guard fails **closed**. Everywhere
+        else fail-open protects the user's own session; here an unexpected error
+        would mean sending an unvetted call to a stranger's production server,
+        so a broken guard refuses instead. It still can't wedge the bridge — a
+        refusal is an answered request, not a hang.
+        """
+        if not policy.enabled or req.get("method") != "tools/call":
+            return False
+        try:
+            params = req.get("params") or {}
+            tool_name = params.get("name") if isinstance(params, dict) else None
+            if not isinstance(tool_name, str) or tool_name in injection.names:
+                return False
+            reason = policy.check_tool_call(tool_name)
+            if reason is None:
+                return False
+            message = policy.refusal_message(tool_name, reason)
+        except Exception:
+            logger.exception("baton-proxy: guest guard errored; refusing the call")
+            tool_name, reason = "?", "guard_error"
+            message = (
+                "baton-proxy guest guard: refused — the read-only guard errored, and "
+                "this scan does not send unvetted calls to a server it does not own. "
+                "This is OUR restriction, not a fault of the server."
+            )
+        logger.info("baton-proxy guest guard: refused %s (%s)", tool_name, reason)
+        if emitter is not None:
+            try:
+                emitter.enqueue_guest_guard_refusal(tool_name=tool_name, reason=reason)
+            except Exception:
+                logger.exception("baton-proxy: enqueue guest refusal failed")
+        # A notification has no id to answer; dropping it is the refusal.
+        _write_client_error(req.get("id"), -32003, message)
+        return True
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -1341,6 +1412,11 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
         # req.get(...) provably safe (so the except path below can't re-raise).
         if not isinstance(req, dict):
             logger.warning("baton-proxy: dropping non-object client line on http bridge")
+            continue
+
+        # Guest mode: a write-shaped or over-budget call is answered here and
+        # never reaches the upstream (or the emitter).
+        if _guest_refuse(req):
             continue
 
         # Fail-open: a bug processing one message must never propagate out and
