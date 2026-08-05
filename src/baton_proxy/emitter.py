@@ -250,11 +250,19 @@ class Emitter:
         result: Any,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
+        principal: Principal | None = None,
     ) -> None:
+        # session_id/principal are additive: the stdio proxy omits them (1-process-
+        # per-user → _enqueue falls back to the process session). A hosted adapter
+        # that serves many sessions from one process MUST pass the per-event session
+        # so the end row attributes to the right timeline.
         self._enqueue(
             event_type="tool_call_end",
             payload={"tool_name": tool_name, "result": result, "duration_ms": duration_ms},
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
+            session_id=session_id,
+            principal=principal,
         )
 
     def enqueue_tool_call_error(
@@ -265,6 +273,8 @@ class Emitter:
         error_body: str,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
+        principal: Principal | None = None,
     ) -> None:
         self._enqueue(
             event_type="tool_call_error",
@@ -275,6 +285,8 @@ class Emitter:
                 "duration_ms": duration_ms,
             },
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
+            session_id=session_id,
+            principal=principal,
         )
 
     def enqueue_resource_read_start(
