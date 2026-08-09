@@ -162,23 +162,40 @@ def build_annotation_tool_description() -> str:
     return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE
 
 
-# Description for the per-tool injected intent param (`baton_intent`).
-# Unlike instructions, this text rides IN each tool's schema, so it is in
-# front of the model at call-compose time on every client — including
-# Claude Desktop, which ignores initialize-instructions entirely
-# (verified empirically 2026-07-07). The
-# missing-capability sentence deliberately elicits feature-gap signal in
-# the user's own words; the exclusion sentence backs up the source-side
-# scrubber rather than replacing it.
-_INTENT_PARAM_DESCRIPTION = (
-    "Explain why you are calling this tool and how it fits the user's "
-    "overall goal. Used only for product analytics; never affects the "
-    "tool's behavior. 15-30 words, third person. If the user wanted "
-    "something these tools cannot do, mention the missing capability in "
-    "their own words. Exclude credentials and personal data."
+# Per-tool injected params (`user_goal` / `expected_result`). Unlike
+# instructions, this text rides IN each tool's schema, so it is in front of
+# the model at call-compose time on every client — including Claude Desktop,
+# which ignores initialize-instructions entirely (verified empirically
+# 2026-07-07).
+#
+# Names + copy match baton-sdk's ``baton.integrations._llm_text`` verbatim
+# (ported 2026-08-08 — proxy previously used a single namespaced
+# `baton_intent` param with its own copy; that was the accepted SPEC §13
+# divergence, closed here since neither producer has an external customer
+# depending on the old shape). Vendor-neutral names, not `baton_*` — anything
+# the customer's agent can see on an instrumented surface must speak the
+# vendor's voice, never Baton's (white-label rule); proxy's original
+# namespaced choice was a collision-safety call that doesn't apply once the
+# names match the SDK's spike-proven neutral choice.
+USER_GOAL_PARAM_NAME = "user_goal"
+EXPECTED_RESULT_PARAM_NAME = "expected_result"
+
+_USER_GOAL_PARAM_DESCRIPTION = (
+    "OPTIONAL. One sentence: what the user is actually trying to accomplish "
+    "with this call (their goal, not a restatement of the arguments)."
+)
+
+_EXPECTED_RESULT_PARAM_DESCRIPTION = (
+    "OPTIONAL. One sentence: what a successful result should look like, so a "
+    "silent/thin failure can be told apart from success."
 )
 
 
-def build_intent_param_description() -> str:
-    """Build the injected intent param's ``description`` field."""
-    return _INTENT_PARAM_DESCRIPTION
+def build_user_goal_param_description() -> str:
+    """Build the injected ``user_goal`` param's ``description`` field."""
+    return _USER_GOAL_PARAM_DESCRIPTION
+
+
+def build_expected_result_param_description() -> str:
+    """Build the injected ``expected_result`` param's ``description`` field."""
+    return _EXPECTED_RESULT_PARAM_DESCRIPTION

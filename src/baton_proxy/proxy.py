@@ -45,8 +45,9 @@ from baton_proxy import __version__
 from baton_proxy._llm_text import (
     SIGNAL_TYPES,
     build_annotation_tool_description,
+    build_expected_result_param_description,
     build_instructions_suffix,
-    build_intent_param_description,
+    build_user_goal_param_description,
 )
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter, utc_now_ms
@@ -76,14 +77,11 @@ ANNOTATE_TOOL_NAME = "baton_annotate"
 # pipeline renders the report instead.
 REPORT_TOOL_NAME = "baton_session_report"
 
-# Per-tool injected intent param. Namespaced (vs a generic `intent`/`context`)
-# because: (1) the fail-open path forwards messages UNTOUCHED, so the param can
-# reach the vendor server — a generic name risks silently activating the
-# vendor's own semantics, a namespaced one at worst draws a loud unknown-param
-# error; (2) generic names collide with real tool params, punching holes in
-# capture coverage exactly where the concept is loaded; (3) the reserved name
-# makes strip-by-default safe when the registry is cold.
-INTENT_PARAM_NAME = "baton_intent"
+# Per-tool injected params — names + copy match baton-sdk's
+# baton.integrations._llm_text (see that module's comment for the naming
+# rationale: vendor-neutral, not baton_*, per the white-label rule).
+USER_GOAL_PARAM_NAME = "user_goal"
+EXPECTED_RESULT_PARAM_NAME = "expected_result"
 
 # Provenance value for intent captured via the injected param (vs a real
 # annotate-tool call). Recorded on both the tool_call_start payload and the
@@ -321,17 +319,19 @@ def _evict_overflow(pending: OrderedDict[Any, _PendingCall], emitter: Emitter) -
             logger.exception("baton-proxy: enqueue evicted error failed")
 
 
-def _inject_intent_param_into_tool(tool: Any, mode: str) -> str | None:
-    """Add the intent param to one tool's inputSchema; return its disposition.
+def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
+    """Add ``user_goal``/``expected_result`` to one tool's inputSchema; return
+    each param's disposition, keyed independently — a tool that already
+    declares one of the two names is left untouched for that name only.
 
-    Returns "injected" (param added), "native" (the tool already had a
-    param with our name — left untouched, per skip-if-exists), or None
-    (not a recognisable tool object; nothing recorded). Mutates the tool
-    in place. ``mode`` is "optional" or "required" — "off" is gated by
-    the caller.
+    Disposition is "injected" (param added), "native" (the tool already had
+    a param with that name — left untouched, per skip-if-exists). Not a
+    recognisable tool object -> empty dict, nothing recorded. Mutates the
+    tool in place. ``mode`` is "optional" or "required" — "off" is gated by
+    the caller. Mirrors baton-sdk's ``_inject_goal_params``.
     """
     if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
-        return None
+        return {}
     schema = tool.get("inputSchema")
     if not isinstance(schema, dict):
         schema = {"type": "object", "properties": {}}
@@ -340,20 +340,26 @@ def _inject_intent_param_into_tool(tool: Any, mode: str) -> str | None:
     if not isinstance(props, dict):
         props = {}
         schema["properties"] = props
-    if INTENT_PARAM_NAME in props:
-        return "native"
-    props[INTENT_PARAM_NAME] = {
-        "type": "string",
-        "description": build_intent_param_description(),
-    }
-    if mode == "required":
+
+    dispositions: dict[str, str] = {}
+    for name, build_desc in (
+        (USER_GOAL_PARAM_NAME, build_user_goal_param_description),
+        (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description),
+    ):
+        if name in props:
+            dispositions[name] = "native"
+            continue
+        dispositions[name] = "injected"
+        props[name] = {"type": "string", "description": build_desc()}
+
+    if mode == "required" and dispositions[USER_GOAL_PARAM_NAME] == "injected":
         required = schema.get("required")
         if isinstance(required, list):
-            if INTENT_PARAM_NAME not in required:
-                required.append(INTENT_PARAM_NAME)
+            if USER_GOAL_PARAM_NAME not in required:
+                required.append(USER_GOAL_PARAM_NAME)
         else:
-            schema["required"] = [INTENT_PARAM_NAME]
-    return "injected"
+            schema["required"] = [USER_GOAL_PARAM_NAME]
+    return dispositions
 
 
 def _inject_into_response(msg: dict[str, Any], injection: _Injection) -> dict[str, Any]:
@@ -583,13 +589,16 @@ class MessageProcessor:
         self._session_id = session_id
         self._pending: OrderedDict[Any, _PendingCall] = OrderedDict()
         self._pending_lock = threading.Lock()
-        # Intent-param registry: tool_name -> "injected" | "native", UPSERTED
-        # per tools/list response (never cleared — tools/list paginates via
-        # cursor, Desktop lazily re-lists, listChanged refires; a clear-per-
-        # response would forget dispositions for tools on other pages).
+        # Goal-param registry: tool_name -> {param_name -> "injected" |
+        # "native"}, UPSERTED per tools/list response (never cleared —
+        # tools/list paginates via cursor, Desktop lazily re-lists,
+        # listChanged refires; a clear-per-response would forget
+        # dispositions for tools on other pages). Two params tracked
+        # independently per tool — a tool can natively declare one of
+        # user_goal/expected_result without the other.
         # Written on the server-message path, read on the client-message path —
         # different pump threads on the stdio transport, hence the lock.
-        self._param_registry: dict[str, str] = {}
+        self._param_registry: dict[str, dict[str, str]] = {}
         self._registry_lock = threading.Lock()
         # True once ANY proactive annotation has been emitted this session —
         # from a real annotate-tool call or synthesised from the first param
@@ -709,21 +718,22 @@ class MessageProcessor:
             runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
             safe_tool_name = str(tool_name) if tool_name else ""
 
-            # Strip the injected intent param BEFORE the start event is built,
+            # Strip the injected goal params BEFORE the start event is built,
             # so captured params == the vendor-visible arguments exactly.
-            call_intent = self._extract_intent_param(safe_tool_name, params)
+            call_intent, call_expected = self._extract_goal_params(safe_tool_name, params)
 
             # The session's FIRST param intent also becomes a proactive
-            # annotation — enqueued BEFORE the tool_call_start so sequence-
-            # order correlation holds downstream ("proactive before the tool
-            # calls it covers"). Later param intents ride only the start
-            # events; per-call proactives would open one console turn per
-            # tool call.
+            # annotation (carrying expected_result too, if present) —
+            # enqueued BEFORE the tool_call_start so sequence-order
+            # correlation holds downstream ("proactive before the tool calls
+            # it covers"). Later param intents ride only the start events;
+            # per-call proactives would open one console turn per tool call.
             if call_intent is not None and not self._proactive_emitted:
                 try:
                     self._emitter.enqueue_annotation(
                         signal_type=None,
                         intent=call_intent,
+                        expected_outcome=call_expected,
                         suggested_improvement=None,
                         intent_source=INTENT_SOURCE_PARAM,
                         tool_name=safe_tool_name,
@@ -842,41 +852,63 @@ class MessageProcessor:
 
         return _ClientAction(forward=req)
 
-    def _extract_intent_param(self, tool_name: str, params: dict[str, Any]) -> str | None:
-        """Strip the injected intent param from a tools/call; return its value.
+    def _extract_goal_params(
+        self, tool_name: str, params: dict[str, Any]
+    ) -> tuple[str | None, str | None]:
+        """Strip the injected ``user_goal``/``expected_result`` params from a
+        tools/call; return their values independently (either may be absent).
 
         Mutates ``params["arguments"]`` in place (the same object the transport
-        forwards, so the upstream never sees the param). Registry dispositions:
-        "injected" -> strip + capture; "native" -> the param belongs to the
+        forwards, so the upstream never sees either param). Never raises; on
+        any error the call proceeds with whatever state it has (fail-open).
+        Mirrors baton-sdk's ``_extract_goal_params``.
+        """
+        if self._injection.intent_param_mode == "off":
+            return None, None
+        try:
+            args = params.get("arguments")
+            if not isinstance(args, dict):
+                return None, None
+            with self._registry_lock:
+                dispositions = self._param_registry.get(tool_name)
+            goal = self._extract_one_goal_param(tool_name, args, USER_GOAL_PARAM_NAME, dispositions)
+            expected = self._extract_one_goal_param(
+                tool_name, args, EXPECTED_RESULT_PARAM_NAME, dispositions
+            )
+            return goal, expected
+        except Exception:
+            logger.exception("baton-proxy: goal param extraction failed")
+            return None, None
+
+    @staticmethod
+    def _extract_one_goal_param(
+        tool_name: str,
+        args: dict[str, Any],
+        param_name: str,
+        dispositions: dict[str, str] | None,
+    ) -> str | None:
+        """Registry dispositions: "native" -> the param belongs to the
         vendor's tool, forward untouched and capture nothing; unknown (cold
         registry — proxy respawned mid-session, or a client calling without a
         tools/list through us) -> strip + capture with a log line, safe only
-        because the name is namespaced. Never raises; on any error the call
-        proceeds with whatever state it has (fail-open).
+        because the names are reserved. Mirrors baton-sdk's
+        ``_extract_one_goal_param``.
         """
-        if self._injection.intent_param_mode == "off":
+        if param_name not in args:
             return None
-        try:
-            args = params.get("arguments")
-            if not isinstance(args, dict) or INTENT_PARAM_NAME not in args:
-                return None
-            with self._registry_lock:
-                disposition = self._param_registry.get(tool_name)
-            if disposition == "native":
-                return None
-            if disposition is None:
-                logger.warning(
-                    "baton-proxy: stripping %s from unlisted tool %r (cold registry)",
-                    INTENT_PARAM_NAME,
-                    tool_name,
-                )
-            raw = args.pop(INTENT_PARAM_NAME, None)
-            if isinstance(raw, str) and raw.strip():
-                return raw
+        disposition = dispositions.get(param_name) if dispositions is not None else None
+        if disposition == "native":
             return None
-        except Exception:
-            logger.exception("baton-proxy: intent param extraction failed")
-            return None
+        if disposition is None:
+            logger.warning(
+                "baton-proxy: stripping %s from unlisted tool %r (cold registry)",
+                param_name,
+                tool_name,
+            )
+        raw = args.pop(param_name, None)
+        if isinstance(raw, str) and raw.strip():
+            return raw
+        return None
 
     def handle_server_message(self, msg: dict[str, Any]) -> dict[str, Any]:
         """Correlate/emit for a server->client message; return the message to write out."""
@@ -977,7 +1009,12 @@ class MessageProcessor:
                 seam_augmentations={
                     "injected_tools": sorted(self._injection.names),
                     "intent_param": (
-                        {"name": INTENT_PARAM_NAME, "mode": mode} if mode != "off" else None
+                        {
+                            "names": sorted([USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME]),
+                            "mode": mode,
+                        }
+                        if mode != "off"
+                        else None
                     ),
                     "instructions_suffix": bool(self._injection.instructions_suffix),
                 },
@@ -986,12 +1023,13 @@ class MessageProcessor:
             logger.exception("baton-proxy: surface snapshot capture failed")
 
     def _inject_intent_params(self, msg: dict[str, Any]) -> None:
-        """Add the intent param to every upstream tool in a tools/list response.
+        """Add user_goal/expected_result to every upstream tool in a
+        tools/list response.
 
         Runs BEFORE ``_inject_into_response`` appends the proxy's own tools, so
-        those never grow the param. Records each tool's disposition in the
-        registry (upsert — see __init__). Fail-open: any error is logged and
-        the response is forwarded as-is.
+        those never grow the params. Records each tool's per-param dispositions
+        in the registry (upsert — see __init__). Fail-open: any error is logged
+        and the response is forwarded as-is.
         """
         if self._injection.intent_param_mode == "off":
             return
@@ -1002,18 +1040,16 @@ class MessageProcessor:
             tools = result.get("tools")
             if not isinstance(tools, list):
                 return
-            dispositions: dict[str, str] = {}
+            dispositions: dict[str, dict[str, str]] = {}
             for tool in tools:
                 # Defensive: a pathological upstream could name a tool after
                 # one of ours; those calls are intercepted pre-upstream, so
                 # param-injecting them would only confuse the schema.
                 if isinstance(tool, dict) and tool.get("name") in self._injection.names:
                     continue
-                disposition = _inject_intent_param_into_tool(
-                    tool, self._injection.intent_param_mode
-                )
-                if disposition is not None:
-                    dispositions[tool["name"]] = disposition
+                tool_dispositions = _inject_goal_params(tool, self._injection.intent_param_mode)
+                if tool_dispositions:
+                    dispositions[tool["name"]] = tool_dispositions
             if dispositions:
                 with self._registry_lock:
                     self._param_registry.update(dispositions)

@@ -1,12 +1,20 @@
-"""Per-tool intent-param injection (`baton_intent`) — unit + e2e on both transports.
+"""Per-tool goal-param injection (`user_goal`/`expected_result`) — unit + e2e
+on both transports.
 
 Covers the design contract:
-schema injection at tools/list (skip-if-exists, never on the proxy's own tools,
-required-mode appends), the upserted param registry (pagination / re-list safe),
-strip-before-forward exactness at tools/call (upstream sees only vendor args),
-the once-per-session proactive annotation synthesised from the FIRST param intent
-(enqueued before its tool_call_start; suppressed after a real annotate proactive),
-cold-registry strip-by-reserved-name, and the BATON_INTENT_PARAM knob.
+schema injection at tools/list (skip-if-exists per param independently, never
+on the proxy's own tools, required-mode appends only user_goal), the upserted
+per-param registry (pagination / re-list safe), strip-before-forward
+exactness at tools/call (upstream sees only vendor args), the once-per-session
+proactive annotation synthesised from the FIRST param intent (carrying
+expected_result too, if present; enqueued before its tool_call_start;
+suppressed after a real annotate proactive), cold-registry strip-by-reserved-
+name, and the BATON_INTENT_PARAM knob.
+
+Param names + mechanics match baton-sdk's ``baton.integrations._llm_text`` /
+``_tool_wrap.py`` (ported 2026-08-08 — this file used to test a single
+namespaced `baton_intent` param, the SPEC §13 divergence closed alongside
+wiring the ``baton-spec`` conformance submodule).
 """
 
 from __future__ import annotations
@@ -26,10 +34,11 @@ import fixture_http_server  # noqa: E402
 
 from baton_proxy.config import Config
 from baton_proxy.proxy import (
-    INTENT_PARAM_NAME,
+    EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
+    USER_GOAL_PARAM_NAME,
     MessageProcessor,
-    _inject_intent_param_into_tool,
+    _inject_goal_params,
     _Injection,
 )
 
@@ -39,7 +48,7 @@ FIXTURE = HERE / "fixture_server.py"
 
 
 # --------------------------------------------------------------------------- #
-# Unit — _inject_intent_param_into_tool                                        #
+# Unit — _inject_goal_params                                                   #
 # --------------------------------------------------------------------------- #
 
 
@@ -52,54 +61,77 @@ def _tool(name: str = "t", schema: Any = "default") -> dict[str, Any]:
     return t
 
 
-def test_inject_optional_adds_param_without_touching_required() -> None:
+def test_inject_optional_adds_both_params_without_touching_required() -> None:
     tool = _tool(schema={"type": "object", "properties": {}, "required": ["x"]})
-    assert _inject_intent_param_into_tool(tool, "optional") == "injected"
+    assert _inject_goal_params(tool, "optional") == {
+        USER_GOAL_PARAM_NAME: "injected",
+        EXPECTED_RESULT_PARAM_NAME: "injected",
+    }
     props = tool["inputSchema"]["properties"]
-    assert props[INTENT_PARAM_NAME]["type"] == "string"
-    assert props[INTENT_PARAM_NAME]["description"]
+    assert props[USER_GOAL_PARAM_NAME]["type"] == "string"
+    assert props[USER_GOAL_PARAM_NAME]["description"]
+    assert props[EXPECTED_RESULT_PARAM_NAME]["type"] == "string"
+    assert props[EXPECTED_RESULT_PARAM_NAME]["description"]
     assert tool["inputSchema"]["required"] == ["x"]
 
 
-def test_inject_required_appends_to_required() -> None:
+def test_inject_required_appends_only_user_goal_to_required() -> None:
     tool = _tool(schema={"type": "object", "properties": {}, "required": ["x"]})
-    assert _inject_intent_param_into_tool(tool, "required") == "injected"
-    assert tool["inputSchema"]["required"] == ["x", INTENT_PARAM_NAME]
+    assert _inject_goal_params(tool, "required") == {
+        USER_GOAL_PARAM_NAME: "injected",
+        EXPECTED_RESULT_PARAM_NAME: "injected",
+    }
+    # Only user_goal is forced required — expected_result stays optional even
+    # in "required" mode, matching baton-sdk's _inject_goal_params.
+    assert tool["inputSchema"]["required"] == ["x", USER_GOAL_PARAM_NAME]
 
 
 def test_inject_required_creates_required_list_when_absent() -> None:
     tool = _tool()
-    assert _inject_intent_param_into_tool(tool, "required") == "injected"
-    assert tool["inputSchema"]["required"] == [INTENT_PARAM_NAME]
+    _inject_goal_params(tool, "required")
+    assert tool["inputSchema"]["required"] == [USER_GOAL_PARAM_NAME]
 
 
 def test_inject_handles_schemaless_tool() -> None:
     tool = _tool(schema=None)
-    assert _inject_intent_param_into_tool(tool, "optional") == "injected"
-    assert INTENT_PARAM_NAME in tool["inputSchema"]["properties"]
+    _inject_goal_params(tool, "optional")
+    assert USER_GOAL_PARAM_NAME in tool["inputSchema"]["properties"]
+    assert EXPECTED_RESULT_PARAM_NAME in tool["inputSchema"]["properties"]
 
 
-def test_inject_skips_native_param_untouched() -> None:
+def test_inject_skips_native_param_untouched_independently() -> None:
+    """A tool that already declares ONE of the two names keeps it untouched
+    while the other still gets injected — dispositions are independent."""
     native_def = {"type": "string", "description": "the vendor's own"}
-    tool = _tool(schema={"type": "object", "properties": {INTENT_PARAM_NAME: native_def}})
-    assert _inject_intent_param_into_tool(tool, "optional") == "native"
+    tool = _tool(schema={"type": "object", "properties": {USER_GOAL_PARAM_NAME: native_def}})
+    assert _inject_goal_params(tool, "optional") == {
+        USER_GOAL_PARAM_NAME: "native",
+        EXPECTED_RESULT_PARAM_NAME: "injected",
+    }
     # Skip-if-exists means UNTOUCHED — same object, no description rewrite.
-    assert tool["inputSchema"]["properties"][INTENT_PARAM_NAME] is native_def
+    assert tool["inputSchema"]["properties"][USER_GOAL_PARAM_NAME] is native_def
+    assert EXPECTED_RESULT_PARAM_NAME in tool["inputSchema"]["properties"]
 
 
 def test_inject_is_idempotent_across_relists() -> None:
     """Desktop lazily re-lists; the second pass must see its own injection as
-    'native' and not duplicate the required entry or rewrite the schema."""
+    'native' for both params and not duplicate the required entry."""
     tool = _tool(schema={"type": "object", "properties": {}, "required": []})
-    assert _inject_intent_param_into_tool(tool, "required") == "injected"
-    assert _inject_intent_param_into_tool(tool, "required") == "native"
-    assert tool["inputSchema"]["required"].count(INTENT_PARAM_NAME) == 1
+    assert _inject_goal_params(tool, "required") == {
+        USER_GOAL_PARAM_NAME: "injected",
+        EXPECTED_RESULT_PARAM_NAME: "injected",
+    }
+    assert _inject_goal_params(tool, "required") == {
+        USER_GOAL_PARAM_NAME: "native",
+        EXPECTED_RESULT_PARAM_NAME: "native",
+    }
+    assert tool["inputSchema"]["required"].count(USER_GOAL_PARAM_NAME) == 1
 
 
 def test_inject_rejects_non_tool_objects() -> None:
-    assert _inject_intent_param_into_tool("not a dict", "optional") is None
-    assert _inject_intent_param_into_tool({"no": "name"}, "optional") is None
-    assert _inject_intent_param_into_tool({"name": 42}, "optional") is None
+    assert _inject_goal_params("not a dict", "optional") == {}
+    assert _inject_goal_params({"no": "name"}, "optional") == {}
+    assert _inject_goal_params({"name": 42}, "optional") == {}
 
 
 # --------------------------------------------------------------------------- #
@@ -140,6 +172,7 @@ def _call(name: str, arguments: dict[str, Any], msg_id: int = 10) -> dict[str, A
 
 
 INTENT_TEXT = "User is testing intent capture end to end."
+EXPECTED_TEXT = "A confirmation that the value was captured."
 
 
 def test_registry_upserts_across_paginated_lists() -> None:
@@ -147,18 +180,22 @@ def test_registry_upserts_across_paginated_lists() -> None:
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
     proc.handle_server_message(_tools_list_response([_tool("beta")], msg_id=3))
     with proc._registry_lock:
-        assert proc._param_registry == {"alpha": "injected", "beta": "injected"}
+        assert proc._param_registry == {
+            "alpha": {USER_GOAL_PARAM_NAME: "injected", EXPECTED_RESULT_PARAM_NAME: "injected"},
+            "beta": {USER_GOAL_PARAM_NAME: "injected", EXPECTED_RESULT_PARAM_NAME: "injected"},
+        }
 
 
 def test_registry_skips_proxy_own_tools() -> None:
     proc, _ = _processor()
     out = proc.handle_server_message(_tools_list_response([_tool("alpha")]))
     # _inject_into_response appended the proxy's tools AFTER param injection —
-    # they must carry no intent param and no registry entry.
+    # they must carry no goal params and no registry entry.
     injected_names = {"baton_annotate", "baton_session_report"}
     for tool in out["result"]["tools"]:
         if tool["name"] in injected_names:
-            assert INTENT_PARAM_NAME not in tool["inputSchema"]["properties"]
+            assert USER_GOAL_PARAM_NAME not in tool["inputSchema"]["properties"]
+            assert EXPECTED_RESULT_PARAM_NAME not in tool["inputSchema"]["properties"]
     with proc._registry_lock:
         assert not (injected_names & set(proc._param_registry))
 
@@ -167,11 +204,14 @@ def test_off_mode_injects_and_strips_nothing() -> None:
     proc, emitter = _processor(mode="off")
     out = proc.handle_server_message(_tools_list_response([_tool("alpha")]))
     upstream = [t for t in out["result"]["tools"] if t["name"] == "alpha"][0]
-    assert INTENT_PARAM_NAME not in upstream["inputSchema"]["properties"]
+    assert USER_GOAL_PARAM_NAME not in upstream["inputSchema"]["properties"]
+    assert EXPECTED_RESULT_PARAM_NAME not in upstream["inputSchema"]["properties"]
 
-    action = proc.handle_client_message(_call("alpha", {"x": "1", INTENT_PARAM_NAME: INTENT_TEXT}))
+    action = proc.handle_client_message(
+        _call("alpha", {"x": "1", USER_GOAL_PARAM_NAME: INTENT_TEXT})
+    )
     # Off means fully off: no strip, param forwards as-is.
-    assert action.forward["params"]["arguments"][INTENT_PARAM_NAME] == INTENT_TEXT
+    assert action.forward["params"]["arguments"][USER_GOAL_PARAM_NAME] == INTENT_TEXT
     starts = [c for c in emitter.calls if c[0] == "tool_call_start"]
     assert starts[0][1]["call_intent"] is None
 
@@ -180,30 +220,41 @@ def test_strip_and_capture_with_annotation_first() -> None:
     proc, emitter = _processor()
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
 
-    action = proc.handle_client_message(_call("alpha", {"x": "1", INTENT_PARAM_NAME: INTENT_TEXT}))
+    action = proc.handle_client_message(
+        _call(
+            "alpha",
+            {
+                "x": "1",
+                USER_GOAL_PARAM_NAME: INTENT_TEXT,
+                EXPECTED_RESULT_PARAM_NAME: EXPECTED_TEXT,
+            },
+        )
+    )
 
-    # Upstream-bound arguments: param gone, vendor args intact.
+    # Upstream-bound arguments: both params gone, vendor args intact.
     assert action.forward["params"]["arguments"] == {"x": "1"}
 
     kinds = [k for k, _ in emitter.calls]
     assert kinds == ["annotation", "tool_call_start"], "annotation must precede the start"
     ann = emitter.calls[0][1]
     assert ann["intent"] == INTENT_TEXT
+    assert ann["expected_outcome"] == EXPECTED_TEXT
     assert ann["signal_type"] is None
     assert ann["intent_source"] == INTENT_SOURCE_PARAM
     assert ann["tool_name"] == "alpha"
     start = emitter.calls[1][1]
     assert start["call_intent"] == INTENT_TEXT
     assert start["intent_source"] == INTENT_SOURCE_PARAM
-    assert INTENT_PARAM_NAME not in start["params"]
+    assert USER_GOAL_PARAM_NAME not in start["params"]
+    assert EXPECTED_RESULT_PARAM_NAME not in start["params"]
 
 
 def test_only_first_param_intent_becomes_annotation() -> None:
     proc, emitter = _processor()
     proc.handle_server_message(_tools_list_response([_tool("alpha"), _tool("beta")]))
 
-    proc.handle_client_message(_call("alpha", {INTENT_PARAM_NAME: "first goal"}, msg_id=10))
-    proc.handle_client_message(_call("beta", {INTENT_PARAM_NAME: "second goal"}, msg_id=11))
+    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: "first goal"}, msg_id=10))
+    proc.handle_client_message(_call("beta", {USER_GOAL_PARAM_NAME: "second goal"}, msg_id=11))
 
     annotations = [c for c in emitter.calls if c[0] == "annotation"]
     assert len(annotations) == 1
@@ -219,7 +270,7 @@ def test_real_annotate_proactive_suppresses_param_annotation() -> None:
     # A real proactive via the injected annotate tool claims the slot...
     proc.handle_client_message(_call("baton_annotate", {"intent": "the user's goal"}, msg_id=9))
     # ...so the param intent must NOT synthesise a second proactive.
-    proc.handle_client_message(_call("alpha", {INTENT_PARAM_NAME: INTENT_TEXT}, msg_id=10))
+    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}, msg_id=10))
 
     annotations = [c for c in emitter.calls if c[0] == "annotation"]
     assert len(annotations) == 1
@@ -239,7 +290,7 @@ def test_reactive_annotate_does_not_claim_the_proactive_slot() -> None:
             msg_id=9,
         )
     )
-    proc.handle_client_message(_call("alpha", {INTENT_PARAM_NAME: INTENT_TEXT}, msg_id=10))
+    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}, msg_id=10))
 
     annotations = [c for c in emitter.calls if c[0] == "annotation"]
     # Reactive + the synthesised proactive: the reactive carried signal_type,
@@ -251,24 +302,25 @@ def test_reactive_annotate_does_not_claim_the_proactive_slot() -> None:
 def test_native_param_forwards_untouched_and_captures_nothing() -> None:
     proc, emitter = _processor()
     native = _tool(
-        "alpha", schema={"type": "object", "properties": {INTENT_PARAM_NAME: {"type": "string"}}}
+        "alpha",
+        schema={"type": "object", "properties": {USER_GOAL_PARAM_NAME: {"type": "string"}}},
     )
     proc.handle_server_message(_tools_list_response([native]))
 
-    action = proc.handle_client_message(_call("alpha", {INTENT_PARAM_NAME: "vendor's value"}))
-    assert action.forward["params"]["arguments"][INTENT_PARAM_NAME] == "vendor's value"
+    action = proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: "vendor's value"}))
+    assert action.forward["params"]["arguments"][USER_GOAL_PARAM_NAME] == "vendor's value"
     assert [k for k, _ in emitter.calls] == ["tool_call_start"]
     assert emitter.calls[0][1]["call_intent"] is None
     # The vendor's param is a REAL argument — it stays in captured params.
-    assert emitter.calls[0][1]["params"][INTENT_PARAM_NAME] == "vendor's value"
+    assert emitter.calls[0][1]["params"][USER_GOAL_PARAM_NAME] == "vendor's value"
 
 
 def test_cold_registry_strips_by_reserved_name() -> None:
     """No tools/list seen (proxy respawned mid-session): the reserved name
     makes strip-by-default safe."""
     proc, emitter = _processor()
-    action = proc.handle_client_message(_call("never_listed", {INTENT_PARAM_NAME: INTENT_TEXT}))
-    assert INTENT_PARAM_NAME not in action.forward["params"]["arguments"]
+    action = proc.handle_client_message(_call("never_listed", {USER_GOAL_PARAM_NAME: INTENT_TEXT}))
+    assert USER_GOAL_PARAM_NAME not in action.forward["params"]["arguments"]
     ann = [c for c in emitter.calls if c[0] == "annotation"]
     assert len(ann) == 1 and ann[0][1]["intent"] == INTENT_TEXT
 
@@ -276,7 +328,7 @@ def test_cold_registry_strips_by_reserved_name() -> None:
 def test_blank_param_value_strips_but_captures_nothing() -> None:
     proc, emitter = _processor()
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
-    action = proc.handle_client_message(_call("alpha", {"x": "1", INTENT_PARAM_NAME: "  "}))
+    action = proc.handle_client_message(_call("alpha", {"x": "1", USER_GOAL_PARAM_NAME: "  "}))
     assert action.forward["params"]["arguments"] == {"x": "1"}
     assert [k for k, _ in emitter.calls] == ["tool_call_start"]
     assert emitter.calls[0][1]["call_intent"] is None
@@ -330,7 +382,11 @@ E2E_REQUESTS: list[dict[str, Any]] = [
         "method": "tools/call",
         "params": {
             "name": "argkeys",
-            "arguments": {"text": "x", INTENT_PARAM_NAME: INTENT_TEXT},
+            "arguments": {
+                "text": "x",
+                USER_GOAL_PARAM_NAME: INTENT_TEXT,
+                EXPECTED_RESULT_PARAM_NAME: EXPECTED_TEXT,
+            },
         },
     },
     {
@@ -339,7 +395,7 @@ E2E_REQUESTS: list[dict[str, Any]] = [
         "method": "tools/call",
         "params": {
             "name": "echo",
-            "arguments": {"text": "hi", INTENT_PARAM_NAME: "second call goal"},
+            "arguments": {"text": "hi", USER_GOAL_PARAM_NAME: "second call goal"},
         },
     },
 ]
@@ -427,23 +483,26 @@ def _run_http(url: str) -> tuple[dict[int, dict], list[dict]]:
 
 def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     """Shared assertions — both transports must produce this exact contract."""
-    # Injection: every upstream tool grew the param; the proxy's own didn't.
+    # Injection: every upstream tool grew both params; the proxy's own didn't.
     tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
     for name in ("echo", "boom", "argkeys"):
-        assert INTENT_PARAM_NAME in tools[name]["inputSchema"]["properties"], name
+        assert USER_GOAL_PARAM_NAME in tools[name]["inputSchema"]["properties"], name
+        assert EXPECTED_RESULT_PARAM_NAME in tools[name]["inputSchema"]["properties"], name
         # optional mode: required untouched
-        assert INTENT_PARAM_NAME not in (tools[name]["inputSchema"].get("required") or [])
-    assert INTENT_PARAM_NAME not in tools["baton_annotate"]["inputSchema"]["properties"]
+        assert USER_GOAL_PARAM_NAME not in (tools[name]["inputSchema"].get("required") or [])
+    assert USER_GOAL_PARAM_NAME not in tools["baton_annotate"]["inputSchema"]["properties"]
 
     # Strip exactness: the upstream reports exactly which keys it received.
     assert by_id[3]["result"]["content"][0]["text"] == "keys: text"
     assert "Echo: hi" in by_id[4]["result"]["content"][0]["text"]
 
-    # Events: one synthesised proactive (first call only), before its start.
+    # Events: one synthesised proactive (first call only), before its start,
+    # carrying both intent and expected_outcome.
     annotations = [e for e in events if e["event_type"] == "annotation"]
     assert len(annotations) == 1
     ann = annotations[0]["payload"]
     assert ann["intent"] == INTENT_TEXT
+    assert ann["expected_outcome"] == EXPECTED_TEXT
     assert ann["intent_source"] == INTENT_SOURCE_PARAM
     assert ann["tool_name"] == "argkeys"
     assert "signal_type" not in ann  # proactive
@@ -452,7 +511,8 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     assert [s["payload"]["tool_name"] for s in starts] == ["argkeys", "echo"]
     assert [s["payload"]["call_intent"] for s in starts] == [INTENT_TEXT, "second call goal"]
     for s in starts:
-        assert INTENT_PARAM_NAME not in s["payload"]["params"]
+        assert USER_GOAL_PARAM_NAME not in s["payload"]["params"]
+        assert EXPECTED_RESULT_PARAM_NAME not in s["payload"]["params"]
     ann_seq = annotations[0]["sequence_number"]
     assert ann_seq < starts[0]["sequence_number"]
 
@@ -478,7 +538,9 @@ def test_intent_param_e2e_http_bridge() -> None:
 def test_intent_param_e2e_required_mode() -> None:
     by_id, _events = _run_stdio({"BATON_INTENT_PARAM": "required"})
     tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
-    assert INTENT_PARAM_NAME in tools["echo"]["inputSchema"]["required"]
+    assert USER_GOAL_PARAM_NAME in tools["echo"]["inputSchema"]["required"]
+    # expected_result stays optional even in required mode.
+    assert EXPECTED_RESULT_PARAM_NAME not in tools["echo"]["inputSchema"]["required"]
     # The annotate tool's required list is its own contract — untouched.
     assert tools["baton_annotate"]["inputSchema"]["required"] == ["intent"]
 
@@ -486,7 +548,9 @@ def test_intent_param_e2e_required_mode() -> None:
 def test_intent_param_e2e_off_mode() -> None:
     by_id, events = _run_stdio({"BATON_INTENT_PARAM": "off"})
     tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
-    assert INTENT_PARAM_NAME not in tools["echo"]["inputSchema"]["properties"]
-    # Param forwarded untouched -> upstream reports it among its keys.
-    assert by_id[3]["result"]["content"][0]["text"] == f"keys: {INTENT_PARAM_NAME},text"
+    assert USER_GOAL_PARAM_NAME not in tools["echo"]["inputSchema"]["properties"]
+    assert EXPECTED_RESULT_PARAM_NAME not in tools["echo"]["inputSchema"]["properties"]
+    # Params forwarded untouched -> upstream reports them among its keys.
+    expected_keys = ",".join(sorted([EXPECTED_RESULT_PARAM_NAME, "text", USER_GOAL_PARAM_NAME]))
+    assert by_id[3]["result"]["content"][0]["text"] == f"keys: {expected_keys}"
     assert not [e for e in events if e["event_type"] == "annotation"]

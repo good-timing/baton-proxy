@@ -41,11 +41,12 @@ DEFAULT_TENANT_TYPE = "vendor"
 # (Console renders reports server-side), customer mode keeps it.
 _TENANT_TYPES: frozenset[str] = frozenset({"vendor", "customer"})
 
-# Valid values for BATON_INTENT_PARAM — the per-tool intent-param injection
-# mode. ``optional`` (default) injects `baton_intent` as an optional param
-# on every upstream tool; ``required`` additionally marks it required in
-# the schema; ``off`` disables injection entirely. Clients fill the param
-# even when optional (Desktop, verified 2026-07-07), while ignoring
+# Valid values for BATON_INTENT_PARAM — the per-tool goal-param injection
+# mode. ``optional`` (default) injects `user_goal`/`expected_result` as
+# optional params on every upstream tool; ``required`` additionally marks
+# `user_goal` required in the schema (`expected_result` stays optional even
+# then); ``off`` disables injection entirely. Clients fill the params even
+# when optional (Desktop, verified 2026-07-07), while ignoring
 # initialize-instructions — so param injection is the reliable intent
 # channel and instructions remain a best-effort extra.
 DEFAULT_INTENT_PARAM_MODE = "optional"

@@ -2,7 +2,7 @@
 
 Covers the design contract (design-note: server_surface_and_change_spec):
 snapshot built from initialize + the FIRST complete tools/list response,
-pre-injection (no baton_* tools, no intent param, pre-suffix instructions);
+pre-injection (no baton_* tools, no goal params, pre-suffix instructions);
 hash-deduped re-lists (unchanged surface never re-emits, changed surface
 does); pagination fragments never snapshotted (cursor request pages and
 nextCursor responses both skipped); initialize-less capture still emits with
@@ -21,7 +21,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 
 from baton_proxy.proxy import (
-    INTENT_PARAM_NAME,
+    EXPECTED_RESULT_PARAM_NAME,
+    USER_GOAL_PARAM_NAME,
     MessageProcessor,
     _Injection,
     _surface_hash,
@@ -125,12 +126,13 @@ def test_snapshot_captures_vendor_true_surface() -> None:
     assert snap["server_info"] == {"name": "mock-upstream", "version": "0.9"}
     assert snap["capabilities"] == {"tools": {"listChanged": True}}
 
-    # Vendor tools only, and WITHOUT the injected intent param — even though
+    # Vendor tools only, and WITHOUT the injected goal params — even though
     # the outgoing message got both injections.
     names = [t["name"] for t in snap["tools"]]
     assert names == ["enrich_company", "get_intent_signals"]
     for tool in snap["tools"]:
-        assert INTENT_PARAM_NAME not in tool["inputSchema"]["properties"]
+        assert USER_GOAL_PARAM_NAME not in tool["inputSchema"]["properties"]
+        assert EXPECTED_RESULT_PARAM_NAME not in tool["inputSchema"]["properties"]
 
     out_names = {t["name"] for t in out["result"]["tools"]}
     assert "baton_annotate" in out_names  # mutation still happened downstream
@@ -138,7 +140,10 @@ def test_snapshot_captures_vendor_true_surface() -> None:
 
     aug = snap["seam_augmentations"]
     assert "baton_annotate" in aug["injected_tools"]
-    assert aug["intent_param"] == {"name": INTENT_PARAM_NAME, "mode": "optional"}
+    assert aug["intent_param"] == {
+        "names": sorted([USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME]),
+        "mode": "optional",
+    }
     assert aug["instructions_suffix"] is True
 
 
@@ -314,7 +319,9 @@ def test_e2e_snapshot_on_stderr_sink() -> None:
     names = [t["name"] for t in payload["tools"]]
     assert "echo" in names and "baton_annotate" not in names
     for tool in payload["tools"]:
-        assert INTENT_PARAM_NAME not in tool.get("inputSchema", {}).get("properties", {})
+        props = tool.get("inputSchema", {}).get("properties", {})
+        assert USER_GOAL_PARAM_NAME not in props
+        assert EXPECTED_RESULT_PARAM_NAME not in props
     assert payload["surface_hash"].startswith("sha256:")
     # Envelope fields present like any other event.
     assert snaps[0]["vendor_id"] == "fixture"
