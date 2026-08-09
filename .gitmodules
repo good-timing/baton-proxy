@@ -1,0 +1,3 @@
+[submodule "baton-spec"]
+	path = baton-spec
+	url = https://github.com/good-timing/baton-spec.git
