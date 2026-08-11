@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-08-11
+
+### Changed
+- **Goal-param injection renamed to `user_goal` / `expected_result`.** The proxy previously injected a single namespaced `baton_intent` param; it now injects the same two vendor-neutral params as baton-sdk (SPEC §13), with per-param dispositions tracked independently in the registry and the shared `seam_augmentations.intent_param` shape (plural `names: list[str]`). `expected_result` additionally feeds the synthesised proactive annotation's `expected_outcome`, previously only reachable via a real annotate call. Straight rename, not additive — no consumers depended on the old param name; the wire fields (`call_intent`, `intent_source`) are unchanged.
+
+### Added
+- Cross-repo envelope conformance test against the shared `baton-spec` schema (vendored as a git submodule; dev/test only, no runtime effect).
+
+## [0.5.1] — 2026-08-05
+
+### Added
+- **`session_id` / `principal` on `tool_call_end` and `tool_call_error`.** `Emitter.enqueue_tool_call_end` / `enqueue_tool_call_error` accept optional `session_id` and `principal` kwargs, so downstream sensors that pair results out-of-process (e.g. a gateway seam) can stamp the session and end-user identity on response-side events. Additive; omitted kwargs produce byte-identical output to 0.5.0.
+
 ## [0.5.0] — 2026-07-27
 
 ### Added
