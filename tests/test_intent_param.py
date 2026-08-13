@@ -510,6 +510,11 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     starts = [e for e in events if e["event_type"] == "tool_call_start"]
     assert [s["payload"]["tool_name"] for s in starts] == ["argkeys", "echo"]
     assert [s["payload"]["call_intent"] for s in starts] == [INTENT_TEXT, "second call goal"]
+    # The expectation rides the start event, per call. Call 2 sends only the
+    # goal, so its key is ABSENT rather than null — "stated no expectation" and
+    # "stated an empty one" must stay distinguishable downstream.
+    assert starts[0]["payload"]["call_expected"] == EXPECTED_TEXT
+    assert "call_expected" not in starts[1]["payload"]
     for s in starts:
         assert USER_GOAL_PARAM_NAME not in s["payload"]["params"]
         assert EXPECTED_RESULT_PARAM_NAME not in s["payload"]["params"]
@@ -554,3 +559,59 @@ def test_intent_param_e2e_off_mode() -> None:
     expected_keys = ",".join(sorted([EXPECTED_RESULT_PARAM_NAME, "text", USER_GOAL_PARAM_NAME]))
     assert by_id[3]["result"]["content"][0]["text"] == f"keys: {expected_keys}"
     assert not [e for e in events if e["event_type"] == "annotation"]
+
+
+def test_expectation_rides_every_start_not_just_the_first() -> None:
+    """``expected_result`` is injected on EVERY tool, so its value must reach a
+    consumer on every call — not only the one that opened the session.
+
+    The once-per-session gate governs proactive ANNOTATIONS (a per-call
+    proactive would open one downstream turn per tool call). It must not
+    govern the values: the second call's expectation belongs to the second
+    call, and the session's opening call is frequently a read that states no
+    expectation at all, so lifting its value would attach the wrong one — or
+    none — to everything that followed.
+    """
+    proc, emitter = _processor()
+    proc.handle_server_message(_tools_list_response([_tool("alpha"), _tool("beta")]))
+
+    proc.handle_client_message(
+        _call(
+            "alpha",
+            {USER_GOAL_PARAM_NAME: "first goal", EXPECTED_RESULT_PARAM_NAME: "first expectation"},
+            msg_id=10,
+        )
+    )
+    proc.handle_client_message(
+        _call(
+            "beta",
+            {USER_GOAL_PARAM_NAME: "second goal", EXPECTED_RESULT_PARAM_NAME: "second expectation"},
+            msg_id=11,
+        )
+    )
+
+    # One annotation, as before — this change does not touch that gate.
+    assert len([c for c in emitter.calls if c[0] == "annotation"]) == 1
+    starts = [c[1] for c in emitter.calls if c[0] == "tool_call_start"]
+    assert [s["call_expected"] for s in starts] == ["first expectation", "second expectation"]
+    # And the params still reach the vendor clean.
+    assert all(EXPECTED_RESULT_PARAM_NAME not in s["params"] for s in starts)
+
+
+def test_expectation_alone_still_records_its_provenance() -> None:
+    """Either param may be filled without the other. An expectation arriving
+    with no goal is still injected-param capture, so ``intent_source`` must be
+    stamped — matching what baton-sdk already does (keyed on any injected
+    param, not on the goal alone)."""
+    proc, emitter = _processor()
+    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
+    proc.handle_client_message(
+        _call("alpha", {EXPECTED_RESULT_PARAM_NAME: "just the expectation"}, msg_id=10)
+    )
+
+    start = [c[1] for c in emitter.calls if c[0] == "tool_call_start"][0]
+    assert start["call_expected"] == "just the expectation"
+    assert start["call_intent"] is None
+    assert start["intent_source"] == INTENT_SOURCE_PARAM
+    # No goal means no proactive annotation — that gate is intent-keyed.
+    assert [c for c in emitter.calls if c[0] == "annotation"] == []

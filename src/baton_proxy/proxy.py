@@ -728,6 +728,9 @@ class MessageProcessor:
             # correlation holds downstream ("proactive before the tool calls
             # it covers"). Later param intents ride only the start events;
             # per-call proactives would open one console turn per tool call.
+            # That gate is about ANNOTATIONS, not about the values: both params
+            # ride every start event below, so a consumer sees each call's own
+            # goal and expectation regardless of which one opened the session.
             if call_intent is not None and not self._proactive_emitted:
                 try:
                     self._emitter.enqueue_annotation(
@@ -748,7 +751,15 @@ class MessageProcessor:
                     tool_name=safe_tool_name,
                     params=params.get("arguments"),
                     call_intent=call_intent,
-                    intent_source=INTENT_SOURCE_PARAM if call_intent is not None else None,
+                    call_expected=call_expected,
+                    # Provenance covers the pair. An agent may fill either param
+                    # alone, so key off both — an expectation with no goal is
+                    # still injected-param capture, not unattributed.
+                    intent_source=(
+                        INTENT_SOURCE_PARAM
+                        if (call_intent is not None or call_expected is not None)
+                        else None
+                    ),
                     runtime_meta=runtime_meta,
                 )
             except Exception:
