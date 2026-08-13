@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-08-13
+
+### Added
+- **`call_expected` on every `tool_call_start`.** `expected_result` is injected into every tool's schema and stripped from every call, but the value only ever reached a consumer through the session's first synthesised proactive annotation — making a per-call param into a per-session fact, and attaching whatever expectation the session happened to *open* with. Sessions commonly open with a docs or list read that states no expectation, so the calls doing the real work contributed nothing and inherited nothing. `enqueue_tool_call_start` now takes `call_expected` and writes it as a sibling of `params`, matching `call_intent`. The key is **omitted** when the param was not filled — "stated no expectation" and "stated an empty one" are different claims. The once-per-session annotation gate is unchanged; it governs annotations, not values.
+
+### Changed
+- **`intent_source` keys on either injected param, not on `user_goal` alone.** An agent may fill one without the other, and an expectation arriving with no goal is still injected-param capture. Matches baton-sdk, which keys on any injected param.
+
+### Notes
+- Additive on the wire; `call_expected` is already part of the shared `baton-spec` schema. The vendored submodule pin advanced to the schema revision carrying it — the conformance test failed loudly on the new key beforehand, which is the intended behaviour of `additionalProperties: false`.
+
 ## [0.5.2] — 2026-08-11
 
 ### Changed
