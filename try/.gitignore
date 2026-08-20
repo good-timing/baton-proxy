@@ -1,0 +1,5 @@
+# The trial's captured events and its setup state never belong in git —
+# events.jsonl carries complete tool arguments and results (see SECURITY.md §5).
+events.jsonl
+state.json
+config-backup.*
