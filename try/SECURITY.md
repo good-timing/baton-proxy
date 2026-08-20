@@ -31,7 +31,8 @@ why each one is inert.
 ## 2. What changes on your machine
 
 Exactly one thing: one entry in your MCP client's configuration file
-(`~/.claude.json`, or a project-local `.mcp.json`).
+(`~/.claude.json` by default; pass `--config-file` for a project-local
+`.mcp.json` or any other location).
 
 Before:
 
@@ -154,13 +155,22 @@ definitions, arguments, results and errors pass through unchanged.
 ## 3a. The kit's own code
 
 Everything above describes the proxy. The kit itself is one file — `try/kit.py`,
-standard library only, no imports from the proxy — providing three commands:
+standard library only, no imports from the proxy — providing three commands. All
+of them are run from the `try/` directory:
 
 | command | what it touches |
 |---|---|
 | `setup <server>` | Reads your MCP config; copies the whole file to `try/config-backup.<timestamp>.json`; rewrites **one entry**; writes `try/state.json`. Nothing else on the machine. |
 | `receipt` | Reads `try/events.jsonl` and `try/state.json`. Writes nothing, opens no connection. |
 | `uninstall` | Rewrites that one entry back and deletes `try/state.json`. Leaves your events file and the backups for you to read or delete. |
+
+Beside them, `try/CLAUDE.md` is a plain-text instruction file the agent reads
+when a session starts in this directory. It grants no capability — it only tells
+the agent to use the three commands above and, importantly, what not to do:
+never edit an MCP config by hand, never work around a command that refused,
+never quote the captured events into a conversation, and never send the file
+anywhere. Read it; it is short, and it is the half of this trial that is not
+enforced by code.
 
 It opens no network connection and starts no process — the §9 grep covers `try/`
 as well as `src/` for exactly this reason. It is deliberately **not** a

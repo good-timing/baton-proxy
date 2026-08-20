@@ -20,11 +20,12 @@ Standard library only. It deliberately does not import ``baton_proxy``: setup
 runs from a bare checkout before ``PYTHONPATH`` is set anywhere, and a reviewer
 should be able to read one file to know what touches their machine.
 
-Usage:
+Usage — every command is run from this ``try/`` directory, which is where the
+trial's ``CLAUDE.md`` puts you (``cd baton-proxy/try && claude``):
 
-    python3 try/kit.py setup <server-name> [--tenant X] [--vendor Y]
-    python3 try/kit.py receipt
-    python3 try/kit.py uninstall
+    python3 kit.py setup <server-name> [--tenant X] [--vendor Y]
+    python3 kit.py receipt
+    python3 kit.py uninstall
 
 Exit codes: 0 success, 1 refusal (with a reason and what to do), 2 usage.
 """
@@ -45,7 +46,7 @@ if sys.version_info < (3, 11):  # noqa: UP036 — this file may be RUN by an old
         f"{sys.version_info.major}.{sys.version_info.minor}.\n"
         "Setup writes the interpreter it was run with into your MCP config, so a\n"
         "wrap made now would fail when your client launches it.\n"
-        "  -> re-run with a newer interpreter, e.g. `python3.12 try/kit.py setup ...`"
+        "  -> re-run with a newer interpreter, e.g. `python3.12 kit.py setup ...`"
     )
 
 import argparse
@@ -206,6 +207,17 @@ def file_sink_uri(path: str) -> str:
     (urlparse would split it into a query or fragment), so it is refused by name
     rather than written and discovered later.
     """
+    # A comma never reaches urlparse: make_sink splits BATON_EVENT_SINK on ","
+    # FIRST and parses each piece, so a checkout under "Proj,old" becomes two
+    # bogus sinks and the proxy dies at every launch. Checked before the parse
+    # because the parse cannot see it.
+    if "," in path:
+        raise Refuse(
+            f"the events file path contains a comma, which the proxy reads as a\n"
+            f"  separator between two sinks:\n    {path}\n"
+            "  → move or rename the checkout so its path has no comma, then run\n"
+            "    setup again."
+        )
     uri = f"file://{path}"
     if urllib.parse.urlparse(uri).path != path:
         raise Refuse(
@@ -345,6 +357,13 @@ def apply_unwrap(config_text: str, state: dict) -> tuple[str, dict]:
             "  → nothing was changed. If you want it back, this is what it was:\n\n"
             + json.dumps(state["original_entry"], indent=2)
         )
+    if current == state["original_entry"]:
+        # Already back to what it was — someone restored it by hand, or the
+        # client rewrote it. There is nothing to undo and refusing here would be
+        # a trap: setup refuses on the stale state, uninstall refuses on the
+        # entry, and CLAUDE.md forbids the agent from deleting the state file to
+        # escape. Clearing the state IS the remaining work.
+        return config_text, current
     if current != state["wrapped_entry"]:
         raise Refuse(
             f"`{name}` has been edited since setup wrapped it, so this kit will not\n"
@@ -460,13 +479,27 @@ now rather than at the end of the trial. In order:
      (A session that merely starts does record one tool-surface snapshot, so if
      even that is missing, the proxy is not in the path at all.)
   3. Is the entry that got wrapped the one you actually use? Run
-     `python3 try/kit.py receipt` from this folder and check the server name
+     `python3 kit.py receipt` from this folder and check the server name
      and config path printed above.
-  4. Does the wrapped command launch? From the checkout root:
-         PYTHONPATH=src python3 -m baton_proxy --help
-     If that fails, PYTHONPATH in the config entry is wrong and the server is
-     dead in your client too — you would have noticed it failing.
+  4. Does the wrapped command launch? Run exactly what setup wrote into the
+     entry (printed above as `launch check`). If that fails, the server is dead
+     in your client too — which you would have noticed.
 """
+
+
+def launch_check(state: dict | None) -> str:
+    """The command that reproduces the wrapped entry's own launch.
+
+    Built from what setup actually recorded, not from a fixed string. A hardcoded
+    `python3 -m baton_proxy` would fail on precisely the machine this file argues
+    about at length — a GUI-launched client under launchd's PATH, where `python3`
+    is 3.9 — telling the user their healthy wrap is broken."""
+    if not state:
+        return f"PYTHONPATH={SRC_DIR} {sys.executable} -m baton_proxy --help"
+    entry = state.get("wrapped_entry") or {}
+    interp = entry.get("command", sys.executable)
+    pp = (entry.get("env") or {}).get("PYTHONPATH", str(SRC_DIR))
+    return f"PYTHONPATH={pp} {interp} -m baton_proxy --help"
 
 
 # =============================================================================
@@ -483,7 +516,7 @@ def load_state() -> dict:
     promise to a stranger; a traceback breaks it."""
     try:
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, OSError):
         raise Refuse(
             f"the setup state file is unreadable: {STATE_PATH}\n"
             "  → your config entry is probably still wrapped. Its `args` end with\n"
@@ -498,7 +531,14 @@ def search_paths(explicit: str | None) -> list[Path]:
         # has to survive being read back from a different working directory days
         # later. A relative path here would make receipt and uninstall fail.
         return [Path(explicit).expanduser().resolve()]
-    return [Path.home() / ".claude.json", (Path.cwd() / ".mcp.json").resolve()]
+    # resolve() follows symlinks: a dotfiles-managed ~/.claude.json must be
+    # written THROUGH the link, or os.replace swaps the symlink for a regular
+    # file and silently divorces the user's managed config.
+    # The cwd .mcp.json entry is deliberately absent: the trial pins the working
+    # directory to try/ (see CLAUDE.md), so it could only ever name
+    # baton-proxy/try/.mcp.json, which is never a user config — and naming it in
+    # the not-found message misdirects. --config-file covers a project config.
+    return [(Path.home() / ".claude.json").resolve()]
 
 
 def discover(explicit: str | None) -> list[tuple[Path, str, str | None, str, dict]]:
@@ -538,16 +578,23 @@ def write_atomically(path: Path, text: str) -> None:
     user with a truncated ``~/.claude.json``. The backup makes that recoverable,
     but only if they find this document and read it; ``os.replace`` is atomic on
     the same filesystem and makes the window zero instead."""
+    mode = path.stat().st_mode & 0o777
     tmp = path.with_name(path.name + ".baton-tmp")
-    tmp.write_text(text, encoding="utf-8")
-    # Carry the ORIGINAL file's mode onto the replacement. os.replace keeps the
-    # temp file's permissions, and a fresh file is created at the process umask
-    # (0644) — so without this, wrapping a 0600 `~/.claude.json` would publish
-    # its OAuth tokens and every project's env block to every user on the box,
-    # and uninstall would not put the mode back. Two individually safe choices
-    # (write atomically; use the default umask) combining into a leak.
-    os.chmod(tmp, path.stat().st_mode & 0o777)
-    os.replace(tmp, path)
+    # Created 0600 BEFORE any content is written, then set to the original
+    # file's mode. Writing first and chmod-ing after would leave the whole of
+    # `~/.claude.json` — OAuth tokens, every project's env block — readable by
+    # every user on the box for the duration of the write. os.replace also keeps
+    # the temp file's permissions, so the mode has to be right at both ends.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        # Never strand a temp file holding the user's config next to the real one.
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -678,7 +725,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print(json.dumps(state["wrapped_entry"], indent=2))
     print(f"\n{RESTART_NOTE}")
     print("\nAfter the restart, use the server normally. Run\n"
-          "  python3 try/kit.py receipt\nany time — early is better than late.")
+          "  python3 kit.py receipt\nany time — early is better than late.")
     return 0
 
 
@@ -711,6 +758,9 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     print(f"event file     : {events_path}")
     print()
 
+    print(f"launch check   {launch_check(state)}")
+    print()
+
     events = read_events(events_path)
     if not events:
         # The kit can answer the most likely cause for free rather than listing
@@ -723,7 +773,7 @@ def cmd_receipt(args: argparse.Namespace) -> int:
                 f"  {describe(Path(state['config_path']), state['scope'])}\n"
                 "is no longer the entry setup wrote — it has been changed or restored\n"
                 "since, so nothing has been passing through the proxy.\n\n"
-                "  → run `python3 try/kit.py uninstall` to clear the stale state, then\n"
+                "  → run `python3 kit.py uninstall` to clear the stale state, then\n"
                 "    setup again if you still want the trial.\n"
             )
             return 0

@@ -253,6 +253,79 @@ def test_uninstall_refuses_when_the_entry_was_edited_after_setup():
     assert "what setup recorded as the original" in str(e.value)
 
 
+def test_uninstall_succeeds_when_the_entry_was_already_restored_by_hand():
+    """The deadlock this closes: setup refuses on the stale state file,
+    uninstall refused on the entry, and CLAUDE.md forbids the agent from
+    deleting state.json to escape — so every documented way out was blocked.
+    An already-restored entry means the only work left is clearing the state."""
+    before = canonical(GLOBAL_ONLY)
+    wrapped_text, state = kit.apply_wrap(before, scope=None, name="notion", **WRAP_ARGS)
+    restored_text, entry = kit.apply_unwrap(before, state)   # config already back to original
+    assert restored_text == before
+    assert entry == GLOBAL_ONLY["mcpServers"]["notion"]
+
+
+def test_sink_uri_refuses_a_comma_which_the_proxy_reads_as_a_sink_separator():
+    """make_sink splits BATON_EVENT_SINK on "," BEFORE urlparse, so the
+    round-trip check cannot see this one — a checkout under "Proj,old" becomes
+    two bogus sinks and the proxy dies at every client launch."""
+    with pytest.raises(kit.Refuse) as e:
+        kit.file_sink_uri("/tmp/Proj,old/try/events.jsonl")
+    assert "comma" in str(e.value)
+
+
+def test_write_never_exposes_content_at_a_wider_mode_than_the_target(tmp_path, monkeypatch):
+    """Not just the final mode — the temp file holds the whole config (OAuth
+    tokens, every project's env block) while it is being written."""
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text("{}", encoding="utf-8")
+    cfg.chmod(0o600)
+
+    # Observed at chmod time, which is AFTER the content is written — the
+    # window that matters. Checking at os.replace would see the corrected mode
+    # and pass against a temp file that was world-readable while holding the
+    # config: the assertion has to sit inside the exposure, not after it.
+    seen = []
+    real_chmod = kit.os.chmod
+
+    def spy(target, mode):
+        seen.append(kit.os.stat(target).st_mode & 0o777)
+        return real_chmod(target, mode)
+
+    monkeypatch.setattr(kit.os, "chmod", spy)
+    kit.write_atomically(cfg, '{"secret": "x"}')
+    assert seen and seen[0] <= 0o600, (
+        f"temp file held the config at {oct(seen[0])} before chmod"
+    )
+
+
+def test_write_leaves_no_temp_file_when_the_write_fails(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(kit.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        kit.write_atomically(cfg, "{}")
+    assert not list(tmp_path.glob("*.baton-tmp"))
+
+
+def test_launch_check_uses_the_interpreter_setup_actually_recorded(tmp_path):
+    """A hardcoded `python3` would fail on exactly the machine this kit worries
+    about, telling the user a healthy wrap is broken."""
+    _, state = kit.apply_wrap(canonical(GLOBAL_ONLY), scope=None, name="notion",
+                              interpreter="/opt/py312/bin/python3.12", **WRAP_ARGS)
+    cmd = kit.launch_check(state)
+    assert "/opt/py312/bin/python3.12" in cmd
+    assert "/checkout/src" in cmd
+
+
+def test_default_search_does_not_name_the_try_directory(monkeypatch, tmp_path):
+    """cwd is try/ during the trial, so a cwd-relative .mcp.json could only ever
+    name baton-proxy/try/.mcp.json — never a user config, and misleading in the
+    not-found message."""
+    monkeypatch.chdir(tmp_path)
+    assert all(".mcp.json" not in str(p) for p in kit.search_paths(None))
+
+
 def test_uninstall_refuses_when_the_entry_is_gone_and_shows_what_it_was():
     before = canonical(GLOBAL_ONLY)
     wrapped_text, state = kit.apply_wrap(before, scope=None, name="notion", **WRAP_ARGS)
