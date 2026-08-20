@@ -99,6 +99,27 @@ Each event carries a session id (one per proxy process), monotonic sequence numb
 
 The injected `baton_annotate` tool itself is handled by the proxy; the upstream server never sees it.
 
+### Payload scrubbing
+
+Every payload passes through `scrub.py` in `Emitter._enqueue` **before it reaches
+any sink**, local file included. It is on by default and there is no env var to
+turn it off.
+
+Redacted by pattern: JWTs, `Bearer` header values, `sk-…` API keys, `AKIA…` AWS
+access key ids, email addresses, North-American-format phone numbers, and 13–19
+digit card numbers that pass a Luhn check. Redacted by field name regardless of
+value: `email`, `phone`, `ssn`, `api_key`, `token`, `secret`, `password`,
+`user_name`.
+
+What it does **not** do, stated plainly because the distinction matters: it
+targets credentials and personal identifiers, not the substance of the work.
+Query results, table and column names, document text and row contents are
+recorded as your server returned them. Values nested more than ten levels deep
+are passed through untouched (`DEPTH_LIMIT`), and non-string leaves are not
+examined.
+
+Per-category counts are available as `Emitter.scrub_counts`.
+
 ## Configuration
 
 All knobs are environment variables. Every emission-related one has a default; the zero-config install (no env vars) writes events to stderr + `/tmp/baton-proxy.jsonl`.
@@ -153,6 +174,7 @@ These are emitted as proxy startup errors so a misconfigured install never silen
 - **Open source, Apache 2.0.** Auditable end-to-end.
 - **Fail-open.** Console outage, network issue, or instrumentation bug never breaks the MCP pipe. Tested by `tests/test_emitter.py::test_stop_is_clean_when_console_dead` and `tests/test_injection.py`.
 - **Outbound-only.** The proxy never accepts inbound connections. Events go to the configured sink (HTTP POST out for `https://` sinks, local file write for `file://` sinks); that's the only egress surface.
+- **Source-side scrubbing, on by default.** Credentials and PII patterns are redacted before any sink sees a payload — not a roadmap item. Scope and limits above.
 - **No deps.** Pure stdlib. No pydantic, no httpx, no third-party runtime requirements.
 - **Emission off the hot path.** Event emission is enqueued onto a background thread; the proxy I/O pump does not wait for the POST. End-to-end overhead measurement pending.
 
@@ -184,7 +206,6 @@ pytest
 
 ## Roadmap
 
-- PII scrubbing for `params` and `result` payloads (currently passed verbatim).
 - Static-linked single-binary distribution (PyInstaller, then likely a Go rewrite once distribution shape is set).
 - Helm chart for hosted-HTTP MCP servers.
 - Hosted-evaluation mode (per-request consent tokens).
