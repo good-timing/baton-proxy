@@ -349,6 +349,141 @@ def test_remote_and_malformed_entries_are_not_stdio(entry):
     assert not kit.is_stdio(entry)
 
 
+@pytest.mark.parametrize(
+    "entry,wrapped",
+    [
+        # The `--` form -- what this kit writes, and what already worked.
+        ({"command": "python3", "args": ["-m", "baton_proxy", "--", "npx", "srv"]}, True),
+        ({"command": "baton-proxy", "args": ["--", "npx", "srv"]}, True),
+        # THE BUG: a hand-built HTTPS-bridge wrap carries no `--`, so the old
+        # "unwrap changed nothing" test called it unwrapped and setup would have
+        # wrapped it a SECOND time -- two nested proxies, baton_annotate injected
+        # twice, discovered days later in a file nobody is watching.
+        ({"command": "python3", "args": ["-m", "baton_proxy", "--url", "https://x/mcp"]}, True),
+        # Same hole, other separator-less shapes.
+        ({"command": "baton-proxy", "args": []}, True),
+        ({"command": "baton-proxy", "args": ["--verbose"]}, True),
+        ({"command": "/opt/venv/bin/baton-proxy", "args": ["--url", "https://x"]}, True),
+        # Launch forms a HEAD-only check misses -- `uvx`/`uv run` are how our own
+        # README tells people to run baton-proxy, so these are not exotic.
+        ({"command": "uvx", "args": ["baton-proxy", "--", "npx", "srv"]}, True),
+        ({"command": "uv", "args": ["run", "baton-proxy", "--", "npx", "srv"]}, True),
+        ({"command": "/usr/bin/env", "args": ["python3", "-m", "baton_proxy", "--", "s"]}, True),
+        ({"command": "bash", "args": ["-lc", "baton-proxy -- npx srv"]}, True),
+        # DOCUMENTED FALSE POSITIVE, chosen not missed: a path component that
+        # merely happens to be named baton-proxy reads as a wrap. The cost is one
+        # manual step for the user; the cost of the opposite miss is a silent
+        # double-wrap nobody sees for days.
+        ({"command": "npx", "args": ["--prefix", "/opt/baton-proxy", "srv"]}, True),
+        # Untouched: a server that is nobody's wrap.
+        ({"command": "npx", "args": ["-y", "srv"]}, False),
+        ({"command": "python3", "args": ["-m", "some_other_server"]}, False),
+        ({"command": "npx", "args": ["-y", "@scope/baton-proxy-lookalike"]}, False),
+    ],
+)
+def test_is_wrapped_catches_every_proxy_invocation(entry, wrapped):
+    assert kit.is_wrapped(entry) is wrapped
+
+
+@pytest.mark.parametrize(
+    "url,secret",
+    [
+        # Zapier/Composio put the token in the PATH; ?key= is just as common;
+        # userinfo is the third vector. All three are the credential itself.
+        ("https://mcp.zapier.com/api/mcp/s/SUPERSECRET/sse", "SUPERSECRET"),
+        ("https://api.example.com/mcp?key=SUPERSECRET", "SUPERSECRET"),
+        ("https://user:SUPERSECRET@api.example.com/mcp", "SUPERSECRET"),
+    ],
+)
+def test_safe_endpoint_never_leaks_the_credential(url, secret):
+    """The refusal that prints an endpoint is shown to someone who may paste it
+    into a support thread with us -- the same reason header VALUES are never
+    printed. An endpoint gets named, never quoted."""
+    out = kit.safe_endpoint(url)
+    assert secret not in out
+    assert out.startswith("https://")
+
+
+def test_bridge_entry_is_not_told_to_unwrap_itself():
+    """`--url` bridges newly reach the already-wrapped refusal, and they have no
+    upstream command inside them -- so "unwrap it by hand" would mean deleting
+    the entry's only launch mechanism."""
+    cmd = ["python3", "-m", "baton_proxy", "--url", "https://x/mcp"]
+    assert kit.is_wrapped({"command": cmd[0], "args": cmd[1:]})
+    assert kit.unwrap_command(list(cmd)) == cmd  # nothing to peel -> the branch fires
+
+
+def test_unwrap_still_leaves_a_separatorless_wrap_alone():
+    """The fix moves `is_wrapped`, NOT `unwrap_command`. A `--url` bridge has no
+    original stdio command to recover, so unwrap must keep returning it as-is --
+    that behaviour is pinned to scan.py's donor by the drift test above."""
+    cmd = ["python3", "-m", "baton_proxy", "--url", "https://x/mcp"]
+    assert kit.unwrap_command(list(cmd)) == cmd
+
+
+@pytest.mark.parametrize(
+    "entry,expected",
+    [
+        # Every shape is_stdio rejects gets its own reason. The point of the
+        # split is that only ONE of these is close to workable (bearer-in-the-
+        # config), so the list has to tell them apart rather than say "remote".
+        ({"type": "sse", "url": "https://x/sse"}, "sse transport"),
+        ({"type": "http", "url": "https://x"}, "http, no credential in the config"),
+        ({"url": "https://x"}, "http, no credential in the config"),
+        (
+            {"type": "http", "url": "https://x", "headers": {"Authorization": "Bearer abc"}},
+            "http, bearer token in the config",
+        ),
+        (
+            {"type": "http", "url": "https://x", "headers": {"authorization": "bearer abc"}},
+            "http, bearer token in the config",
+        ),
+        (
+            {"type": "http", "url": "https://x", "headers": {"Authorization": "Bearer ${TOK}"}},
+            "http, bearer token in the config (a ${VAR} reference)",
+        ),
+        (
+            {
+                "type": "http",
+                "url": "https://x",
+                "headers": {"Authorization": "Bearer abc", "X-Tenant": "acme"},
+            },
+            "http, bearer token in the config, plus X-Tenant",
+        ),
+        (
+            {"type": "http", "url": "https://x", "headers": {"Authorization": "Basic abc"}},
+            "http, custom headers (Authorization)",
+        ),
+        (
+            {"type": "http", "url": "https://x", "headers": {"X-Key": "abc"}},
+            "http, custom headers (X-Key)",
+        ),
+        # A BROKEN STDIO entry lands here too. Calling it "http, no credential"
+        # would be a false claim about their config, so it gets its own reason.
+        ({"command": ""}, "no usable launch command"),
+        ({"command": 123}, "no usable launch command"),
+        ({}, "no usable launch command"),
+    ],
+)
+def test_not_wrappable_reason_is_per_entry(entry, expected):
+    assert not kit.is_stdio(entry)
+    assert kit.not_wrappable_reason(entry) == expected
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"type": "http", "url": "https://x", "headers": {"Authorization": "Bearer s3cret"}},
+        {"type": "http", "url": "https://x", "headers": {"X-Key": "s3cret"}},
+        {"type": "http", "url": "https://x", "headers": {"Authorization": "Basic s3cret"}},
+    ],
+)
+def test_not_wrappable_reason_never_prints_a_header_value(entry):
+    """The list is shown to someone who may paste it back to us, and a header
+    value is a credential. Header NAMES are the diagnostic; values never are."""
+    assert "s3cret" not in kit.not_wrappable_reason(entry)
+
+
 def test_write_preserves_the_config_files_permissions(tmp_path):
     """`~/.claude.json` is 0600 and holds OAuth tokens and every project's env
     block. os.replace carries the TEMP file's mode, and a fresh file is created
@@ -405,6 +540,8 @@ def test_discovery_does_not_key_projects_on_cwd(monkeypatch, tmp_path):
         ["python3", "-m", "baton_proxy", "--", "baton-proxy", "--", "npx", "srv"],
         ["baton-proxy"],
         ["baton-proxy", "--verbose"],
+        ["baton-proxy", "--"],
+        ["python3", "-m", "baton_proxy", "--url", "https://x/mcp"],
         [],
     ],
 )
