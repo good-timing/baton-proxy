@@ -1,9 +1,5 @@
 # Security review — the Baton try kit
 
-> **DRAFT — not yet accurate.** This document describes the try kit's intended
-> behaviour. The setup, receipt and uninstall commands it names are not built yet.
-> Do not publish this file until every claim in it is true of the code beside it.
-
 This document is written for a security reviewer deciding whether to approve
 running the Baton try kit inside your organisation. It assumes you will not talk
 to us, and that you are reading this before anything is cloned.

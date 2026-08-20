@@ -70,8 +70,9 @@ python3 kit.py receipt
 **1. Find the server.** Run `python3 kit.py setup` with no arguments. It lists
 the stdio servers it can wrap, plus any it cannot and why. It looks in
 `~/.claude.json`; if the person keeps their server in a project-local
-`.mcp.json`, ask them for the path and pass `--config-file <path>` to every
-command from then on. Show that list to the
+`.mcp.json`, ask them for the path and pass `--config-file <path>` **to `setup`
+only** — it records the path, so `receipt` and `uninstall` find it themselves and
+will reject the flag if you pass it. Show that list to the
 person and ask which one they want, and why that one — the trial is worth most on
 a server they actually use daily. If the list is empty, say so plainly and stop:
 the trial needs one working stdio MCP server, and there is nothing to do without
