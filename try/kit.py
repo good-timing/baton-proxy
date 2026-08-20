@@ -161,21 +161,84 @@ def is_stdio(entry: dict) -> bool:
     return isinstance(entry.get("command"), str) and bool(entry["command"])
 
 
+def not_wrappable_reason(entry: dict) -> str:
+    """Why a single entry ``is_stdio`` rejected cannot be wrapped.
+
+    The rejected shapes fail for different reasons and only one of them is close
+    to workable, so collapsing them into "remote (http/sse)" throws away the one
+    fact that tells them apart. This reports what the entry *is*. It promises
+    nothing about what a later version might wrap, and it never prints a header
+    VALUE — the list is shown to someone who may paste it back to us."""
+    if entry.get("type") == "sse":
+        return "sse transport"
+    # Order matters: a malformed stdio entry (`{"command": ""}`) reaches here
+    # too, and calling that one "http, no credential" would be a false statement
+    # about their config in the one artifact whose premise is being exact.
+    if entry.get("type") == "http" or "url" in entry:
+        headers = entry.get("headers")
+        headers = headers if isinstance(headers, dict) else {}
+        auth = next((v for k, v in headers.items() if k.lower() == "authorization"), None)
+        others = sorted(k for k in headers if k.lower() != "authorization")
+        if isinstance(auth, str) and auth.strip().lower().startswith("bearer "):
+            what = "http, bearer token in the config"
+            if "${" in auth:
+                what += " (a ${VAR} reference)"
+            return what + (f", plus {', '.join(others)}" if others else "")
+        if headers:
+            return "http, custom headers (" + ", ".join(sorted(headers)) + ")"
+        return "http, no credential in the config"
+    return "no usable launch command"
+
+
+def is_proxy_invocation(cmd: list[str]) -> bool:
+    """Does this command LEAD with a baton-proxy launch, in the two head forms?
+
+    Narrow on purpose: this is what ``unwrap_command`` consumes, and unwrap is
+    pinned byte-for-byte to ``scan.py``'s donor by a drift test. Widening it
+    would move unwrap. The broader question — "is this entry a proxy at all" —
+    is ``is_wrapped``, which sweeps every token."""
+    if not cmd:
+        return False
+    head = os.path.basename(cmd[0])
+    rest = cmd[1:]
+    if head in _PROXY_NAMES:
+        return True
+    return head.startswith("python") and len(rest) >= 2 and rest[0] == "-m" and rest[1] in _PROXY_NAMES
+
+
+def safe_endpoint(url: str) -> str:
+    """Scheme and host only — never the path, query, or userinfo.
+
+    An MCP endpoint URL is frequently the credential itself: Zapier and Composio
+    put the secret in the PATH (``…/api/mcp/s/<token>/sse``), and ``?key=`` is
+    just as common. The refusal that prints it is shown to someone who may paste
+    it into a support thread with us, so it gets the same treatment as a header
+    value — named, never quoted."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "the configured endpoint"
+    host = parts.hostname or ""
+    if not host:
+        return "the configured endpoint"
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return f"{parts.scheme}://{host}" if parts.scheme else host
+
+
 def unwrap_command(cmd: list[str]) -> list[str]:
     """Peel any leading baton-proxy invocation off a command.
 
-    Ported from ``scan.py``'s ``_unwrap_baton_proxy``. Here it answers "is this
-    already wrapped?" — wrapping a wrap would nest two proxies and inject the
-    annotation tool twice. Recurses to handle an accidental multi-wrap; a
-    wrapper with no ``--`` separator is left alone."""
+    Ported from ``scan.py``'s ``_unwrap_baton_proxy`` and pinned to it by a drift
+    test — do not change its behaviour here. It recovers the wrapped command;
+    it recurses to handle an accidental multi-wrap, and a wrapper with no ``--``
+    separator is left alone because there is no upstream command to recover.
+    Whether an entry is wrapped is ``is_wrapped``'s question, not this one."""
     if not cmd:
         return cmd
-    head = os.path.basename(cmd[0])
-    rest = cmd[1:]
-    console = head in _PROXY_NAMES
-    module = head.startswith("python") and len(rest) >= 2 and rest[0] == "-m" and rest[1] in _PROXY_NAMES
-    if not (console or module):
+    if not is_proxy_invocation(cmd):
         return cmd
+    rest = cmd[1:]
     try:
         sep = rest.index("--")
     except ValueError:
@@ -185,8 +248,24 @@ def unwrap_command(cmd: list[str]) -> list[str]:
 
 
 def is_wrapped(entry: dict) -> bool:
+    """True for any entry that launches baton-proxy in any form WE CAN DETECT.
+
+    A token-level sweep, not a head check, because the head is only one of the
+    ways a proxy gets launched: ``uvx baton-proxy -- …`` and ``uv run
+    baton-proxy -- …`` are how our own README tells people to run it,
+    ``/usr/bin/env python3 -m baton_proxy`` is ordinary, and a shell wrapper
+    puts the whole command inside one argument. A head check sees none of them,
+    so each would be wrapped a SECOND time — two nested proxies, the annotation
+    tool injected twice, discovered days later in a file nobody is watching.
+
+    It OVER-triggers by design. A path component that merely happens to be
+    named ``baton-proxy`` reads as a wrap (see the documented false positive in
+    the tests), and the cost of that is one manual step for the user, against a
+    silent double-wrap for the miss. Known still-missed: a direct
+    ``python3 /path/to/baton_proxy/__main__.py``, where no token's basename is
+    the package name."""
     cmd = [entry.get("command", ""), *[str(a) for a in entry.get("args") or []]]
-    return unwrap_command(cmd) != cmd
+    return any(os.path.basename(piece) in _PROXY_NAMES for token in cmd for piece in token.split())
 
 
 def file_sink_uri(path: str) -> str:
@@ -635,17 +714,17 @@ def cmd_setup(args: argparse.Namespace) -> int:
         # is false, and the name it hides is the one needed to reach the real
         # refusal below.
         already = [(p, s, n) for p, _t, s, n, e in found if is_stdio(e) and is_wrapped(e)]
-        remote = [n for _p, _t, _s, n, e in found if not is_stdio(e)]
+        remote = [(n, not_wrappable_reason(e)) for _p, _t, _s, n, e in found if not is_stdio(e)]
         lines = [f"  {n:<24} {describe(p, s)}" for p, s, n in stdio] or ["  (none)"]
         msg = "which server should the trial wrap? Pass its name.\n\n  " + "\n".join(lines)
         if already:
-            msg += "\n\n  Already wrapped in baton-proxy, so not offered:\n  " + "\n  ".join(
+            msg += "\n\n  Already baton-proxy, so not offered:\n  " + "\n  ".join(
                 f"  {n:<24} {describe(p, s)}" for p, s, n in already
             )
         if remote:
             msg += (
-                "\n\n  Not wrappable — the trial covers stdio servers only, and these are\n"
-                "  remote (http/sse): " + ", ".join(sorted(set(remote)))
+                "\n\n  Not wrappable — this kit wraps stdio entries only (v0). What each is:\n  "
+                + "\n  ".join(f"  {n:<24} {r}" for n, r in sorted(set(remote)))
             )
         if not stdio:
             msg += (
@@ -676,12 +755,25 @@ def cmd_setup(args: argparse.Namespace) -> int:
     path, text, scope, name, entry = matches[0]
     if not is_stdio(entry):
         raise Refuse(
-            f"`{name}` is a remote (http/sse) MCP server"
-            + (f" — {entry.get('url')}" if entry.get("url") else "")
-            + ".\n  The trial wraps stdio servers only: it works by launching the server as a\n"
-            "  subprocess, which a remote endpoint has no equivalent of. Nothing changed."
+            f"`{name}` is not wrappable — {not_wrappable_reason(entry)}"
+            + (f" ({safe_endpoint(str(entry['url']))})" if entry.get("url") else "")
+            + ".\n  This kit wraps stdio entries only (v0): setup replaces the command that\n"
+            "  launches the server, and this entry has none.\n"
+            "  → if you already reach this server through a stdio entry (a local bridge\n"
+            "    command, say), name that one instead. Nothing changed."
         )
     if is_wrapped(entry):
+        cmd = [entry.get("command", ""), *[str(a) for a in entry.get("args") or []]]
+        if unwrap_command(cmd) == cmd:
+            # Nothing to peel: an HTTP-bridge entry (`--url`) has no upstream
+            # command inside it, so "unwrap it by hand" would mean deleting the
+            # entry's only launch mechanism. Never tell someone to do that.
+            raise Refuse(
+                f"`{name}` IS baton-proxy — bridging a remote upstream, not wrapping a\n"
+                "  local one. There is no original command inside it to restore, so there\n"
+                "  is nothing for this kit to wrap and nothing to undo.\n"
+                "  → pick a different server. Nothing changed."
+            )
         raise Refuse(
             f"`{name}` is already wrapped in baton-proxy, but this kit did not do it\n"
             "  (there is no state file). Refusing to touch someone else's wrap.\n"
