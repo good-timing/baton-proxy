@@ -1,7 +1,8 @@
-"""baton-proxy — subprocess-wrap MCP proxy.
+"""baton-proxy — transparent MCP proxy.
 
-Wraps a stdio MCP server, injects an annotation tool into the handshake,
-and emits friction events to a baton-console.
+Wraps a stdio MCP server as a subprocess, or bridges to a remote
+Streamable-HTTP MCP server (`--url`); injects an annotation tool into the
+handshake, and emits friction events to a baton-console.
 
 See README.md for usage.
 """
