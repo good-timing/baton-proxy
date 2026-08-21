@@ -21,14 +21,18 @@ test:
 test-fast:
 	$(BIN)/pytest -q -m "not slow and not integration"
 
+# `.` and not `src/ tests/` — try/kit.py is shipped code a prospect's security
+# reviewer reads, and it lived outside every local gate. `.` is also literally
+# what CI runs, so neither side can be the wider one. pyproject's
+# extend-exclude keeps the baton-spec submodule out.
 lint:
-	$(BIN)/ruff check src/ tests/
+	$(BIN)/ruff check .
 
 format:
-	$(BIN)/ruff format src/ tests/
+	$(BIN)/ruff format .
 
 format-check:
-	$(BIN)/ruff format --check src/ tests/
+	$(BIN)/ruff format --check .
 
 # CI gate — mirrors .github/workflows/test.yml so a green local `make ci`
 # predicts a green PR. No typecheck target (mypy is not configured here).

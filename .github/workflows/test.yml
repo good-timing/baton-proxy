@@ -25,4 +25,5 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev,s3]"
       - run: ruff check .
+      - run: ruff format --check .
       - run: pytest
