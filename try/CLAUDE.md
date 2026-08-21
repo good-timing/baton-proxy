@@ -9,7 +9,7 @@ Three commands do the work. **Run them from this `try/` directory** — that is
 where the person already is:
 
 ```
-python3 kit.py setup <server-name>    # wrap one configured stdio MCP server
+python3 kit.py setup <server-name>    # wrap one configured MCP server
 python3 kit.py receipt                # what has been captured so far
 python3 kit.py uninstall              # put the original entry back
 ```
@@ -78,21 +78,51 @@ python3 kit.py receipt
 ## Setting up
 
 **1. Find the server.** Run `python3 kit.py setup` with no arguments. It lists
-the stdio servers it can wrap, plus any it cannot and why. It looks in
+the servers it can wrap, plus any it cannot and why. It looks in
 `~/.claude.json`; if the person keeps their server in a project-local
 `.mcp.json`, ask them for the path and pass `--config-file <path>` **to `setup`
 only** — it records the path, so `receipt` and `uninstall` find it themselves and
 will reject the flag if you pass it. Show that list to the
 person and ask which one they want, and why that one — the trial is worth most on
 a server they actually use daily. If the list is empty, say so plainly and stop:
-the trial needs one working stdio MCP server, and there is nothing to do without
-it.
+the trial needs one working MCP server it can wrap, and there is nothing to do
+without it.
+
+**Two kinds of server can be wrapped, and the second one changes what you should
+say in step 2.** A **stdio** server is one their client launches locally; the
+wrap replaces the launch command. A **remote** server is one their client reaches
+over HTTPS; the wrap is only offered when its single `Authorization: Bearer`
+header holds a token written in the config, and it turns the entry into a local
+process that bridges to the same endpoint. `setup`'s list does not label which is
+which — the entry does. If the one they picked has a `url` and `headers` rather
+than a `command`, it is the remote kind.
+
+Do not argue an entry past a refusal. Every remote refusal — `sse`, extra
+headers, no credential in the config — exists because the wrap would look like it
+worked and produce a server that cannot authenticate after the restart. The
+no-credential case in particular is refused *because* it looks easy: it is
+indistinguishable from OAuth, where the client holds the token and never writes
+it down. If they want that server covered, the answer is to say so to us, not to
+work around it.
 
 **2. Say what will happen, before it does.** Briefly, in your own words: one
 entry in their MCP config is replaced so their server runs behind a local proxy;
 their credentials are untouched; everything captured is written to a file in this
 folder and nothing is sent anywhere; it is reversible with one command. Point at
 `SECURITY.md` for anyone who wants the detail. Then ask them to confirm.
+
+**If it is a remote server, two more sentences belong in that summary, and you
+should not skip them.** First: before the wrap no process of ours runs on their
+machine at all, and after it one does, holding their bearer token in its
+environment — that is a real change and someone who approved the stdio story has
+not yet approved this one. It sends that token to the endpoint their config
+already named, and nowhere else. Second: the kit copies the token between two
+config slots without resolving it, so a `${VAR}` reference stays a reference —
+but that relies on their client expanding `${VAR}` inside `env`, which is
+measured behaviour on one client version rather than a guarantee. Tell them to
+run `receipt` on the first day: an empty file is how a wrap that cannot
+authenticate gets found in an hour instead of at the end of the trial.
+`SECURITY.md` §2 carries all of this if they want it in writing.
 
 **3. Offer a label.** `--tenant` is a plain string that tags the events so the
 file can be told apart from anyone else's later. Suggest something like their

@@ -75,11 +75,17 @@ STATE_VERSION = 1
 # Names a baton-proxy invocation can appear under in someone's config.
 _PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
 
-# A redacted dump is still the restore recipe — it keeps the command, the args
-# and the env KEY names. Only literal values are hidden, and this says where the
-# exact bytes are, so nobody is left guessing at what was elided.
+# A redacted dump is still the restore recipe — it keeps the command, the args,
+# and the env and header KEY names. Only values are hidden, and this says where
+# the exact bytes are, so nobody is left guessing at what was elided.
+#
+# Worded over the whole record rather than over `env`, because the record is what
+# gets redacted: an http entry hides its header values and shortens its url to
+# scheme and host, and a pointer that mentioned only env would leave someone
+# staring at a truncated URL with no idea it was deliberate.
 STATE_POINTER = (
-    "\n\n  Env values shown as `<literal …>` are hidden here, not lost: the entry\n"
+    "\n\n  What is hidden above is hidden, not lost — env and header values shown\n"
+    "  as `<literal …>`, and any URL shortened to scheme and host. The entry\n"
     "  exactly as it was is in try/state.json under `original_entry`."
 )
 
@@ -169,8 +175,90 @@ def is_stdio(entry: dict) -> bool:
     return isinstance(entry.get("command"), str) and bool(entry["command"])
 
 
+def is_http(entry: dict) -> bool:
+    """Does the CLIENT reach this server over the network rather than launch it?
+
+    Deliberately the LOOSE predicate — ``type: "http"`` or the mere presence of a
+    ``url`` — because all it decides is which *explanation* an entry gets.
+    Whether an http entry can actually be wrapped is ``http_bridge``'s question,
+    and that one is strict."""
+    if entry.get("type") == "sse":
+        return False
+    return entry.get("type") == "http" or "url" in entry
+
+
+def bearer_header(entry: dict) -> tuple[str | None, list[str]]:
+    """``(token, other_header_names)`` — the ONE place a bearer is recognised.
+
+    Two callers depend on this agreeing with itself: ``http_bridge`` decides
+    whether an entry can be wrapped, ``not_wrappable_reason`` explains why one
+    cannot. A second copy of "is this a bearer" that drifted from the first would
+    offer an entry as a candidate and then describe it as unwrappable, or worse
+    the reverse — so there is one copy.
+
+    The token comes back WITHOUT the ``Bearer `` prefix, because that is the form
+    the bridge wants: ``transport_http`` composes ``Authorization: Bearer
+    {token}`` itself, and passing the prefix through would put it on the wire
+    twice. The value is never resolved — a ``${VAR}`` reference is carried across
+    as a reference, which is the entire reason this move is safe."""
+    headers = entry.get("headers")
+    headers = headers if isinstance(headers, dict) else {}
+    auth = next((v for k, v in headers.items() if str(k).lower() == "authorization"), None)
+    others = sorted(str(k) for k in headers if str(k).lower() != "authorization")
+    if not isinstance(auth, str) or not auth.strip().lower().startswith("bearer "):
+        return None, others
+    # strip() again after the slice: `Bearer  ${X}` (two spaces) would otherwise
+    # carry a leading space into the env var and onto the wire.
+    token = auth.strip()[len("bearer ") :].strip()
+    return (token or None), others
+
+
+def http_bridge(entry: dict) -> tuple[str, str] | None:
+    """``(url, token)`` if this entry is the ONE remote shape the bridge carries.
+
+    The narrowness IS the safety property. ``run_http_proxy`` sends exactly one
+    header of its own — ``Authorization: Bearer $BATON_UPSTREAM_AUTH_TOKEN`` — so
+    an entry is carryable only when its auth is a bearer token *written in the
+    config* and it sends no other header.
+
+    Every other shape refuses, and each refusal prevents the same failure: an
+    entry whose credential we could not carry would wrap cleanly, print success,
+    and surface as a dead server after the restart — days later, with nothing
+    pointing at the cause. That failure is what this whole kit is shaped to
+    avoid.
+
+    In particular **an http entry with no credential at all stays refused**,
+    which looks over-cautious and is not. That shape is ambiguous: it is either a
+    public endpoint, or an OAuth server whose token the CLIENT holds and never
+    writes to the file. Wrapping the second kind produces exactly the dead server
+    above, and nothing in the config distinguishes them.
+
+    stdio wins ties by construction. An entry carrying both a ``command`` and a
+    ``url`` is a hand-made oddity; demoting its command is reversible, dropping
+    it is not."""
+    if is_stdio(entry) or not is_http(entry):
+        return None
+    url = entry.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return None
+    token, others = bearer_header(entry)
+    if token is None or others:
+        return None
+    return url.strip(), token
+
+
+def is_wrappable(entry: dict) -> bool:
+    """Can setup replace this entry with a baton-proxy one?
+
+    Two disjoint classes: a stdio server whose command we demote to the proxy's
+    argument, and a remote Streamable-HTTP server with a bearer in the config,
+    which we bridge. Everything else gets a reason from ``not_wrappable_reason``
+    rather than silence."""
+    return is_stdio(entry) or http_bridge(entry) is not None
+
+
 def not_wrappable_reason(entry: dict) -> str:
-    """Why a single entry ``is_stdio`` rejected cannot be wrapped.
+    """Why a single entry ``is_wrappable`` rejected cannot be wrapped.
 
     The rejected shapes fail for different reasons and only one of them is close
     to workable, so collapsing them into "remote (http/sse)" throws away the one
@@ -182,18 +270,29 @@ def not_wrappable_reason(entry: dict) -> str:
     # Order matters: a malformed stdio entry (`{"command": ""}`) reaches here
     # too, and calling that one "http, no credential" would be a false statement
     # about their config in the one artifact whose premise is being exact.
-    if entry.get("type") == "http" or "url" in entry:
+    if is_http(entry):
         headers = entry.get("headers")
         headers = headers if isinstance(headers, dict) else {}
-        auth = next((v for k, v in headers.items() if k.lower() == "authorization"), None)
-        others = sorted(k for k in headers if k.lower() != "authorization")
-        if isinstance(auth, str) and auth.strip().lower().startswith("bearer "):
+        token, others = bearer_header(entry)
+        url = entry.get("url")
+        if token is not None and not (isinstance(url, str) and url.strip()):
+            # Checked BEFORE the bearer line below, which would otherwise print
+            # "http, bearer token in the config" — the exact phrase every document
+            # now defines as the WRAPPABLE class — under the heading "Not
+            # wrappable". This list is how a prospect's own run reports which
+            # classes their config holds, so a wrong label there is a wrong
+            # measurement, not just a confusing sentence.
+            return "http, no endpoint url"
+        if token is not None:
+            # A SOLE bearer is wrappable now, so it does not reach here through
+            # the candidate list. This is the bearer-PLUS-other-headers case: the
+            # bridge sends one header of its own and cannot carry the rest.
             what = "http, bearer token in the config"
-            if "${" in auth:
+            if "${" in token:
                 what += " (a ${VAR} reference)"
             return what + (f", plus {', '.join(others)}" if others else "")
         if headers:
-            return "http, custom headers (" + ", ".join(sorted(headers)) + ")"
+            return "http, custom headers (" + ", ".join(sorted(str(k) for k in headers)) + ")"
         return "http, no credential in the config"
     return "no usable launch command"
 
@@ -407,9 +506,16 @@ def build_wrapped_entry(
 ) -> dict:
     """The one transformation this kit exists to perform.
 
-    Same key name, same env, the original command demoted to the proxy's
-    argument. Rules encoded here rather than in prose because each one is a
-    silent failure if a human or a model gets it wrong:
+    Two shapes go in and one shape comes out. A **stdio** entry keeps its key
+    name and its env, and its command is demoted to the proxy's argument. An
+    **http** entry — only the bearer-in-config shape ``http_bridge`` accepts —
+    becomes a stdio entry running the proxy's ``--url`` bridge, which is how the
+    proxy has reached remote servers since 0.2.2. Either way the key name never
+    changes, so every session, script and habit that named this server still
+    reaches it.
+
+    Rules encoded here rather than in prose because each one is a silent failure
+    if a human or a model gets it wrong:
 
     - The upstream env is preserved verbatim, ``${VAR}`` references included —
       the MCP client expands those when it launches the server; we never resolve
@@ -425,9 +531,6 @@ def build_wrapped_entry(
     - ``PYTHONPATH`` is APPENDED, not prepended: it is inherited by the wrapped
       server too, and a Python server's own modules must keep winning.
     """
-    cmd = [original.get("command", ""), *[str(a) for a in original.get("args") or []]]
-    upstream = unwrap_command(cmd)
-
     env = {str(k): str(v) for k, v in (original.get("env") or {}).items()}
     # Append only if absent. Re-wrapping an entry that already carries our path
     # (a repeat setup after the state file was deleted) must not grow it every
@@ -439,6 +542,35 @@ def build_wrapped_entry(
     env["BATON_TENANT_ID"] = tenant_id
     env["BATON_VENDOR_ID"] = vendor_id
     env["BATON_EVENT_SINK"] = file_sink_uri(events_path)
+
+    bridge = http_bridge(original)
+    if bridge is not None:
+        url, token = bridge
+        # The credential moves slot — from a `headers` value the client expands,
+        # to an env value the client expands — and is never resolved on the way.
+        # A `${VAR}` reference stays a reference and the client resolves it at
+        # launch, exactly as it did in the header. That is what keeps this
+        # function's central promise ("we never see a credential") true for the
+        # http class, which the design note had assumed it would cost.
+        #
+        # Written after the user's env is copied in, like the other BATON_ vars,
+        # so a stray value of the same name cannot shadow it. NOT added to
+        # `_OUR_ENV_KEYS`: we write the KEY, but the VALUE is theirs, and a
+        # literal token here must stay hidden by the ordinary redaction rule.
+        env["BATON_UPSTREAM_AUTH_TOKEN"] = token
+        # A fresh dict, not `dict(original)`. Carrying `type`/`url`/`headers`
+        # alongside a `command` would leave the client an entry claiming to be
+        # both transports at once — ambiguous at best, and it would hand the
+        # bearer header to a server that is now local. Unrecognised keys DO
+        # survive, same as the stdio path: they are the user's, not ours.
+        wrapped = {k: v for k, v in original.items() if k not in ("type", "url", "headers")}
+        wrapped["command"] = interpreter
+        wrapped["args"] = ["-m", "baton_proxy", "--url", url]
+        wrapped["env"] = env
+        return wrapped
+
+    cmd = [original.get("command", ""), *[str(a) for a in original.get("args") or []]]
+    upstream = unwrap_command(cmd)
 
     wrapped = dict(original)
     # sys.executable, never the bare name. `python3` is resolved against the MCP
@@ -689,9 +821,14 @@ def load_state() -> dict:
     except (json.JSONDecodeError, OSError):
         raise Refuse(
             f"the setup state file is unreadable: {STATE_PATH}\n"
-            "  → your config entry is probably still wrapped. Its `args` end with\n"
-            "    `-- <your original command>`, which is what the entry was before.\n"
-            "    Restore that by hand, then delete the state file."
+            "  → your config entry is probably still wrapped, and the whole config as\n"
+            "    it was before setup is in the newest `config-backup.*.json` beside\n"
+            "    this file. Copy the entry back from there, then delete the state file.\n"
+            "  → failing that, the wrapped entry says which shape it was. `args` of\n"
+            "    `-m baton_proxy -- <command>` means it was a stdio entry running\n"
+            "    <command>. `args` of `-m baton_proxy --url <endpoint>` means it was an\n"
+            "    http entry for <endpoint>, whose `Authorization: Bearer` header value\n"
+            "    is the entry's `BATON_UPSTREAM_AUTH_TOKEN`."
         ) from None
 
 
@@ -827,34 +964,34 @@ def cmd_setup(args: argparse.Namespace) -> int:
         raise Refuse(
             "no MCP configuration found in "
             + ", ".join(str(p) for p in search_paths(args.config_file))
-            + ".\n  → the trial needs one stdio MCP server already configured and working."
+            + ".\n  → the trial needs one MCP server already configured and working."
             "\n  → if yours lives elsewhere, pass --config-file <path>."
         )
 
     if not args.server:
-        stdio = [(p, s, n) for p, _t, s, n, e in found if is_stdio(e) and not is_wrapped(e)]
-        # Already-wrapped stdio entries get their own line rather than falling
-        # out of both lists — otherwise a machine whose only stdio server is
-        # already wrapped is told "there is no stdio server here to wrap", which
-        # is false, and the name it hides is the one needed to reach the real
-        # refusal below.
-        already = [(p, s, n) for p, _t, s, n, e in found if is_stdio(e) and is_wrapped(e)]
-        remote = [(n, not_wrappable_reason(e)) for _p, _t, _s, n, e in found if not is_stdio(e)]
-        lines = [f"  {n:<24} {describe(p, s)}" for p, s, n in stdio] or ["  (none)"]
+        wrappable = [(p, s, n) for p, _t, s, n, e in found if is_wrappable(e) and not is_wrapped(e)]
+        # Already-wrapped entries get their own line rather than falling out of
+        # both lists — otherwise a machine whose only server is already wrapped
+        # is told "there is nothing here to wrap", which is false, and the name
+        # it hides is the one needed to reach the real refusal below.
+        already = [(p, s, n) for p, _t, s, n, e in found if is_wrappable(e) and is_wrapped(e)]
+        remote = [(n, not_wrappable_reason(e)) for _p, _t, _s, n, e in found if not is_wrappable(e)]
+        lines = [f"  {n:<24} {describe(p, s)}" for p, s, n in wrappable] or ["  (none)"]
         msg = "which server should the trial wrap? Pass its name.\n\n  " + "\n".join(lines)
         if already:
             msg += "\n\n  Already baton-proxy, so not offered:\n  " + "\n  ".join(
                 f"  {n:<24} {describe(p, s)}" for p, s, n in already
             )
         if remote:
-            msg += (
-                "\n\n  Not wrappable — this kit wraps stdio entries only (v0). What each is:\n  "
-                + "\n  ".join(f"  {n:<24} {r}" for n, r in sorted(set(remote)))
+            msg += "\n\n  Not wrappable. What each is:\n  " + "\n  ".join(
+                f"  {n:<24} {r}" for n, r in sorted(set(remote))
             )
-        if not stdio:
+        if not wrappable:
             msg += (
-                "\n\n  There is no UNWRAPPED stdio server here. The trial needs one;\n"
-                "  nothing has been changed."
+                "\n\n  There is no UNWRAPPED server here that this kit can wrap. It wraps a\n"
+                "  stdio server, or a remote one whose `Authorization: Bearer` token is\n"
+                "  written in the config and which sends no other header. Nothing has\n"
+                "  been changed."
             )
         raise Refuse(msg)
 
@@ -878,14 +1015,17 @@ def cmd_setup(args: argparse.Namespace) -> int:
         )
 
     path, text, scope, name, entry = matches[0]
-    if not is_stdio(entry):
+    if not is_wrappable(entry):
         raise Refuse(
             f"`{name}` is not wrappable — {not_wrappable_reason(entry)}"
             + (f" ({safe_endpoint(str(entry['url']))})" if entry.get("url") else "")
-            + ".\n  This kit wraps stdio entries only (v0): setup replaces the command that\n"
-            "  launches the server, and this entry has none.\n"
-            "  → if you already reach this server through a stdio entry (a local bridge\n"
-            "    command, say), name that one instead. Nothing changed."
+            + ".\n  Setup can replace a stdio entry's launch command, or bridge a remote\n"
+            "  entry whose `Authorization: Bearer` token is written in the config and\n"
+            "  which sends no other header. This entry is neither, and wrapping it\n"
+            "  anyway would drop something the server needs — which shows up as a dead\n"
+            "  server after the restart, not now.\n"
+            "  → name a different server, or reach this one through an entry of either\n"
+            "    shape. Nothing changed."
         )
     if is_wrapped(entry):
         cmd = [entry.get("command", ""), *[str(a) for a in entry.get("args") or []]]
@@ -1076,7 +1216,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_setup = sub.add_parser("setup", help="wrap one configured stdio MCP server")
+    p_setup = sub.add_parser("setup", help="wrap one configured MCP server")
     p_setup.add_argument("server", nargs="?", help="name of the server entry to wrap")
     p_setup.add_argument("--config-file", help="config to use instead of searching")
     p_setup.add_argument("--tenant", help="label for this trial (default: a random trial-XXXX)")

@@ -20,9 +20,11 @@ receipt command. It installs nothing. The proxy is the source you are reading �
 there is no package fetch, no vendored copy, and no build step, so **the code you
 review is the code that runs**.
 
-**In the try configuration, nothing leaves your machine.** Section 4 is the whole
-argument for that sentence, including the code paths that *could* send data and
-why each one is inert.
+**In the try configuration, nothing Baton records leaves your machine.** Events
+are written to a local file. Section 4 is the whole argument for that sentence,
+including the code paths that *could* send data and why each one is inert — and
+the one qualification, which applies only if the server you wrap is a remote one
+you were already reaching over the network.
 
 ## 2. What changes on your machine
 
@@ -77,14 +79,84 @@ The server keeps its name and its environment. Your original command becomes the
 proxy's argument, so the proxy starts your server as a child process and speaks
 to it over stdin/stdout exactly as your client did.
 
+### If the server you wrap is a remote one
+
+The kit also wraps a **remote** entry (MCP Streamable HTTP), on one narrow
+condition: its only header is `Authorization: Bearer …`, and that token is
+written in the config file. Before:
+
+```json
+"acme": {
+  "type": "http",
+  "url": "https://mcp.acme.com/mcp",
+  "headers": { "Authorization": "Bearer ${ACME_TOKEN}" }
+}
+```
+
+After:
+
+```json
+"acme": {
+  "command": "/absolute/path/to/python3.12",
+  "args": ["-m", "baton_proxy", "--url", "https://mcp.acme.com/mcp"],
+  "env": {
+    "BATON_UPSTREAM_AUTH_TOKEN": "${ACME_TOKEN}",
+    "PYTHONPATH": "/absolute/path/to/baton-proxy/src",
+    "BATON_TENANT_ID": "trial-4f2a9c11",
+    "BATON_VENDOR_ID": "acme",
+    "BATON_EVENT_SINK": "file:///absolute/path/to/baton-proxy/try/events.jsonl"
+  }
+}
+```
+
+**This is a larger change than the stdio one and deserves its own line in your
+review.** Before the wrap, no process of ours exists on your machine at all —
+your client speaks HTTPS to that endpoint directly. After it, baton-proxy runs
+as a local subprocess, opens that connection instead, and holds your bearer
+token in its environment. That is a new fact about your machine, not a variation
+on "your launcher was replaced."
+
+What does *not* change: the destination and the credential. The proxy sends
+`Authorization: Bearer $BATON_UPSTREAM_AUTH_TOKEN` to the URL your entry already
+named (`transport_http.py`), which is the same request your client was making.
+
+**The kit does not resolve the token.** `Bearer ${ACME_TOKEN}` becomes
+`BATON_UPSTREAM_AUTH_TOKEN: "${ACME_TOKEN}"` — the reference, not the value —
+and your client expands it when it launches the entry, exactly as it expanded it
+inside the header. Two things to know about that. It is **client behaviour we
+measured on one version** (Claude Code 2.1.223), not something the MCP
+specification requires; if your client does not expand `${VAR}` in `env`, the
+wrapped server will fail to authenticate after the restart. And if the token in
+your entry is a literal rather than a `${VAR}` reference, the question does not
+arise — the literal is copied across as-is, and it is then also written into
+`try/state.json`, which is why that file is created `0600`.
+
+Either way, **run `python3 kit.py receipt` on the first day.** An empty file is
+how you find a broken wrap in an hour instead of at the end of the trial.
+
+Refused, and the reason for each, because each refusal prevents the same
+failure — a wrap that reports success and produces a server that cannot
+authenticate, discovered days later:
+
+- **`sse`** — a different transport; the bridge implements Streamable HTTP only.
+- **Additional headers** — the bridge sends exactly one header of its own and
+  cannot carry the rest.
+- **No credential in the config** — refused even though it looks like the easy
+  case. It is indistinguishable from OAuth, where your *client* holds the token
+  and never writes it to the file; wrapping that produces a proxy with nothing
+  to present.
+
 Notes a reviewer should hold onto:
 
 - **The existing entry is replaced, not duplicated.** A second entry beside the
   original would leave the agent able to call the unwrapped server, so nothing
   would be captured while everyone believed it was.
-- **Credentials are not read, copied, or forwarded anywhere.** The `env` block is
-  preserved verbatim, `${VAR}` references included; your MCP client expands them
-  when it launches the server, as it does today. The proxy never resolves them.
+- **Credentials are never resolved.** The `env` block is preserved verbatim,
+  `${VAR}` references included; your MCP client expands them when it launches the
+  server, as it does today. The kit never resolves them, and for a stdio entry it
+  never moves them either. For a remote entry it moves one value between two
+  slots your client expands — a `headers` value becomes an `env` value — without
+  reading it; see the subsection above.
   One exception, in the safe direction: the proxy strips every `BATON_`-prefixed
   variable from the child process's environment (`proxy.py`, `_child_env`), so
   your server never sees Baton's own configuration. If your server legitimately
@@ -209,7 +281,14 @@ a guarantee rather than an intention.
 
 ## 4. What leaves your machine
 
-**In the try configuration: nothing.** Events are appended to a local JSONL file.
+**In the try configuration: nothing Baton records.** Events are appended to a
+local JSONL file.
+
+One qualification, and it applies only if you wrapped a **remote** entry: that
+server's traffic was already leaving your machine, because your client was
+dialling the endpoint itself. It still goes to the same endpoint with the same
+token. What changes is which process opens the connection — baton-proxy, from
+this checkout, instead of your client. No new destination is introduced.
 
 The proxy nevertheless contains code that can open a network connection or start
 a process, because the same source serves production deployments. A reviewer will
@@ -220,8 +299,8 @@ them:
 |---|---|---|---|
 | 1 | `sinks.py` · `HttpSink.write` | POSTs events to `{url}/v0/events` | Built only when `BATON_EVENT_SINK` is an `http(s)://` URL. The try config sets a `file://` URL. It also **raises at startup** without `BATON_API_KEY`, which the try config does not set. |
 | 2 | `sinks.py` · `S3Sink` | PUTs one object per event to an S3 bucket | Built only for an `s3://` sink. Requires `boto3`, which is an optional extra this package does not install — `dependencies = []`. Unreachable without a deliberate separate install. |
-| 3 | `transport_http.py` · `StreamableHttpClient.post` | Speaks MCP over HTTPS to an upstream server | Only in `--url` mode, which is mutually exclusive with the `-- <command>` form the try config uses. When used, it connects to **the URL your own config names** — never to us. |
-| 4 | `proxy.py` · `subprocess.Popen` | Starts the upstream MCP server | Runs exactly the command your config already contained. |
+| 3 | `transport_http.py` · `StreamableHttpClient.post` | Speaks MCP over HTTPS to an upstream server | Only in `--url` mode. If you wrapped a stdio server, the try config uses the `-- <command>` form and this is unreachable — the two are mutually exclusive. If you wrapped a remote server, this **is** the path in use, and it connects to **the URL your own config already named** — the endpoint your client was dialling before. Never to us. |
+| 4 | `proxy.py` · `subprocess.Popen` | Starts the upstream MCP server | Runs exactly the command your config already contained. Not reached for a remote wrap, which has no upstream command to run. |
 | 5 | `scan.py` · `subprocess.run` | Runs `claude -p` headlessly for a preflight report | Only under the `baton-proxy scan` subcommand. The try flow never invokes it. It also runs on your own Claude credentials, not ours. |
 
 There is no telemetry, no version check, no crash reporting, no auto-update. The
@@ -271,9 +350,18 @@ Recorded in part:
   text the agent composed: they can carry substantive content.
 - **Resource lists and prompt lists** — counts and durations only.
 
-Not recorded at all: your credentials (they are never read by the proxy), your
-filesystem, your shell history, and anything from MCP servers other than the one
-wrapped.
+Not recorded at all: your credentials, your filesystem, your shell history, and
+anything from MCP servers other than the one wrapped. Credentials never enter an
+event. For a stdio wrap the proxy does not read them at all; for a remote wrap it
+reads `BATON_UPSTREAM_AUTH_TOKEN` from its own environment in order to present it
+upstream, and that value is never emitted, logged, or written anywhere but the
+config entry and `try/state.json`.
+
+If you wrapped a **remote** server, one class of traffic is not captured: the
+bridge handles the client-initiated request/response loop and does not open the
+standing GET SSE channel, so server-*initiated* messages (sampling, elicitation,
+server notifications) pass outside it. The proxy logs this at startup. Tool
+calls, results and intent — everything the receipt counts — are unaffected.
 
 One thing to expect: your client starts the server and lists its tools when a
 session opens, so **every session records one tool-surface snapshot even if the

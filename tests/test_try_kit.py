@@ -64,6 +64,30 @@ PROJECT_SCOPED = {
 
 NO_ENV = {"mcpServers": {"plain": {"command": "./run.sh", "args": []}}}
 
+# The remote shape. SECURITY.md §7's removal GUARANTEE is only ever as wide as
+# this corpus, so the http class enters it here rather than in a test of its own.
+# Both credential forms, because they take different paths through the redaction
+# rule and only one of them is ever printed.
+HTTP_VAR_BEARER = {
+    "mcpServers": {
+        "remote": {
+            "type": "http",
+            "url": "https://mcp.example.com/mcp",
+            "headers": {"Authorization": "Bearer ${REMOTE_TOKEN}"},
+        }
+    }
+}
+
+HTTP_LITERAL_BEARER = {
+    "mcpServers": {
+        "remote": {
+            "type": "http",
+            "url": "https://mcp.example.com/mcp",
+            "headers": {"Authorization": "Bearer sk-live-LITERAL-abc123"},
+        }
+    }
+}
+
 
 def canonical(data) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
@@ -81,6 +105,11 @@ def canonical(data) -> str:
         (PROJECT_SCOPED, "/Users/someone/work/app", "notion"),
         (PROJECT_SCOPED, None, "other"),
         (NO_ENV, None, "plain"),
+        # The rewrite that changes SHAPE, not just the command — `type`, `url`
+        # and `headers` all have to come back, and they come back from the state
+        # file rather than from anything reconstructible out of the wrap.
+        (HTTP_VAR_BEARER, None, "remote"),
+        (HTTP_LITERAL_BEARER, None, "remote"),
     ],
 )
 def test_round_trip_is_byte_identical(data, scope, name):
@@ -454,6 +483,17 @@ def test_unwrap_still_leaves_a_separatorless_wrap_alone():
             {"type": "http", "url": "https://x", "headers": {"Authorization": "Basic abc"}},
             "http, custom headers (Authorization)",
         ),
+        # A bearer with nowhere to send it must NOT report the wrappable class's
+        # own phrase under the "Not wrappable" heading — the list is the
+        # instrument that tells us which classes prospects actually have.
+        (
+            {"type": "http", "headers": {"Authorization": "Bearer abc"}},
+            "http, no endpoint url",
+        ),
+        (
+            {"type": "http", "url": "  ", "headers": {"Authorization": "Bearer abc"}},
+            "http, no endpoint url",
+        ),
         (
             {"type": "http", "url": "https://x", "headers": {"X-Key": "abc"}},
             "http, custom headers (X-Key)",
@@ -684,6 +724,16 @@ def test_refuse_paths_hide_the_value_but_keep_the_recipe_and_say_where_it_is():
     assert "state.json" in msg, "and must say where the hidden values are"
 
 
+def test_the_pointer_to_state_covers_every_field_the_redaction_touches():
+    """The pointer is prose, and prose scoped to one field is the same defect as
+    code scoped to one field. An http entry's refusal hides header values AND
+    shortens the url, so a pointer that only mentioned `env` would leave someone
+    staring at a truncated endpoint with no idea it was deliberate."""
+    for field in ("env", "header", "URL"):
+        assert field in kit.STATE_POINTER
+    assert "state.json" in kit.STATE_POINTER
+
+
 def test_uninstall_verification_reads_the_file_not_the_return_value(tmp_path):
     """apply_unwrap returns the recorded original, so comparing in memory always
     passes and proves nothing. The check has to cover the write."""
@@ -728,3 +778,171 @@ def test_a_users_own_BATON_prefixed_variable_is_not_treated_as_ours():
     must have written it — we did not."""
     entry = {"command": "npx", "env": {"BATON_CUSTOM_TOKEN": "not-ours-literal"}}
     assert "not-ours-literal" not in kit.entry_json(entry)
+
+
+# =============================================================================
+# The http bridge. baton-proxy has spoken Streamable HTTP since 0.2.2; until now
+# the KIT refused every remote entry, which made the trial's boundary narrower
+# than the product's.
+# =============================================================================
+
+
+def _bridge(entry):
+    return kit.build_wrapped_entry(entry, interpreter="/usr/bin/python3.13", **WRAP_ARGS)
+
+
+def test_the_bridge_rewrite_is_a_shape_change_not_a_demotion():
+    """stdio wrapping keeps the entry and demotes its command. Here the entry
+    stops being an http entry at all: the client must launch a subprocess, and
+    the url it used to dial moves into that subprocess's ARGV."""
+    wrapped = _bridge(HTTP_VAR_BEARER["mcpServers"]["remote"])
+    assert wrapped["command"] == "/usr/bin/python3.13"
+    assert wrapped["args"] == ["-m", "baton_proxy", "--url", "https://mcp.example.com/mcp"]
+    # An entry claiming both transports is ambiguous to the client, and would
+    # hand a bearer header to a server that is now local.
+    for gone in ("type", "url", "headers"):
+        assert gone not in wrapped, f"`{gone}` must not survive into a stdio-shaped entry"
+
+
+def test_the_bearer_moves_slot_without_ever_being_resolved():
+    """The invariant the design note assumed the http class would cost, and did
+    not: a `${VAR}` reference is carried across as a REFERENCE. The client
+    expanded it in `headers` before and expands it in `env` after, and the kit
+    never learns the token. Client behaviour, verified on 2.1.223 — not a
+    protocol guarantee, which is why no user-facing line promises it."""
+    wrapped = _bridge(HTTP_VAR_BEARER["mcpServers"]["remote"])
+    assert wrapped["env"]["BATON_UPSTREAM_AUTH_TOKEN"] == "${REMOTE_TOKEN}"
+
+
+def test_the_bearer_prefix_is_stripped_because_the_bridge_re_adds_it():
+    """`transport_http` composes `Authorization: Bearer {token}` itself. Passing
+    the prefix through would put `Bearer Bearer …` on the wire — a 401 days after
+    setup, on a machine we cannot see."""
+    entry = {"type": "http", "url": "https://x/mcp", "headers": {"Authorization": "Bearer tok"}}
+    assert _bridge(entry)["env"]["BATON_UPSTREAM_AUTH_TOKEN"] == "tok"
+
+
+def test_an_odd_bearer_spelling_still_yields_a_clean_token():
+    """Header names are case-insensitive per RFC, the scheme is too, and a human
+    hand-editing a config types a second space. All three reach the wire."""
+    entry = {
+        "type": "http",
+        "url": "https://x/mcp",
+        "headers": {"authorization": "bearer   ${TOK}  "},
+    }
+    assert _bridge(entry)["env"]["BATON_UPSTREAM_AUTH_TOKEN"] == "${TOK}"
+
+
+def test_baton_vars_are_written_last_so_the_users_env_cannot_shadow_them():
+    """Same rule the stdio path has, now with one more variable under it — and
+    this one carries a credential, so a shadowing entry would silently swap the
+    token the bridge presents."""
+    entry = {
+        "type": "http",
+        "url": "https://x/mcp",
+        "headers": {"Authorization": "Bearer ${REAL}"},
+        "env": {"BATON_UPSTREAM_AUTH_TOKEN": "${DECOY}", "BATON_TENANT_ID": "someone-else"},
+    }
+    env = _bridge(entry)["env"]
+    assert env["BATON_UPSTREAM_AUTH_TOKEN"] == "${REAL}"
+    assert env["BATON_TENANT_ID"] == "trial-abc123"
+
+
+def test_keys_we_do_not_recognise_survive_the_rewrite():
+    """`type`/`url`/`headers` are dropped because they are ours to translate.
+    Everything else in the entry belongs to the user — dropping a `disabled` flag
+    or a client-specific key would be damage they did not ask for."""
+    entry = {
+        "type": "http",
+        "url": "https://x/mcp",
+        "headers": {"Authorization": "Bearer t"},
+        "disabled": False,
+        "someClientKey": {"a": 1},
+    }
+    wrapped = _bridge(entry)
+    assert wrapped["disabled"] is False
+    assert wrapped["someClientKey"] == {"a": 1}
+
+
+def test_a_literal_upstream_token_is_hidden_but_a_reference_is_shown():
+    """BATON_UPSTREAM_AUTH_TOKEN is deliberately NOT in `_OUR_ENV_KEYS`. We write
+    the KEY, but the VALUE is the user's credential — putting it on the show-list
+    because "we wrote it" is the invariant-scoped-to-one-field mistake wearing a
+    different hat, and it would print a live token into an agent's context."""
+    assert "BATON_UPSTREAM_AUTH_TOKEN" not in kit._OUR_ENV_KEYS
+    literal = _bridge(HTTP_LITERAL_BEARER["mcpServers"]["remote"])
+    out = kit.entry_json(literal)
+    assert "sk-live-LITERAL-abc123" not in out
+    assert "BATON_UPSTREAM_AUTH_TOKEN" in out, "the key name still shows what is set"
+    assert "--url" in out and "mcp.example.com" in out, "still the restore recipe"
+
+    ref = kit.entry_json(_bridge(HTTP_VAR_BEARER["mcpServers"]["remote"]))
+    assert "${REMOTE_TOKEN}" in ref, "a pointer is not a credential, and is the useful half"
+
+
+def test_our_own_bridge_output_reads_as_wrapped():
+    """Otherwise setup would wrap it a second time — `--url` bridges carry no
+    `--`, which is the exact hole `is_proxy_invocation` was widened to close.
+    The guard has to hold against what we now WRITE, not just hand-made shapes."""
+    wrapped = _bridge(HTTP_VAR_BEARER["mcpServers"]["remote"])
+    assert kit.is_wrapped(wrapped) is True
+    assert kit.is_stdio(wrapped) is True, "it is a stdio entry now, by construction"
+
+
+@pytest.mark.parametrize(
+    "entry,why",
+    [
+        ({"type": "sse", "url": "https://x/sse"}, "a transport the bridge does not speak"),
+        (
+            {
+                "type": "http",
+                "url": "https://x",
+                "headers": {"Authorization": "Bearer a", "X-T": "b"},
+            },
+            "the bridge sends one header of its own and cannot carry the rest",
+        ),
+        (
+            {"type": "http", "url": "https://x", "headers": {"Authorization": "Basic a"}},
+            "not a bearer; the bridge has no way to present it",
+        ),
+        (
+            {"type": "http", "url": "https://x"},
+            "ambiguous: public endpoint, or OAuth whose token the CLIENT holds. "
+            "Wrapping the second kind is a dead server found days later.",
+        ),
+        ({"type": "http", "url": "", "headers": {"Authorization": "Bearer a"}}, "no endpoint"),
+        ({"type": "http", "headers": {"Authorization": "Bearer a"}}, "no endpoint"),
+    ],
+)
+def test_the_wrappable_remote_class_stays_narrow(entry, why):
+    """Each refusal here prevents the same failure: a wrap that looks successful
+    and produces a server that cannot authenticate, discovered after the restart
+    with nothing pointing at the cause."""
+    assert kit.http_bridge(entry) is None, why
+    assert kit.is_wrappable(entry) is False
+
+
+def test_stdio_wins_when_an_entry_somehow_claims_both():
+    """A hand-made entry with a command AND a url. Demoting the command is
+    reversible; dropping it is not, so the ambiguous case takes the safe branch."""
+    entry = {
+        "command": "npx",
+        "args": ["-y", "srv"],
+        "url": "https://x/mcp",
+        "headers": {"Authorization": "Bearer t"},
+    }
+    assert kit.http_bridge(entry) is None
+    assert _bridge(entry)["args"] == ["-m", "baton_proxy", "--", "npx", "-y", "srv"]
+
+
+def test_one_bearer_normalization_serves_both_callers():
+    """`http_bridge` decides wrappability and `not_wrappable_reason` explains a
+    refusal. Two copies of "is this a bearer" drifting apart would let an entry
+    be offered as a candidate and then described as unwrappable."""
+    sole = {"type": "http", "url": "https://x", "headers": {"Authorization": "Bearer ${T}"}}
+    assert kit.is_wrappable(sole)
+    token, others = kit.bearer_header(sole)
+    assert (token, others) == ("${T}", [])
+    plus = {**sole, "headers": {**sole["headers"], "X-T": "b"}}
+    assert not kit.is_wrappable(plus)
+    assert kit.bearer_header(plus) == ("${T}", ["X-T"])
