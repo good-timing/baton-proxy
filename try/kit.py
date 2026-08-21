@@ -75,6 +75,14 @@ STATE_VERSION = 1
 # Names a baton-proxy invocation can appear under in someone's config.
 _PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
 
+# A redacted dump is still the restore recipe — it keeps the command, the args
+# and the env KEY names. Only literal values are hidden, and this says where the
+# exact bytes are, so nobody is left guessing at what was elided.
+STATE_POINTER = (
+    "\n\n  Env values shown as `<literal …>` are hidden here, not lost: the entry\n"
+    "  exactly as it was is in try/state.json under `original_entry`."
+)
+
 RESTART_NOTE = (
     "The change is INERT until you fully restart your MCP client — it binds its\n"
     "server set at startup. Nothing is captured before that restart."
@@ -224,6 +232,86 @@ def safe_endpoint(url: str) -> str:
     if parts.port:
         host = f"{host}:{parts.port}"
     return f"{parts.scheme}://{host}" if parts.scheme else host
+
+
+# A value that is exactly a ``${VAR}`` reference is a POINTER to a credential,
+# not the credential — it is the pattern every MCP client's docs recommend, and
+# showing it is what makes a printed entry checkable. Anything else in an env
+# value may be the literal secret.
+_VAR_REF = re.compile(r"^\$\{[^}]*\}$")
+
+HIDDEN = "<literal value, not shown>"
+
+
+# Exactly what build_wrapped_entry writes. Keyed to the literal names rather than
+# a ``BATON_`` prefix on purpose: SECURITY.md §7 contemplates a user having their
+# OWN variable beginning BATON_, and a prefix test would print its literal value
+# on the grounds that we must have written it. We did not.
+_OUR_ENV_KEYS = frozenset({"PYTHONPATH", "BATON_TENANT_ID", "BATON_VENDOR_ID", "BATON_EVENT_SINK"})
+
+
+def shown_env_value(key: str, value: str) -> str:
+    """What may be printed for one env value.
+
+    Shown: the variables we wrote ourselves (setup's whole purpose is to show
+    what it wrote, and `launch_check` needs `PYTHONPATH` readable), and any value
+    that is exactly a ``${VAR}`` reference. Hidden: everything else, which is
+    where a literal token lives.
+
+    Deliberately strict at the edge: ``/usr/local/bin:${PATH}`` is a composite,
+    so it hides. Losing a little readability on an unusual PATH is the cheaper
+    error than printing a token that happens to sit beside one."""
+    if key in _OUR_ENV_KEYS:
+        return value
+    return value if _VAR_REF.match(value.strip()) else HIDDEN
+
+
+def redact_entry(entry: dict) -> dict:
+    """A copy of an entry safe to print, with env VALUES collapsed by the rule above.
+
+    Every site that shows an entry goes through this. ``safe_endpoint`` set the
+    rule for the candidate list — name it, never quote it — and the entry prints
+    predate that rule; this is the same rule applied to the record rather than to
+    one field, which is the lesson the URL leak taught on this file already.
+
+    It matters more here than on an ordinary CLI because this kit is narrated by
+    an agent: whatever it prints is read into a model's context by design, so
+    "it is only the user's own terminal" was never the whole story.
+
+    It covers ``env``, ``headers`` and ``url``, not just env — because one caller
+    passes an entry we did NOT write. ``apply_unwrap``'s third refusal prints
+    ``current``, whatever the person hand-edited the entry into, and that can be
+    an http shape holding a bearer in ``headers`` or a token in the ``url`` path
+    (Zapier, Composio). Scoping this to ``env`` would be the same mistake as
+    scoping the no-header-values rule to the candidate list: enforced on a field
+    instead of on the record.
+
+    Structure is never altered — only values change, so a printed entry is still
+    an accurate picture of the shape that is in the config.
+
+    Known limit, stated in SECURITY.md rather than papered over: a credential
+    passed as a command-line ARGUMENT (``--api-key sk-…``) still prints. There is
+    no way to tell which argument is secret, and blanking args would destroy the
+    restore recipe these dumps exist to be."""
+    out = dict(entry)
+    env = entry.get("env")
+    if isinstance(env, dict):
+        out["env"] = {k: shown_env_value(str(k), str(v)) for k, v in env.items()}
+    headers = entry.get("headers")
+    if isinstance(headers, dict):
+        # Header names, never header values — the rule safe_endpoint already
+        # follows for the candidate list. No ${VAR} exemption: a bearer header is
+        # a credential slot whatever shape its value takes.
+        out["headers"] = {k: HIDDEN for k in headers}
+    url = entry.get("url")
+    if isinstance(url, str) and url:
+        out["url"] = safe_endpoint(url)
+    return out
+
+
+def entry_json(entry: dict) -> str:
+    """The one way an entry reaches a terminal."""
+    return json.dumps(redact_entry(entry), indent=2)
 
 
 def unwrap_command(cmd: list[str]) -> list[str]:
@@ -427,14 +515,16 @@ def apply_unwrap(config_text: str, state: dict) -> tuple[str, dict]:
             f"the config no longer has the block that held `{name}`"
             + (f" (project {scope})" if scope else " (global mcpServers)")
             + ".\n  → nothing was changed. Restore this entry by hand:\n\n"
-            + json.dumps(state["original_entry"], indent=2)
+            + entry_json(state["original_entry"])
+            + STATE_POINTER
         ) from None
     current = block.get(name)
     if current is None:
         raise Refuse(
             f"`{name}` is no longer in the config; someone removed it after setup.\n"
             "  → nothing was changed. If you want it back, this is what it was:\n\n"
-            + json.dumps(state["original_entry"], indent=2)
+            + entry_json(state["original_entry"])
+            + STATE_POINTER
         )
     if current == state["original_entry"]:
         # Already back to what it was — someone restored it by hand, or the
@@ -448,9 +538,10 @@ def apply_unwrap(config_text: str, state: dict) -> tuple[str, dict]:
             f"`{name}` has been edited since setup wrapped it, so this kit will not\n"
             "  silently overwrite it. Both versions, for you to reconcile by hand:\n\n"
             "  --- in your config now ---\n"
-            + json.dumps(current, indent=2)
+            + entry_json(current)
             + "\n\n  --- what setup recorded as the original ---\n"
-            + json.dumps(state["original_entry"], indent=2)
+            + entry_json(state["original_entry"])
+            + STATE_POINTER
         )
     block[name] = state["original_entry"]
     return dumps_like(data, config_text), state["original_entry"]
@@ -676,6 +767,40 @@ def write_atomically(path: Path, text: str) -> None:
         raise
 
 
+def write_state_file(state: dict) -> None:
+    """Write state.json at 0600, because of what is IN it.
+
+    It stores ``original_entry`` and ``wrapped_entry`` verbatim — including the
+    env block, copied out of a ``~/.claude.json`` that is very often 0600. A
+    plain ``write_text`` creates 0644 under the usual umask, which quietly
+    republishes a protected credential to every account on the box. That is the
+    same mode slip ``write_atomically`` documents at length for the config file;
+    this is the file the kit authors itself, and it had no such guard.
+
+    ``os.open`` sets the mode only when it CREATES, so the chmod is not
+    redundant — a state file left behind by an earlier version stays 0644
+    without it."""
+    fd = os.open(STATE_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(state, indent=2) + "\n")
+    os.chmod(STATE_PATH, 0o600)
+
+
+def restored_matches_on_disk(path: Path, state: dict) -> bool:
+    """Re-read the config and compare the entry to what setup recorded.
+
+    Deliberately reads the FILE rather than trusting the value ``apply_unwrap``
+    returned: an in-memory comparison is tautological (it returns the recorded
+    original, so it always matches) and proves nothing about the write. This is
+    what lets the printed entry hide values and still keep SECURITY.md §2's
+    promise — the bytes it does not show are compared here."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return entry_at(data, state["scope"]).get(state["server_name"]) == state["original_entry"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     if STATE_PATH.exists():
         state = load_state()
@@ -693,7 +818,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         print(f"Already wrapped: `{state['server_name']}` since {state['wrapped_at']}.")
         print(f"  config: {describe(Path(state['config_path']), state['scope'])}")
         print("\nNothing changed. Current entry:\n")
-        print(json.dumps(state["wrapped_entry"], indent=2))
+        print(entry_json(state["wrapped_entry"]))
         print(f"\n{RESTART_NOTE}")
         return 0
 
@@ -807,14 +932,14 @@ def cmd_setup(args: argparse.Namespace) -> int:
     shutil.copy2(path, backup)
 
     write_atomically(path, new_text)
-    STATE_PATH.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    write_state_file(state)
 
     print(f"Wrapped `{name}` in {describe(path, scope)}")
     print(f"  backup:  {backup}")
     print(f"  events:  {EVENTS_PATH}")
     print(f"  tenant:  {tenant}   vendor: {vendor}")
     print("\nThe entry now reads:\n")
-    print(json.dumps(state["wrapped_entry"], indent=2))
+    print(entry_json(state["wrapped_entry"]))
     print(f"\n{RESTART_NOTE}")
     print("\nAfter the restart, use the server normally. Run\n"
           "  python3 kit.py receipt\nany time — early is better than late.")
@@ -912,11 +1037,26 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 
     new_text, restored = apply_unwrap(text, state)
     write_atomically(path, new_text)
-    STATE_PATH.unlink()
+
+    # Verify BEFORE unlinking. state.json is the only record of the original
+    # entry; deleting it on an unverified write would destroy the one thing that
+    # makes a bad restore recoverable.
+    verified = restored_matches_on_disk(path, state)
+    if verified:
+        STATE_PATH.unlink()
 
     print(f"Restored `{state['server_name']}` in {describe(path, state['scope'])}")
     print("\nThe entry now reads:\n")
-    print(json.dumps(restored, indent=2))
+    print(entry_json(restored))
+    # The print above hides literal env values, so it is no longer proof on its
+    # own. This is, and it is a stronger check than reading a dump by eye: it
+    # re-reads the file and compares every byte, including the values it hid.
+    if verified:
+        print("\n  Verified against the file on disk: byte-identical to the entry\n"
+              "  recorded at setup, including the values not shown above.")
+    else:
+        print("\n  WARNING: the entry on disk does not match what setup recorded.\n"
+              f"  {STATE_PATH} has been KEPT so the original is not lost. Compare by hand.")
     print(f"\n{RESTART_NOTE}")
     left = []
     if EVENTS_PATH.exists():

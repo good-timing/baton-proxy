@@ -604,3 +604,127 @@ def test_read_events_skips_a_truncated_final_line(tmp_path):
     p = tmp_path / "events.jsonl"
     p.write_text('{"event_type":"tool_call_start","session_id":"s1","payload":{}}\n{"trunc', encoding="utf-8")
     assert len(kit.read_events(p)) == 1
+
+
+# =============================================================================
+# Credential-at-rest and the printed record (2026-08-20).
+#
+# The kit already had a rule — name it, never quote it — but it was enforced on
+# ONE FIELD, the candidate list's endpoint. state.json and every entry print
+# walked around it. These pin the rule on the record instead.
+# =============================================================================
+
+
+def test_state_file_is_not_world_readable(tmp_path, monkeypatch):
+    """It holds original_entry verbatim, env included, copied out of a config
+    that is usually 0600. write_text would create it 0644 under the usual umask."""
+    monkeypatch.setattr(kit, "STATE_PATH", tmp_path / "state.json")
+    kit.write_state_file({"version": 1, "original_entry": {"env": {"TOKEN": "s3cret"}}})
+    assert kit.STATE_PATH.stat().st_mode & 0o077 == 0, "group/other can read the token"
+
+
+def test_state_file_mode_is_fixed_even_when_it_already_exists(tmp_path, monkeypatch):
+    """os.open sets the mode only on CREATE, so a 0644 file left by an earlier
+    version would keep its mode through every subsequent setup."""
+    stale = tmp_path / "state.json"
+    stale.write_text("{}", encoding="utf-8")
+    stale.chmod(0o644)
+    monkeypatch.setattr(kit, "STATE_PATH", stale)
+    kit.write_state_file({"version": 1})
+    assert stale.stat().st_mode & 0o077 == 0
+
+
+def test_a_literal_env_value_is_never_printed():
+    entry = {"command": "npx", "args": ["-y", "srv"], "env": {"SNOWFLAKE_PAT": "xoxb-REAL-TOKEN"}}
+    out = kit.entry_json(entry)
+    assert "xoxb-REAL-TOKEN" not in out
+    assert "SNOWFLAKE_PAT" in out, "the KEY must survive — the print is a restore recipe"
+    assert "npx" in out and "srv" in out, "structure must survive too"
+
+
+def test_a_var_reference_is_shown_because_it_is_a_pointer_not_a_secret():
+    """`${VAR}` is the recommended pattern and is what makes a printed entry
+    checkable. Redacting it would cost readability and buy nothing."""
+    entry = {"command": "npx", "env": {"SNOWFLAKE_PAT": "${SNOWFLAKE_PAT}"}}
+    assert "${SNOWFLAKE_PAT}" in kit.entry_json(entry)
+
+
+def test_our_own_variables_stay_visible():
+    """Setup's whole purpose is showing what it wrote, and launch_check needs
+    PYTHONPATH readable."""
+    out = kit.entry_json(kit.build_wrapped_entry(
+        GLOBAL_ONLY["mcpServers"]["notion"], **WRAP_ARGS))
+    assert kit.HIDDEN not in out
+    for k in ("PYTHONPATH", "BATON_TENANT_ID", "BATON_VENDOR_ID", "BATON_EVENT_SINK"):
+        assert k in out
+
+
+def test_redaction_never_mutates_the_entry_it_was_given():
+    """It runs on state["original_entry"], which uninstall then writes back to
+    the config. Mutating it would restore the marker string as a real value."""
+    entry = {"command": "npx", "env": {"TOKEN": "literal"}}
+    kit.entry_json(entry)
+    assert entry["env"]["TOKEN"] == "literal"
+
+
+def test_refuse_paths_hide_the_value_but_keep_the_recipe_and_say_where_it_is():
+    """These dumps exist so someone can restore by hand. Redacting them without
+    saying where the exact bytes are would strand a person mid-uninstall."""
+    src = json.loads(canonical(GLOBAL_ONLY))
+    src["mcpServers"]["notion"]["env"] = {"NOTION_TOKEN": "secret-literal-value"}
+    before = json.dumps(src, indent=2) + "\n"
+    wrapped_text, state = kit.apply_wrap(before, scope=None, name="notion", **WRAP_ARGS)
+    gutted = json.loads(wrapped_text)
+    del gutted["mcpServers"]["notion"]
+    with pytest.raises(kit.Refuse) as e:
+        kit.apply_unwrap(json.dumps(gutted, indent=2) + "\n", state)
+    msg = str(e.value)
+    assert "secret-literal-value" not in msg
+    assert "@notionhq/notion-mcp-server" in msg, "the recipe must still be readable"
+    assert "state.json" in msg, "and must say where the hidden values are"
+
+
+def test_uninstall_verification_reads_the_file_not_the_return_value(tmp_path):
+    """apply_unwrap returns the recorded original, so comparing in memory always
+    passes and proves nothing. The check has to cover the write."""
+    before = canonical(GLOBAL_ONLY)
+    _, state = kit.apply_wrap(before, scope=None, name="notion", **WRAP_ARGS)
+    cfg = tmp_path / "cfg.json"
+
+    cfg.write_text(before, encoding="utf-8")
+    assert kit.restored_matches_on_disk(cfg, state) is True
+
+    tampered = json.loads(before)
+    tampered["mcpServers"]["notion"]["args"].append("--drifted")
+    cfg.write_text(json.dumps(tampered, indent=2), encoding="utf-8")
+    assert kit.restored_matches_on_disk(cfg, state) is False
+
+    cfg.write_text("{ not json", encoding="utf-8")
+    assert kit.restored_matches_on_disk(cfg, state) is False
+
+
+def test_redaction_covers_an_entry_shape_we_never_wrote():
+    """`apply_unwrap`'s third refusal prints `current` — whatever the person
+    hand-edited the entry into, which need not be the stdio shape setup wrote.
+    An http shape puts the credential in `headers`, or in the URL path itself
+    (Zapier, Composio). Redacting only `env` would enforce the rule on a field
+    instead of on the record — the same mistake, one layer in."""
+    current = {
+        "type": "http",
+        "url": "https://hooks.zapier.com/api/mcp/s/SECRET-IN-THE-PATH/sse",
+        "headers": {"Authorization": "Bearer xoxb-LITERAL", "X-Api-Key": "k-LITERAL"},
+    }
+    out = kit.entry_json(current)
+    assert "SECRET-IN-THE-PATH" not in out
+    assert "xoxb-LITERAL" not in out
+    assert "k-LITERAL" not in out
+    assert "Authorization" in out and "X-Api-Key" in out, "header NAMES still identify it"
+    assert "hooks.zapier.com" in out, "scheme+host stays, so the entry is recognisable"
+
+
+def test_a_users_own_BATON_prefixed_variable_is_not_treated_as_ours():
+    """SECURITY.md §7 explicitly contemplates a user owning a BATON_-prefixed
+    variable. A prefix test would print its literal value on the grounds that we
+    must have written it — we did not."""
+    entry = {"command": "npx", "env": {"BATON_CUSTOM_TOKEN": "not-ours-literal"}}
+    assert "not-ours-literal" not in kit.entry_json(entry)

@@ -40,6 +40,16 @@ data, which the scrubber does not redact (`SECURITY.md` §6). `receipt` prints
 safe aggregates; that is what you report. The file stays on the machine, but
 this conversation may not, so treat its contents as if they were the same thing.
 
+**Do not read out a credential the commands took care not to print.** The kit
+shows entries with literal env values collapsed to `<literal value, not shown>`,
+and it does that because this conversation is not guaranteed to stay on the
+machine. `try/state.json`, the `config-backup.*` files and the MCP config itself
+all hold the real values, so opening one and quoting it puts back exactly what
+the redaction removed. Read them if a command tells you to; report what you
+found in terms of key names, never values. A `${VAR}` reference is not a
+credential and is fine to quote — it is a pointer, and it is often the thing the
+person needs to see.
+
 **Never send the file anywhere.** Not to us, not to a paste service, not
 attached to anything. Whether it leaves is the person's decision, made at the
 end, on their own.

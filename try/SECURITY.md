@@ -93,7 +93,28 @@ Notes a reviewer should hold onto:
   server set at startup.
 - **The original entry is recorded byte-for-byte before the write**, and the whole
   config file is backed up first. Removal restores it and prints the restored
-  entry rather than claiming success.
+  entry rather than claiming success — then **re-reads the file and compares every
+  byte** against what was recorded, including the values it does not display. If
+  that comparison fails it says so and keeps the state file, rather than deleting
+  the only remaining record of your original entry.
+- **Literal values in `env` and `headers` are never printed, and a URL is printed
+  as scheme and host only.** Wherever the kit displays a config entry it collapses
+  those to `<literal value, not shown>`; the key and header *names*, the command
+  and the arguments stay visible, so a printed entry is still enough to restore by
+  hand. A `${VAR}` reference is shown as-is in `env`, because it is a pointer
+  rather than a credential. This matters more here than on an ordinary command
+  line: the kit is narrated by an agent, so anything it prints is read into a
+  model's context.
+
+  **The limit, stated plainly: a credential passed as a command-line argument
+  still prints.** A server configured as `--api-key sk-…` in its `args` will show
+  that value. Nothing can tell which argument is a secret, and blanking arguments
+  would destroy the restore instructions these printouts exist to give you. `env`
+  is where credentials belong, and `env` is what is protected.
+- **The state file is created `0600`**, not at the default umask. It holds a copy
+  of your entry, env block included, taken from a config file that is usually
+  `0600` itself; writing it world-readable would republish a protected credential
+  to every account on the machine.
 - **Your config file's formatting is preserved** — the kit reuses the indent it
   finds and rewrites one entry. `~/.claude.json` as your client writes it comes
   back byte-for-byte identical after setup + uninstall; a hand-formatted file
@@ -302,10 +323,14 @@ it should not leave, delete it; we will never know it existed.
   sink, know that `stderr:` puts payloads into your client's log files.
 - A small state file in `try/` records which config entry was wrapped, in which
   file, and its original contents. It exists so removal is exact and so a receipt
-  can be produced days later from a fresh session.
+  can be produced days later from a fresh session. It is created `0600`, and it is
+  the one place a literal env value is written to disk by the kit — deliberately,
+  since an exact restore is impossible without it. `try/.gitignore` keeps it out of
+  git; `uninstall` deletes it once the restore is verified.
 
 **To remove the kit at any point, including mid-trial:** run the uninstall
-command, which restores the recorded entry and prints it for you to check;
+command, which restores the recorded entry, prints it for you to check (with any
+literal env values hidden) and verifies the result against the file on disk;
 restart your client; delete this checkout. Nothing else was installed, so there
 is nothing else to uninstall. Or do it by hand: put the original entry back and
 delete the folder — that is the entire footprint.
