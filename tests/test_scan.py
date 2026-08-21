@@ -218,6 +218,31 @@ def test_resolve_config_entry_rejects_remote(tmp_path) -> None:
         assert "remote" in str(e) and "stdio" in str(e)
 
 
+@pytest.mark.parametrize(
+    "url,secret",
+    [
+        # Zapier/Composio put the token in the PATH; `?key=` is just as common;
+        # userinfo is the third vector. All three ARE the credential.
+        ("https://mcp.zapier.com/api/mcp/s/SUPERSECRET/sse", "SUPERSECRET"),
+        ("https://api.example.com/mcp?key=SUPERSECRET", "SUPERSECRET"),
+        ("https://user:SUPERSECRET@api.example.com/mcp", "SUPERSECRET"),
+    ],
+)
+def test_the_remote_refusal_names_the_endpoint_without_quoting_it(tmp_path, url, secret) -> None:
+    """This message goes to a terminal and gets pasted into support threads. An
+    endpoint that IS a credential must be named, never quoted — the same rule
+    the try kit's refusals follow."""
+    cfg = _write_cfg(tmp_path, {"remote": {"type": "http", "url": url}})
+    try:
+        scan._resolve_config_entry("remote", cfg)
+        raise AssertionError("expected ScanConfigError")
+    except scan.ScanConfigError as e:
+        assert secret not in str(e)
+        assert "api.example.com" in str(e) or "mcp.zapier.com" in str(e), (
+            "the host still has to show, or the message stops identifying the entry"
+        )
+
+
 def test_resolve_config_entry_missing_lists_available(tmp_path) -> None:
     cfg = _write_cfg(tmp_path, {"github": {"command": "x"}, "notion": {"command": "y"}})
     try:

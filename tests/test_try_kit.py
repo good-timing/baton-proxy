@@ -617,6 +617,26 @@ def test_is_wrapped_matches_scans_proxy_detector(entry):
     assert kit.is_wrapped(entry) is _launches_baton_proxy(cmd)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://mcp.zapier.com/api/mcp/s/SUPERSECRET/sse",
+        "https://api.example.com/mcp?key=SUPERSECRET",
+        "https://user:SUPERSECRET@api.example.com/mcp",
+        "http://127.0.0.1:8789/mcp",
+        "not a url at all",
+        "",
+    ],
+)
+def test_safe_endpoint_matches_scans_copy(url):
+    """The third copied helper. Both files print endpoints in refusals, and both
+    have to hide the same three credential vectors — a copy that drifted would
+    leak on whichever side fell behind."""
+    from baton_proxy.scan import _safe_endpoint
+
+    assert kit.safe_endpoint(url) == _safe_endpoint(url)
+
+
 # =============================================================================
 # Receipt.
 # =============================================================================

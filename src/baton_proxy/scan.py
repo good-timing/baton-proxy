@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 
 from baton_proxy import report
 
@@ -364,6 +365,30 @@ def _unwrap_baton_proxy(server_cmd: list[str]) -> list[str]:
     return _unwrap_baton_proxy(upstream) if upstream else server_cmd
 
 
+def _safe_endpoint(url: str) -> str:
+    """Scheme and host only — never the path, query, or userinfo.
+
+    An MCP endpoint URL is frequently the credential itself: Zapier and Composio
+    put the secret in the PATH (``…/api/mcp/s/<token>/sse``), and ``?key=`` is
+    just as common. The refusal below is printed to a terminal and may be pasted
+    into a support thread, so the endpoint gets named, never quoted.
+
+    Kept identical to ``try/kit.py``'s copy and pinned to it by a drift test.
+    The kit cannot import this module — setup runs from a bare checkout before
+    anything is importable — so a copy is the only option and the pin is how it
+    stays honest."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "the configured endpoint"
+    host = parts.hostname or ""
+    if not host:
+        return "the configured endpoint"
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return f"{parts.scheme}://{host}" if parts.scheme else host
+
+
 def _launches_baton_proxy(server_cmd: list[str]) -> bool:
     """Does this command launch baton-proxy in ANY form we can detect?
 
@@ -425,10 +450,10 @@ def _resolve_config_entry(
     entry = matches[0][1]
     etype = entry.get("type")
     if etype in ("http", "sse") or ("command" not in entry and "url" in entry):
-        url = entry.get("url", "")
+        url = str(entry.get("url", ""))
         raise ScanConfigError(
             f"`{name}` is a remote ({etype or 'http'}) MCP server"
-            + (f" ({url})" if url else "")
+            + (f" ({_safe_endpoint(url)})" if url else "")
             + ".\n  scan wraps stdio servers today; remote/OAuth servers aren't supported yet."
         )
     command = entry.get("command")
