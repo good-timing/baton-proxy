@@ -502,8 +502,12 @@ def test_build_degraded_response_shapes() -> None:
 
     # initialize echoes the client's requested protocol version...
     init = _build_degraded_response(
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-         "params": {"protocolVersion": "2025-06-18"}}
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        }
     )
     assert init is not None
     assert init["result"]["protocolVersion"] == "2025-06-18"
@@ -511,7 +515,9 @@ def test_build_degraded_response_shapes() -> None:
     assert "tools" in init["result"]["capabilities"]
 
     # ...and falls back to the transport default when none was sent.
-    init2 = _build_degraded_response({"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {}})
+    init2 = _build_degraded_response(
+        {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {}}
+    )
     assert init2 is not None
     assert init2["result"]["protocolVersion"] == _DEGRADED_PROTOCOL_VERSION
 
@@ -520,9 +526,10 @@ def test_build_degraded_response_shapes() -> None:
     assert tl is not None and tl["result"]["tools"] == []
 
     # every other method returns None → the caller degrades it per-call.
-    assert _build_degraded_response(
-        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {}}
-    ) is None
+    assert (
+        _build_degraded_response({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {}})
+        is None
+    )
 
 
 def test_slow_upstream_read_timeout_fails_open(http_server: str) -> None:

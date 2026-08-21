@@ -66,7 +66,12 @@ E2E_REQUESTS: list[dict] = [
             },
         },
     },
-    {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "boom", "arguments": {}}},
+    {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {"name": "boom", "arguments": {}},
+    },
 ]
 
 

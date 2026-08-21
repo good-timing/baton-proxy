@@ -310,7 +310,9 @@ def is_proxy_invocation(cmd: list[str]) -> bool:
     rest = cmd[1:]
     if head in _PROXY_NAMES:
         return True
-    return head.startswith("python") and len(rest) >= 2 and rest[0] == "-m" and rest[1] in _PROXY_NAMES
+    return (
+        head.startswith("python") and len(rest) >= 2 and rest[0] == "-m" and rest[1] in _PROXY_NAMES
+    )
 
 
 def safe_endpoint(url: str) -> str:
@@ -867,7 +869,9 @@ def discover(explicit: str | None) -> list[tuple[Path, str, str | None, str, dic
             continue
         except OSError:
             if explicit:
-                raise Refuse(f"cannot read {p}.\n  → check the path passed to --config-file.") from None
+                raise Refuse(
+                    f"cannot read {p}.\n  → check the path passed to --config-file."
+                ) from None
             continue
         for scope, name, entry in iter_entries(data):
             out.append((p, text, scope, name, entry))
@@ -1081,8 +1085,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print("\nThe entry now reads:\n")
     print(entry_json(state["wrapped_entry"]))
     print(f"\n{RESTART_NOTE}")
-    print("\nAfter the restart, use the server normally. Run\n"
-          "  python3 kit.py receipt\nany time — early is better than late.")
+    print(
+        "\nAfter the restart, use the server normally. Run\n"
+        "  python3 kit.py receipt\nany time — early is better than late."
+    )
     return 0
 
 
@@ -1143,8 +1149,10 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     print(f"intent captured      {s['sessions_with_intent']} of {s['sessions']} sessions")
     print(f"tool definitions     {len(s['tools'])} captured exactly as your server served them")
     if s["tools"]:
-        print(f"                     {', '.join(s['tools'][:8])}"
-              + (f", +{len(s['tools']) - 8} more" if len(s["tools"]) > 8 else ""))
+        print(
+            f"                     {', '.join(s['tools'][:8])}"
+            + (f", +{len(s['tools']) - 8} more" if len(s["tools"]) > 8 else "")
+        )
     print(f"span                 {s['first']} → {s['last']}")
     print(f"events               {s['events']}")
     print(f"file size            {human_size(s['size_bytes'])}")
@@ -1207,11 +1215,15 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     # own. This is, and it is a stronger check than reading a dump by eye: it
     # re-reads the file and compares every byte, including the values it hid.
     if verified:
-        print("\n  Verified against the file on disk: byte-identical to the entry\n"
-              "  recorded at setup, including the values not shown above.")
+        print(
+            "\n  Verified against the file on disk: byte-identical to the entry\n"
+            "  recorded at setup, including the values not shown above."
+        )
     else:
-        print("\n  WARNING: the entry on disk does not match what setup recorded.\n"
-              f"  {STATE_PATH} has been KEPT so the original is not lost. Compare by hand.")
+        print(
+            "\n  WARNING: the entry on disk does not match what setup recorded.\n"
+            f"  {STATE_PATH} has been KEPT so the original is not lost. Compare by hand."
+        )
     print(f"\n{RESTART_NOTE}")
     left = []
     if EVENTS_PATH.exists():

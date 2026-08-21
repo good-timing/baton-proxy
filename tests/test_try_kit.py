@@ -121,9 +121,7 @@ def test_round_trip_is_byte_identical(data, scope, name):
     restored_text, restored_entry = kit.apply_unwrap(wrapped_text, state)
     assert restored_text == before
     expected = (
-        data["mcpServers"][name]
-        if scope is None
-        else data["projects"][scope]["mcpServers"][name]
+        data["mcpServers"][name] if scope is None else data["projects"][scope]["mcpServers"][name]
     )
     assert restored_entry == expected
 
@@ -153,8 +151,8 @@ def test_a_hand_formatted_config_is_normalized_but_never_altered():
     before = '{\n  "mcpServers": {\n    "s": {"command": "npx", "args": ["-y", "srv"]}\n  }\n}\n'
     wrapped, state = kit.apply_wrap(before, scope=None, name="s", **WRAP_ARGS)
     restored, _ = kit.apply_unwrap(wrapped, state)
-    assert json.loads(restored) == json.loads(before)   # content preserved
-    assert restored != before                            # whitespace normalized
+    assert json.loads(restored) == json.loads(before)  # content preserved
+    assert restored != before  # whitespace normalized
 
 
 def test_wrap_is_idempotent():
@@ -245,7 +243,7 @@ def test_sink_uri_survives_the_proxys_own_parser_on_a_path_with_a_space(tmp_path
     assert urllib.parse.urlparse(uri).path == path
 
     tmp_spaced.parent.mkdir(parents=True, exist_ok=True)
-    sink = make_sink(uri, api_key=None)          # would raise FileNotFoundError before
+    sink = make_sink(uri, api_key=None)  # would raise FileNotFoundError before
     sink.write({"probe": 1})
     sink.close()
     assert tmp_spaced.exists()
@@ -290,7 +288,7 @@ def test_uninstall_succeeds_when_the_entry_was_already_restored_by_hand():
     An already-restored entry means the only work left is clearing the state."""
     before = canonical(GLOBAL_ONLY)
     wrapped_text, state = kit.apply_wrap(before, scope=None, name="notion", **WRAP_ARGS)
-    restored_text, entry = kit.apply_unwrap(before, state)   # config already back to original
+    restored_text, entry = kit.apply_unwrap(before, state)  # config already back to original
     assert restored_text == before
     assert entry == GLOBAL_ONLY["mcpServers"]["notion"]
 
@@ -324,9 +322,7 @@ def test_write_never_exposes_content_at_a_wider_mode_than_the_target(tmp_path, m
 
     monkeypatch.setattr(kit.os, "chmod", spy)
     kit.write_atomically(cfg, '{"secret": "x"}')
-    assert seen and seen[0] <= 0o600, (
-        f"temp file held the config at {oct(seen[0])} before chmod"
-    )
+    assert seen and seen[0] <= 0o600, f"temp file held the config at {oct(seen[0])} before chmod"
 
 
 def test_write_leaves_no_temp_file_when_the_write_fails(tmp_path, monkeypatch):
@@ -341,8 +337,13 @@ def test_write_leaves_no_temp_file_when_the_write_fails(tmp_path, monkeypatch):
 def test_launch_check_uses_the_interpreter_setup_actually_recorded(tmp_path):
     """A hardcoded `python3` would fail on exactly the machine this kit worries
     about, telling the user a healthy wrap is broken."""
-    _, state = kit.apply_wrap(canonical(GLOBAL_ONLY), scope=None, name="notion",
-                              interpreter="/opt/py312/bin/python3.12", **WRAP_ARGS)
+    _, state = kit.apply_wrap(
+        canonical(GLOBAL_ONLY),
+        scope=None,
+        name="notion",
+        interpreter="/opt/py312/bin/python3.12",
+        **WRAP_ARGS,
+    )
     cmd = kit.launch_check(state)
     assert "/opt/py312/bin/python3.12" in cmd
     assert "/checkout/src" in cmd
@@ -644,8 +645,13 @@ def test_safe_endpoint_matches_scans_copy(url):
 
 
 def _ev(**kw):
-    base = {"event_id": "e", "session_id": "s1", "event_type": "tool_call_start",
-            "captured_at": "2026-08-19T10:00:00Z", "payload": {}}
+    base = {
+        "event_id": "e",
+        "session_id": "s1",
+        "event_type": "tool_call_start",
+        "captured_at": "2026-08-19T10:00:00Z",
+        "payload": {},
+    }
     base.update(kw)
     return base
 
@@ -665,7 +671,9 @@ def test_receipt_counts_sessions_calls_and_intent_coverage():
 def test_receipt_reads_redaction_markers_off_the_file_not_process_state():
     """Scrub counters live in a process that exited days ago; the receipt must
     answer from a cold session, so it counts the markers that survived."""
-    events = [_ev(payload={"result": "mail [REDACTED:email] and [REDACTED:email], key [REDACTED:sk_key]"})]
+    events = [
+        _ev(payload={"result": "mail [REDACTED:email] and [REDACTED:email], key [REDACTED:sk_key]"})
+    ]
     s = kit.summarize(events, 10)
     assert s["redactions"] == {"email": 2, "sk_key": 1}
 
@@ -715,15 +723,21 @@ def test_receipt_reports_no_error_counts():
 
 
 def test_receipt_takes_the_tool_surface_from_the_snapshot():
-    events = [_ev(event_type="surface_snapshot",
-                  payload={"tools": [{"name": "search"}, {"name": "create"}]})]
+    events = [
+        _ev(
+            event_type="surface_snapshot",
+            payload={"tools": [{"name": "search"}, {"name": "create"}]},
+        )
+    ]
     assert kit.summarize(events, 10)["tools"] == ["search", "create"]
 
 
 def test_read_events_skips_a_truncated_final_line(tmp_path):
     """The proxy killed mid-write must not make the receipt unavailable."""
     p = tmp_path / "events.jsonl"
-    p.write_text('{"event_type":"tool_call_start","session_id":"s1","payload":{}}\n{"trunc', encoding="utf-8")
+    p.write_text(
+        '{"event_type":"tool_call_start","session_id":"s1","payload":{}}\n{"trunc', encoding="utf-8"
+    )
     assert len(kit.read_events(p)) == 1
 
 
@@ -773,8 +787,7 @@ def test_a_var_reference_is_shown_because_it_is_a_pointer_not_a_secret():
 def test_our_own_variables_stay_visible():
     """Setup's whole purpose is showing what it wrote, and launch_check needs
     PYTHONPATH readable."""
-    out = kit.entry_json(kit.build_wrapped_entry(
-        GLOBAL_ONLY["mcpServers"]["notion"], **WRAP_ARGS))
+    out = kit.entry_json(kit.build_wrapped_entry(GLOBAL_ONLY["mcpServers"]["notion"], **WRAP_ARGS))
     assert kit.HIDDEN not in out
     for k in ("PYTHONPATH", "BATON_TENANT_ID", "BATON_VENDOR_ID", "BATON_EVENT_SINK"):
         assert k in out

@@ -41,7 +41,9 @@ def test_canonicalization_strip_and_lowercase() -> None:
 
 
 def test_different_key_different_hash() -> None:
-    assert hash_user_id("u", tenant_id="t", key=b"k1") != hash_user_id("u", tenant_id="t", key=b"k2")
+    assert hash_user_id("u", tenant_id="t", key=b"k1") != hash_user_id(
+        "u", tenant_id="t", key=b"k2"
+    )
 
 
 # ---- Emitter edge-hash -----------------------------------------------------
