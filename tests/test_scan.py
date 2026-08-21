@@ -146,6 +146,69 @@ def test_unwrap_baton_proxy_module_form() -> None:
     assert scan._unwrap_baton_proxy(["npx", "server"]) == ["npx", "server"]
 
 
+def test_resolve_config_entry_refuses_a_bridge_entry_rather_than_nesting(tmp_path) -> None:
+    """Exactly what `try/kit.py setup` now writes for a remote server. It reads
+    as ordinary stdio (it HAS a command) and `_unwrap_baton_proxy` cannot peel it
+    (no `--`), so before the guard scan wrapped it a second time: two nested
+    proxies, the annotation tool injected twice, in a report that looked normal.
+
+    Two things went wrong at once, which is why refusing is the only right
+    answer. The nesting, and `_strip_baton_env` dropping the very variable the
+    inner bridge needs — BATON_UPSTREAM_AUTH_TOKEN — so the upstream would have
+    401'd even single-wrapped."""
+    cfg = _write_cfg(
+        tmp_path,
+        {
+            "acme": {
+                "command": "/usr/bin/python3.13",
+                "args": ["-m", "baton_proxy", "--url", "https://mcp.acme.com/mcp"],
+                "env": {"BATON_UPSTREAM_AUTH_TOKEN": "${ACME_TOKEN}"},
+            }
+        },
+    )
+    try:
+        scan._resolve_config_entry("acme", cfg)
+        raise AssertionError("expected ScanConfigError")
+    except scan.ScanConfigError as e:
+        assert "IS baton-proxy" in str(e)
+        assert "${ACME_TOKEN}" not in str(e), "a refusal must not quote a credential"
+
+
+@pytest.mark.parametrize(
+    "command,args",
+    [
+        # Separator-less wraps `_unwrap_baton_proxy` returns untouched.
+        ("baton-proxy", []),
+        ("baton-proxy", ["--verbose"]),
+        ("/opt/venv/bin/baton-proxy", ["--url", "https://x"]),
+        # Launch forms a head-only check misses. `uvx`/`uv run` are how the
+        # README tells people to run baton-proxy, so these are not exotic.
+        ("uvx", ["baton-proxy", "--verbose"]),
+        ("uv", ["run", "baton-proxy"]),
+        ("/usr/bin/env", ["python3", "-m", "baton_proxy", "--url", "https://x"]),
+        ("bash", ["-lc", "baton-proxy --url https://x"]),
+    ],
+)
+def test_resolve_config_entry_refuses_every_unpeelable_proxy_shape(tmp_path, command, args) -> None:
+    cfg = _write_cfg(tmp_path, {"s": {"command": command, "args": args}})
+    try:
+        scan._resolve_config_entry("s", cfg)
+        raise AssertionError(f"expected ScanConfigError for {command} {args}")
+    except scan.ScanConfigError as e:
+        assert "baton-proxy" in str(e)
+
+
+def test_a_peelable_wrap_is_still_peeled_not_refused(tmp_path) -> None:
+    """The guard runs AFTER unwrap, so the case scan was built for — a vendor's
+    already-wrapped entry — keeps working. Refusing that would break the common
+    path to fix the rare one."""
+    cfg = _write_cfg(
+        tmp_path,
+        {"n": {"command": "baton-proxy", "args": ["--", "npx", "-y", "srv"]}},
+    )
+    assert scan._resolve_config_entry("n", cfg)[0] == ["npx", "-y", "srv"]
+
+
 def test_resolve_config_entry_rejects_remote(tmp_path) -> None:
     cfg = _write_cfg(tmp_path, {"remote": {"type": "http", "url": "https://x/mcp"}})
     try:

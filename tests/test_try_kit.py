@@ -593,6 +593,30 @@ def test_unwrap_matches_scan_helper(cmd):
     assert kit.unwrap_command(list(cmd)) == _unwrap_baton_proxy(list(cmd))
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"command": "npx", "args": ["-y", "srv"]},
+        {"command": "baton-proxy", "args": ["--", "npx", "srv"]},
+        {"command": "python3", "args": ["-m", "baton_proxy", "--url", "https://x/mcp"]},
+        {"command": "uvx", "args": ["baton-proxy", "--verbose"]},
+        {"command": "uv", "args": ["run", "baton-proxy"]},
+        {"command": "bash", "args": ["-lc", "baton-proxy -- npx srv"]},
+        {"command": "npx", "args": ["--prefix", "/opt/baton-proxy", "srv"]},
+        {"command": "", "args": []},
+    ],
+)
+def test_is_wrapped_matches_scans_proxy_detector(entry):
+    """The second copied helper. `is_wrapped` and scan's `_launches_baton_proxy`
+    are the same token sweep in two files, and they guard the same thing from
+    opposite sides — the kit refuses to wrap a proxy, scan refuses to scan one.
+    Copies drift; this is the pin, same as the unwrap one above."""
+    from baton_proxy.scan import _launches_baton_proxy
+
+    cmd = [entry.get("command", ""), *[str(a) for a in entry.get("args") or []]]
+    assert kit.is_wrapped(entry) is _launches_baton_proxy(cmd)
+
+
 # =============================================================================
 # Receipt.
 # =============================================================================

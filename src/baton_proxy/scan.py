@@ -364,6 +364,32 @@ def _unwrap_baton_proxy(server_cmd: list[str]) -> list[str]:
     return _unwrap_baton_proxy(upstream) if upstream else server_cmd
 
 
+def _launches_baton_proxy(server_cmd: list[str]) -> bool:
+    """Does this command launch baton-proxy in ANY form we can detect?
+
+    Deliberately broader than ``_unwrap_baton_proxy``'s head check, and kept
+    separate from it: unwrap answers "what is the upstream command inside this
+    wrapper", which is only meaningful when there IS one. This answers "is this
+    a proxy at all", which is the question the caller actually needs before
+    wrapping something a second time.
+
+    A token sweep, because the head is only one of the ways a proxy gets
+    launched: ``uvx baton-proxy -- …`` and ``uv run baton-proxy -- …`` are how
+    the README tells people to run it, ``/usr/bin/env python3 -m baton_proxy``
+    is ordinary, and a shell wrapper puts the whole command inside one argument.
+
+    It OVER-triggers by design — a path component that merely happens to be
+    named ``baton-proxy`` reads as a proxy. That costs a scan the user can rerun
+    against the original server; the opposite miss costs two nested proxies and
+    a doubly-injected annotation tool, in a report nobody would know to distrust.
+    """
+    return any(
+        os.path.basename(piece) in _BATON_PROXY_NAMES
+        for token in server_cmd
+        for piece in token.split()
+    )
+
+
 def _resolve_config_entry(
     name: str, explicit_file: str | None
 ) -> tuple[list[str], dict[str, str], str]:
@@ -411,6 +437,26 @@ def _resolve_config_entry(
     raw_args = entry.get("args")
     raw_args = raw_args if isinstance(raw_args, list) else []
     server_cmd = _unwrap_baton_proxy([command, *[str(a) for a in raw_args]])
+    # Unwrap peels the `-- <upstream>` form and leaves everything else alone, so
+    # a wrapper it could not peel arrives here still wrapped. Wrapping THAT is
+    # how two proxies end up nested with the annotation tool injected twice —
+    # and the report would look normal. The bridge form is the case that made
+    # this real: the try kit now writes `-m baton_proxy --url <endpoint>` into
+    # users' configs, and it carries no `--` for unwrap to find.
+    if _launches_baton_proxy(server_cmd):
+        if "--url" in server_cmd:
+            raise ScanConfigError(
+                f"`{name}` IS baton-proxy, bridging a remote MCP server.\n"
+                "  There is no upstream command inside it for scan to run, and scan\n"
+                "  wraps stdio servers today — so there is nothing here to scan.\n"
+                "  → name the stdio server you want a report on instead."
+            )
+        raise ScanConfigError(
+            f"`{name}` already launches baton-proxy in a form scan cannot unwrap.\n"
+            "  Scanning it would nest a second proxy inside the first and inject the\n"
+            "  annotation tool twice, which the report would not show.\n"
+            "  → unwrap the entry by hand, or name the server it wraps."
+        )
     raw_env = entry.get("env")
     raw_env = raw_env if isinstance(raw_env, dict) else {}
     env = _strip_baton_env({str(k): str(v) for k, v in raw_env.items()})
