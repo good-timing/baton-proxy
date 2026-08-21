@@ -159,7 +159,10 @@ do not push:
 - Suggest they read it before deciding — it is one JSON object per line, and it
   contains real results from their tools.
 - If they want to send it, that is theirs to arrange with whoever they are
-  talking to at Baton. You do not send it.
+  talking to at Baton. You do not send it. If size is the obstacle, the receipt
+  prints a `gzip` command — the file compresses around tenfold — and it travels
+  by whatever channel their company already permits. Do not offer, invent, or
+  look for a place to upload it; there deliberately is not one.
 - If they would rather not, that is a complete answer. Offer `uninstall` and
   leave it there.
 

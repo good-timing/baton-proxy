@@ -1158,6 +1158,21 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     print("Read it before you decide whether it may: it contains the full arguments")
     print("and full results of every tool call, which the scrubber does not redact")
     print("(see SECURITY.md §6).")
+    # The kit deliberately offers no destination — an upload endpoint would cost
+    # the sentence directly above, which is the one a reviewer approved. What it
+    # can do is remove the excuse that the file is too big to move: this format
+    # is mostly repeated keys and compresses about tenfold, so a file that will
+    # not attach to anything usually will once gzipped.
+    print()
+    print("If you decide it may go, compress it first — this format is mostly")
+    print("repeated keys, so it usually shrinks by around 10x:")
+    # `gzip -c … > …` rather than `gzip file`, which REPLACES the original. The
+    # trial data is not reproducible, and a command in a document a stranger
+    # pastes without reading is not the place to find that out. `-k` would also
+    # do it, but it is missing from older gzip builds.
+    print(f"  gzip -c {events_path} > {events_path}.gz")
+    print("Then send the .gz however your company already allows. There is no")
+    print("upload endpoint in this kit and you do not need to create one.")
     return 0
 
 

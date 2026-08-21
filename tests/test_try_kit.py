@@ -12,6 +12,7 @@ path.
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 from pathlib import Path
@@ -667,6 +668,42 @@ def test_receipt_reads_redaction_markers_off_the_file_not_process_state():
     events = [_ev(payload={"result": "mail [REDACTED:email] and [REDACTED:email], key [REDACTED:sk_key]"})]
     s = kit.summarize(events, 10)
     assert s["redactions"] == {"email": 2, "sk_key": 1}
+
+
+def _run_receipt(tmp_path, monkeypatch, capsys, events_lines):
+    events = tmp_path / "events.jsonl"
+    events.write_text("".join(json.dumps(e) + "\n" for e in events_lines))
+    monkeypatch.setattr(kit, "STATE_PATH", tmp_path / "no-state.json")
+    monkeypatch.setattr(kit, "EVENTS_PATH", events)
+    kit.cmd_receipt(argparse.Namespace())
+    return events, capsys.readouterr().out
+
+
+def test_the_receipt_hands_over_a_command_that_cannot_destroy_the_file(
+    tmp_path, monkeypatch, capsys
+):
+    """The last step of the trial is "send it, or do not", and the file can be
+    large enough that size is the whole obstacle. The receipt used to stop at
+    "read it before you decide" and leave the person holding a file with no next
+    move.
+
+    `gzip -c … > …` and not `gzip …`: the bare form REPLACES the original, and
+    trial data is not reproducible. A command printed in a document a stranger
+    pastes without reading is not where that should be discovered."""
+    events, out = _run_receipt(tmp_path, monkeypatch, capsys, [_ev(payload={"tool_name": "s"})])
+    assert f"gzip -c {events} > {events}.gz" in out
+    assert f"gzip {events}" not in out, "the bare form deletes the source"
+
+
+def test_the_receipt_names_no_destination(tmp_path, monkeypatch, capsys):
+    """The kit sells one sentence — nothing leaves your machine — and an upload
+    endpoint would cost it to save one step at the very end. The file travels by
+    whatever channel the person's own company already permits, so the receipt
+    must not name, offer, or imply a place to send it."""
+    _events, out = _run_receipt(tmp_path, monkeypatch, capsys, [_ev(payload={"tool_name": "s"})])
+    for scheme in ("http://", "https://", "@"):
+        assert scheme not in out, f"the receipt offered a destination ({scheme})"
+    assert "goodtiming" not in out and "baton.ai" not in out
 
 
 def test_receipt_reports_no_error_counts():
