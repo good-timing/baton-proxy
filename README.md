@@ -17,6 +17,28 @@ Zero changes to the underlying MCP server. The proxy *is* the MCP server from Cl
    └─────────────────┘  └─────────────────┘  └─────────────────┘
 ```
 
+## Trialling Baton inside your company
+
+If someone else has to approve what runs on your machine, start with
+**[`try/SECURITY.md`](try/SECURITY.md)**. It is a review document written to be read
+before anything is cloned, by a reviewer who never talks to us: what changes on your
+machine (one MCP config entry), what gets recorded, what the redaction does and does
+not cover, and how to re-derive every claim here yourself in about a minute.
+
+The trial is the [`try/`](try/) folder — a recipe and a receipt command, not a second
+product. It installs nothing; the proxy is the source you just reviewed, so the code
+you read is the code that runs. Events go to a local JSONL file, and whether that file
+ever leaves your machine is a decision you make at the end.
+
+```bash
+git clone https://github.com/good-timing/baton-proxy
+cd baton-proxy/try && claude
+```
+
+Claude reads the instructions in that folder and walks you through it. Three commands
+do the work — `setup`, `receipt`, `uninstall` — and the last one restores your original
+entry at any point, including immediately.
+
 ## Quick start
 
 ```bash
