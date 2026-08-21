@@ -1,8 +1,8 @@
 # baton-proxy
 
-Subprocess-wrap MCP proxy. Wraps a stdio MCP server, injects an annotation tool into the handshake, and emits friction events to one or more sinks (stderr, a JSONL file, or a Baton Console).
+Transparent MCP proxy. Wraps a stdio MCP server as a subprocess, **or** bridges to a remote Streamable-HTTP MCP server (`--url`); injects an annotation tool into the handshake, and emits friction events to one or more sinks (stderr, a JSONL file, or a Baton Console).
 
-Zero changes to the underlying MCP server. The proxy *is* the MCP server from Claude's perspective; the real server is its child process.
+Zero changes to the underlying MCP server. The proxy *is* the MCP server from Claude's perspective; the real server is either its child process (stdio) or the endpoint it forwards to (`--url`).
 
 ```
 ┌──────────┐      ┌───────────────┐      ┌────────────────────┐
@@ -131,6 +131,7 @@ All knobs are environment variables. Every emission-related one has a default; t
 | `BATON_CONSENT_TOKEN` | `local` | Per-process consent token. **Placeholder; you MUST replace this before pointing at an `http(s)://` sink** — the proxy refuses to start in that combination, so accidental remote leakage of placeholder-tagged events doesn't happen. |
 | `BATON_API_KEY`       | _(unset)_ | Bearer token. Required only when the sink scheme is `http(s)://`; `file://` and `stderr:` sinks ignore it. |
 | `BATON_VENDOR_ID`     | _(unset)_ | Labels the install for the operator (useful for multi-vendor customers grepping their JSONL). Does NOT prefix the injected tool name — that stays `baton_annotate` in v1. Vendors who need a white-labelled tool name will get an opt-in switch when they ask. |
+| `BATON_UPSTREAM_AUTH_TOKEN` | _(unset)_ | Credential for the `--url` bridge, sent upstream as `Authorization: Bearer`. Ignored by the stdio form, which passes the entry's own `env` to the child instead. |
 | `BATON_PROXY_LOG_FILE`| _(unset)_ | Path to tee proxy logs to (default: stderr only). |
 
 ### The three rungs
