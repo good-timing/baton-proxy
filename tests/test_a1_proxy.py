@@ -8,15 +8,20 @@ Covers:
 
 from __future__ import annotations
 
+import sys
 from collections import OrderedDict
 from typing import Any
 
+import pytest
+
 from baton_proxy.proxy import (
     EVICTED_ERROR_TYPE,
+    _ClientAction,
     _emit_call_end,
     _emit_call_error,
     _evict_overflow,
     _PendingCall,
+    _pump_client_to_server,
 )
 
 
@@ -328,3 +333,81 @@ def test_derive_mechanical_mixed_tool_and_resource() -> None:
     assert len(findings) == 2
     subjects = {f["tool"] for f in findings}
     assert subjects == {"search", "file:///data.json"}
+
+
+# ---------------------------------------------------------------------------
+# Shutdown: closing the upstream's stdin is what lets run_proxy's shutdown run.
+# ---------------------------------------------------------------------------
+
+
+class _StubProcessor:
+    """Forwards everything; the pump's shutdown is what is under test."""
+
+    def handle_client_message(self, req: dict[str, Any]) -> _ClientAction:
+        return _ClientAction(forward=req)
+
+
+class _RecordingStdin:
+    """Stands in for the upstream's stdin pipe."""
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.written: list[str] = []
+
+    def write(self, text: str) -> None:
+        self.written.append(text)
+
+    def flush(self) -> None:
+        return
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _ExplodingStdin:
+    """A client stream that yields one line, then dies mid-iteration.
+
+    Not hypothetical on either count. `sys.stdin` decodes strict UTF-8, so one
+    non-UTF-8 byte from a client raises `UnicodeDecodeError` out of the `for`
+    itself; and `json.loads` on deeply nested input raises `RecursionError`,
+    which `except json.JSONDecodeError` does not catch (measured: escapes at
+    depth 200k on 3.14, far shallower on the 3.11 CI runs)."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+        self._sent = False
+
+    def __iter__(self) -> Any:
+        return self
+
+    def __next__(self) -> str:
+        if self._sent:
+            raise self._exc
+        self._sent = True
+        return '{"jsonrpc": "2.0", "id": 1, "method": "ping"}\n'
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        RecursionError("maximum recursion depth exceeded"),
+    ],
+    ids=["non-utf8-byte", "deeply-nested-json"],
+)
+def test_the_upstreams_stdin_is_closed_even_when_the_pump_dies(monkeypatch, exc):
+    """The EOF path closes it; every other way out of that loop skipped it.
+
+    An abrupt exit is exactly when the close matters most. `run_proxy` hangs
+    its whole shutdown off `child.wait()` — `drain_pending`, then
+    `emitter.stop()` — so an upstream left holding an open pipe means the last
+    events are still in the queue when the client's SIGTERM lands. Silent
+    no-emit, at the one moment nobody is watching."""
+    child_stdin = _RecordingStdin()
+    processor = _StubProcessor()
+    monkeypatch.setattr(sys, "stdin", _ExplodingStdin(exc))
+
+    with pytest.raises(type(exc)):
+        _pump_client_to_server(child_stdin, processor)
+
+    assert child_stdin.closed, "the upstream was left holding an open stdin"

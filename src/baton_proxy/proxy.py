@@ -1115,70 +1115,78 @@ class MessageProcessor:
 
 def _pump_client_to_server(child_stdin: Any, processor: MessageProcessor) -> None:
     """stdio client->server I/O loop. Message logic lives in the processor."""
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
-            req = None
-        # Not a single JSON-RPC object: non-JSON, or valid JSON that is a bare
-        # array/scalar (json.loads accepts those without raising). Neither is a
-        # message we process — forward the raw line to the upstream (best-effort
-        # passthrough, keeps any JSON-RPC batch intact). Guarding here makes
-        # every later req.get(...) provably safe.
-        if not isinstance(req, dict):
+    try:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
             try:
-                child_stdin.write(line + "\n")
+                req = json.loads(line)
+            except json.JSONDecodeError:
+                req = None
+            # Not a single JSON-RPC object: non-JSON, or valid JSON that is a bare
+            # array/scalar (json.loads accepts those without raising). Neither is a
+            # message we process — forward the raw line to the upstream (best-effort
+            # passthrough, keeps any JSON-RPC batch intact). Guarding here makes
+            # every later req.get(...) provably safe.
+            if not isinstance(req, dict):
+                try:
+                    child_stdin.write(line + "\n")
+                    child_stdin.flush()
+                except Exception:
+                    logger.exception("baton-proxy: forward to upstream failed")
+                continue
+
+            # Fail-open: a bug processing one message must not kill this pump thread
+            # (which would silently stop all capture). Log, error the client so it
+            # doesn't hang, move on.
+            try:
+                action = processor.handle_client_message(req)
+            except Exception:
+                logger.exception("baton-proxy: handle_client_message failed")
+                _write_client_error(
+                    req.get("id"), -32603, "baton-proxy: internal error processing the request"
+                )
+                continue
+
+            if action.respond is not None:
+                try:
+                    _write_stdout(action.respond)
+                except Exception:
+                    logger.exception("baton-proxy: forward to client failed")
+                continue
+
+            try:
+                child_stdin.write(json.dumps(action.forward) + "\n")
                 child_stdin.flush()
             except Exception:
                 logger.exception("baton-proxy: forward to upstream failed")
-            continue
 
-        # Fail-open: a bug processing one message must not kill this pump thread
-        # (which would silently stop all capture). Log, error the client so it
-        # doesn't hang, move on.
+    finally:
+        # The client closed our stdin — that is how an MCP client shuts a stdio
+        # server down. Close the upstream's stdin so IT sees the same EOF and
+        # exits; without this `run_proxy`'s `child.wait()` blocks forever,
+        # because the upstream is a healthy process waiting on a pipe nobody
+        # will ever write to again.
+        #
+        # The rest of run_proxy's shutdown hangs off that wait: `drain_pending`
+        # (so every *_start gets a matching end) and `emitter.stop()` (the queue
+        # flush) are both AFTER it. So the cost of not closing is not a stray
+        # process — it is that the client SIGTERMs us seconds later with the final
+        # events still in the queue, which is the silent-no-emit shape this whole
+        # file exists to catch, at the one moment nobody is watching. The original
+        # code assumed shutdown always begins upstream-side (a crashed server);
+        # the far commoner direction is the client quitting.
+        #
+        # In a `finally` rather than after the loop, because EOF is the ordinary
+        # way out and not the only one: `sys.stdin` decodes strict UTF-8, so one
+        # non-UTF-8 byte raises out of the `for` itself, and `json.loads` raises
+        # RecursionError — which `except json.JSONDecodeError` does not catch —
+        # on deeply nested input. An abrupt exit is when this matters most.
         try:
-            action = processor.handle_client_message(req)
+            child_stdin.close()
         except Exception:
-            logger.exception("baton-proxy: handle_client_message failed")
-            _write_client_error(
-                req.get("id"), -32603, "baton-proxy: internal error processing the request"
-            )
-            continue
-
-        if action.respond is not None:
-            try:
-                _write_stdout(action.respond)
-            except Exception:
-                logger.exception("baton-proxy: forward to client failed")
-            continue
-
-        try:
-            child_stdin.write(json.dumps(action.forward) + "\n")
-            child_stdin.flush()
-        except Exception:
-            logger.exception("baton-proxy: forward to upstream failed")
-
-    # The client closed our stdin — that is how an MCP client shuts a stdio
-    # server down. Close the upstream's stdin so IT sees the same EOF and
-    # exits; without this the loop below in `run_proxy` (`child.wait()`) blocks
-    # forever, because the upstream is a healthy process waiting on a pipe
-    # nobody will ever write to again.
-    #
-    # The rest of run_proxy's shutdown hangs off that wait: `drain_pending`
-    # (so every *_start gets a matching end) and `emitter.stop()` (the queue
-    # flush) are both AFTER it. So the cost of not closing is not a stray
-    # process — it is that the client SIGTERMs us seconds later with the final
-    # events still in the queue, which is the silent-no-emit shape this whole
-    # file exists to catch, at the one moment nobody is watching. The original
-    # code assumed shutdown always begins upstream-side (a crashed server);
-    # the far commoner direction is the client quitting.
-    try:
-        child_stdin.close()
-    except Exception:
-        logger.exception("baton-proxy: closing the upstream's stdin failed")
+            logger.exception("baton-proxy: closing the upstream's stdin failed")
 
 
 def _pump_server_to_client(child_stdout: Any, processor: MessageProcessor) -> None:
