@@ -1939,3 +1939,341 @@ def test_the_kit_never_wrote_the_credential_into_the_config(bridge_run):
         # The literal was already in the config the user wrote; the kit moved it
         # between slots and must not have copied it into a second one.
         assert on_disk.count(TK_F_9_SENTINEL) == 1
+
+
+# ---------------------------------------------------------------------------
+# TK-F-3/4/5/7 — the surfaces an agent reads, and the refusals it must relay.
+#
+# `try/CLAUDE.md` is auto-loaded when someone runs `claude` from `try/`, so it
+# is not documentation the agent might consult — it is a script the agent WILL
+# follow, on a stranger's machine, with nobody in the room. It branches on
+# strings this kit prints. Nothing held the two together.
+#
+# Every test here drives `main()`, because the agent drives `main()`.
+# ---------------------------------------------------------------------------
+
+# Five entries, one per class the candidate list has to describe. Two are
+# wrappable, one is already ours, two are refused for different reasons — and
+# the two refusals must not be collapsed, because the list is how a prospect's
+# own run reports which classes their config holds.
+FIVE_ENTRIES = {
+    "mcpServers": {
+        "alpha": {
+            "command": "npx",
+            "args": ["-y", "alpha-mcp"],
+            "env": {"ALPHA_TOKEN": "sk-live-ALPHA-LITERAL-9f2b"},
+        },
+        "bravo": {
+            "command": "/usr/bin/python3",
+            "args": ["-m", "baton_proxy", "--", "node", "bravo.js"],
+            "env": {},
+        },
+        "charlie": {
+            "type": "http",
+            "url": "https://charlie.example.com/mcp",
+            "headers": {"Authorization": "Bearer ${CHARLIE_TOKEN}"},
+        },
+        "delta": {
+            "type": "http",
+            "url": "https://delta.example.com/mcp",
+            "headers": {
+                "Authorization": "Bearer sk-live-DELTA-LITERAL-4c81",
+                "X-Delta-Workspace": "acme-prod",
+            },
+        },
+        "echo_srv": {"type": "sse", "url": "https://echo.example.com/sse"},
+    }
+}
+
+_FIVE_LITERALS = ("sk-live-ALPHA-LITERAL-9f2b", "sk-live-DELTA-LITERAL-4c81")
+
+
+def _setup_listing(tmp_path, capsys) -> str:
+    """`setup` with no server name — the refusal that carries the candidate list."""
+    path = _config(tmp_path, FIVE_ENTRIES)
+    rc = kit.main(["setup", "--config-file", str(path)])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert out == ""
+    return err
+
+
+def test_the_candidate_list_names_every_entry_in_the_config(tmp_path, kit_home, capsys):
+    """TK-F-3. All five, not just the wrappable two.
+
+    An entry that appears in neither list is one the person can see in their own
+    config and cannot find in our output, which reads as the kit not having
+    looked. `CLAUDE.md` tells the agent to show this list and ask which one they
+    want — a name missing from it cannot be chosen."""
+    err = _setup_listing(tmp_path, capsys)
+    for name in FIVE_ENTRIES["mcpServers"]:
+        assert name in err, f"`{name}` is in the config and not in the list:\n{err}"
+
+
+def test_every_refusal_in_the_list_carries_its_own_reason(tmp_path, kit_home, capsys):
+    """TK-F-3. A reason exists in the core and must REACH the surface.
+
+    `CLAUDE.md:80-89` forbids exactly one thing: telling the person a server
+    cannot be wrapped without saying why. The two refused entries fail for
+    different reasons and the difference is the useful part — `delta` is one
+    header away from wrappable, `echo_srv` is a transport we do not speak."""
+    err = _setup_listing(tmp_path, capsys)
+    assert "sse transport" in err
+    assert "X-Delta-Workspace" in err, "the extra header is why delta is refused; name it"
+    # And the already-ours entry gets its own line rather than vanishing from
+    # both lists, which would tell someone their only server does not exist.
+    assert "bravo" in err and "Already baton-proxy" in err
+
+
+def test_the_candidate_list_prints_no_credential(tmp_path, kit_home, capsys):
+    """TK-F-3. The list is shown to someone who may paste it back to us.
+
+    Both literals are in the config and neither may be in the output: `delta`'s
+    is a header value on a REFUSED entry, which is the path that has to describe
+    an entry it is not wrapping, and `alpha`'s is an env value on an offered
+    one."""
+    err = _setup_listing(tmp_path, capsys)
+    for literal in _FIVE_LITERALS:
+        assert literal not in err, f"{literal!r} reached the surface"
+
+
+def test_a_var_reference_is_still_described_as_one(tmp_path, kit_home, capsys):
+    """TK-F-3, the other direction. `charlie` is wrappable and offered, so the
+    reference never needs printing — but nothing may claim it is a literal
+    either. This pins that the two remote entries are told apart at all."""
+    err = _setup_listing(tmp_path, capsys)
+    assert "charlie" in err
+    assert "${CHARLIE_TOKEN}" not in err
+
+
+# --- TK-F-4: --config-file is answered, never quietly abandoned -------------
+
+
+@pytest.fixture
+def home_with_a_real_config(tmp_path, monkeypatch):
+    """A populated `~/.claude.json` that every TK-F-4 case must NOT touch.
+
+    Without this the tests would pass on a machine that simply has no global
+    config — green by absence, on the one assertion whose whole subject is a
+    fallback that must not happen."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    (fake_home / ".claude.json").write_text(
+        canonical({"mcpServers": {"the-real-one": {"command": "npx", "args": ["-y", "real"]}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(kit.Path, "home", staticmethod(lambda: fake_home))
+    return fake_home
+
+
+def _bad_config_refusal(argv, capsys) -> str:
+    rc = kit.main(argv)
+    out, err = capsys.readouterr()
+    assert rc == 1, f"expected a refusal, got {rc}"
+    assert out == "", "a refusal must not leak into the stream CLAUDE.md reads"
+    return err
+
+
+# Each case pairs with the phrase whose ABSENCE is the interesting failure.
+# Naming the path is not enough on its own: `discover` skips an unreadable file
+# silently when the path came from the default search list, and the whole reason
+# it branches on `explicit` is that a named file's parse error is the person's
+# answer. Drop that branch and every case still refuses, still names the path,
+# and reports "no MCP configuration found" — which points at the wrong problem
+# entirely. That mutation passed until these phrases were pinned.
+_BAD_CONFIG_CASES = [
+    ("missing", "cannot read"),
+    ("directory", "cannot read"),
+    ("not-json", "is not valid JSON"),
+    ("no-mcpservers", "no MCP configuration found"),
+]
+
+
+@pytest.mark.parametrize("case,expected_phrase", _BAD_CONFIG_CASES)
+def test_a_bad_config_file_is_named_and_never_falls_back(
+    case, expected_phrase, tmp_path, kit_home, home_with_a_real_config, capsys
+):
+    """TK-F-4. Four ways to point `--config-file` at something unusable.
+
+    The failure this prevents is not the error message: it is a typo'd path
+    falling through to the search list and wrapping an entry in the person's
+    REAL global config, which `SECURITY.md` §2 promises cannot happen unasked.
+    So each case asserts four things — a 1, the path named, the right problem
+    named, and that the entry only reachable through the fallback was neither
+    named nor touched."""
+    if case == "missing":
+        target = tmp_path / "nope" / "mcp.json"
+    elif case == "directory":
+        target = tmp_path / "a-directory"
+        target.mkdir()
+    elif case == "not-json":
+        target = tmp_path / "mcp.json"
+        target.write_text('{"mcpServers": {"x": {"command": "npx"},}}', encoding="utf-8")
+    else:
+        target = tmp_path / "mcp.json"
+        target.write_text(canonical({"projects": {}}), encoding="utf-8")
+
+    err = _bad_config_refusal(["setup", "alpha", "--config-file", str(target)], capsys)
+    assert str(target) in err or str(Path(target).resolve()) in err, err
+    assert expected_phrase in err, (
+        f"{case} was refused for the wrong stated reason — want {expected_phrase!r}:\n{err}"
+    )
+    assert "the-real-one" not in err, "the fallback config was read"
+    # And nothing was written: no state file, and the real config is untouched.
+    assert not (kit_home / "state.json").exists()
+    assert "baton_proxy" not in (home_with_a_real_config / ".claude.json").read_text()
+
+
+# --- TK-F-5: the four branches CLAUDE.md:63-77 dispatches on ----------------
+#
+# The doc quotes the first branch's string verbatim and paraphrases the rest.
+# Asserting the QUOTED string against the doc's own text (rather than against a
+# copy typed here) is what makes this a drift pin: a reword on either side has
+# to move both.
+
+
+def _receipt_output(capsys) -> str:
+    rc = kit.main(["receipt"])
+    out, _err = capsys.readouterr()
+    assert rc == 0
+    return out
+
+
+def _claude_md() -> str:
+    return (REPO_ROOT / "try" / "CLAUDE.md").read_text(encoding="utf-8")
+
+
+def test_receipt_branch_one_no_state(kit_home, capsys):
+    """No state file at all → *Setting up*. The string the doc quotes in bold is
+    read OUT OF THE DOC, so a reword in either place fails here."""
+    quoted = "No setup state found"
+    assert f'"{quoted}"' in _claude_md(), "CLAUDE.md no longer quotes this branch"
+    assert quoted in _receipt_output(capsys)
+
+
+def test_receipt_branch_two_the_wrap_is_gone(tmp_path, kit_home, capsys):
+    """State, but the entry in the config is not the one setup wrote — the
+    client rewrites this file continuously, and a hand-restore is common.
+
+    Without this branch the agent sees "no events", walks the restart checklist,
+    and lands on a machine where the proxy was never in the path at all."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    path.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")  # restored by hand
+
+    out = _receipt_output(capsys)
+    assert "THE WRAP IS GONE" in out
+    assert "uninstall" in out, "the branch must offer the way out the doc promises"
+    assert "wrap is gone" in _claude_md()
+
+
+def test_receipt_branch_three_state_but_no_events(tmp_path, kit_home, capsys):
+    """Wrapped, still wrapped, nothing captured. The usual answer is that the
+    client has not been restarted, and the doc promises "a short checklist"."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+
+    out = _receipt_output(capsys)
+    assert "No events have been captured yet" in out
+    assert "THE WRAP IS GONE" not in out, "this is the other no-events branch"
+    assert "restart" in out.lower(), "the checklist's first item is the restart"
+
+
+def test_receipt_branch_four_counts(tmp_path, kit_home, capsys):
+    """Events → report the numbers. Pinned as the labels the agent reads back,
+    not as a rendering: a renamed label is a branch the doc cannot find."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    (kit_home / "events.jsonl").write_text(
+        "\n".join(
+            json.dumps(e)
+            for e in (
+                {
+                    "event_type": "tool_call_start",
+                    "session_id": "s1",
+                    "captured_at": "2026-08-30T10:00:00Z",
+                    "payload": {"tool_name": "echo", "call_intent": "check the wrap"},
+                },
+                {
+                    "event_type": "tool_call_end",
+                    "session_id": "s1",
+                    "captured_at": "2026-08-30T10:00:01Z",
+                    "payload": {"tool_name": "echo", "result": {}, "duration_ms": 3},
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out = _receipt_output(capsys)
+    assert "tool calls           1" in out
+    assert "sessions             1" in out
+    assert "No events have been captured yet" not in out
+
+
+def test_the_four_receipt_branches_are_mutually_exclusive(tmp_path, kit_home, capsys):
+    """The property that makes the doc's table a table. Two branches firing at
+    once is how an agent on an already-wrapped machine falls through to
+    *Setting up* and wraps a second server on top of the first."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    out = _receipt_output(capsys)
+    fired = [
+        m
+        for m in ("No setup state found", "THE WRAP IS GONE", "No events have been captured yet")
+        if m in out
+    ]
+    assert fired == ["No events have been captured yet"], fired
+
+
+# --- TK-F-7: the kit will not wrap its own work ----------------------------
+
+
+def test_setup_refuses_an_entry_this_kit_already_wrapped(tmp_path, kit_home, capsys):
+    """TK-F-7. Nested proxies — the geometry `check_kit_bridge.py:54` grades with
+    LLM spend, caught here for free and one layer earlier.
+
+    Reached with no state file, which is the case that matters: with state,
+    `setup` reports "already wrapped" and returns 0. Without it the entry is
+    someone else's wrap as far as this kit can tell, and wrapping it again would
+    put the outer proxy's `surface_snapshot` on the inner proxy's injected
+    tools — a capture that looks healthy and describes the wrong server."""
+    wrapped = {
+        "mcpServers": {
+            "notion": kit.build_wrapped_entry(GLOBAL_ONLY["mcpServers"]["notion"], **WRAP_ARGS)
+        }
+    }
+    path = _config(tmp_path, wrapped)
+    rc = kit.main(["setup", "notion", "--config-file", str(path)])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert out == ""
+    assert "already wrapped in baton-proxy" in err
+    assert json.loads(path.read_text(encoding="utf-8")) == wrapped, "the config was touched"
+
+
+def test_setup_refuses_its_own_bridge_entry_without_telling_anyone_to_delete_it(
+    tmp_path, kit_home, capsys
+):
+    """The bridge half of TK-F-7, which needs a different sentence.
+
+    An `--url` entry has no upstream command inside it, so the stdio branch's
+    advice — "unwrap it by hand first" — would mean deleting the entry's only
+    launch mechanism. Never tell someone to do that."""
+    bridged = {
+        "mcpServers": {
+            "remote": kit.build_wrapped_entry(HTTP_VAR_BEARER["mcpServers"]["remote"], **WRAP_ARGS)
+        }
+    }
+    path = _config(tmp_path, bridged)
+    rc = kit.main(["setup", "remote", "--config-file", str(path)])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert out == ""
+    assert "IS baton-proxy" in err
+    assert "unwrap it by hand" not in err
+    assert json.loads(path.read_text(encoding="utf-8")) == bridged
