@@ -886,7 +886,12 @@ def test_a_hidden_var_reference_is_not_called_a_literal():
 def test_a_literal_beside_a_var_reference_is_still_called_a_literal():
     """The label must not fail in the other direction either. `Bearer sk-live
     ${X}` does hold a literal, so the strict end of the rule is what keeps the
-    new label true — a contains-a-${VAR}-anywhere test would call it a pointer."""
+    new label true — a contains-a-${VAR}-anywhere test would call it a pointer.
+
+    The one-token case is the one that matters and the one a two-token fixture
+    misses: `sk-live-abc123 ${SIG}` is a whole credential in the prefix slot,
+    and it passes any rule that allows an arbitrary leading token. Only a scheme
+    KEYWORD may precede the reference."""
     out = kit.entry_json(
         {
             "type": "http",
@@ -900,6 +905,13 @@ def test_a_literal_beside_a_var_reference_is_still_called_a_literal():
     assert "sk-live-abc" not in out
     assert kit.HIDDEN in out
     assert kit.HIDDEN_VAR_REF not in out
+
+    for literal_prefix in ("sk-live-abc123 ${SIG}", "xoxb-REAL-TOKEN ${N}"):
+        assert kit.hidden_label(literal_prefix) == kit.HIDDEN, (
+            f"{literal_prefix!r} carries a literal in the prefix slot"
+        )
+    for scheme in ("Bearer ${T}", "bearer ${T}", "Basic ${T}", "Token ${T}", "${T}"):
+        assert kit.hidden_label(scheme) == kit.HIDDEN_VAR_REF, f"{scheme!r} is a pointer"
 
 
 def test_a_users_own_BATON_prefixed_variable_is_not_treated_as_ours():
@@ -1204,8 +1216,8 @@ EXPECTED_AUDIT_HITS = {
     ("src/baton_proxy/proxy.py", 1252, "subprocess.Popen("),
     ("src/baton_proxy/transport_http.py", 135, "urllib.request.urlopen(req"),
     ("src/baton_proxy/transport_http.py", 187, "urlopen(timeout=inf) blocks forever"),
-    ("src/baton_proxy/sinks.py", 133, "urllib.request.urlopen(req"),
-    ("src/baton_proxy/sinks.py", 165, 'boto3.client("s3")'),
+    ("src/baton_proxy/sinks.py", 153, "urllib.request.urlopen(req"),
+    ("src/baton_proxy/sinks.py", 185, 'boto3.client("s3")'),
     ("src/baton_proxy/scan.py", 510, "subprocess.run(cmd"),
 }
 
@@ -1375,3 +1387,4 @@ def test_every_kit_command_in_the_docs_parses(monkeypatch, capsys):
             )
         assert rc == 0
         assert dispatched == [f"cmd_{argv[0]}"], f"{where}: {argv} reached {dispatched}"
+

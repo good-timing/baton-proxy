@@ -345,7 +345,17 @@ _VAR_REF = re.compile(r"^\$\{[^}]*\}$")
 # the shape every remote MCP config uses. Deliberately NOT "contains a ${VAR}
 # anywhere": ``Bearer sk-live-abc ${X}`` does hold a literal, and labelling that
 # a reference would be the same false claim in the other direction.
-_VAR_REF_VALUE = re.compile(r"^(?:\S+[ \t]+)?\$\{[^}]*\}$")
+#
+# The leading word is an ALLOWLIST of auth schemes, not ``\S+``. ``\S+`` reads
+# "one token, then a reference", which is true of ``sk-live-abc123 ${SIG}`` —
+# a whole credential sitting in the prefix slot, printed to the reader under a
+# label saying no literal is present. The two-token fixture above cannot catch
+# that, because its literal is the SECOND word. Scheme names are a short closed
+# set; a credential is not in it.
+_AUTH_SCHEMES = ("bearer", "basic", "digest", "token", "apikey")
+_VAR_REF_VALUE = re.compile(
+    r"^(?:(?:" + "|".join(_AUTH_SCHEMES) + r")[ \t]+)?\$\{[^}]*\}$", re.IGNORECASE
+)
 
 HIDDEN = "<literal value, not shown>"
 HIDDEN_VAR_REF = "<${VAR} reference, not shown>"

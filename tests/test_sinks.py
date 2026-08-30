@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import stat
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,31 @@ def test_file_sink_creates_the_file_0600(tmp_path: Path) -> None:
     p = tmp_path / "events.jsonl"
     FileSink(str(p)).close()
     assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+
+def test_file_sink_still_opens_when_the_file_cannot_be_chmodded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file you can append to but do not OWN — another account's file at the
+    default `/tmp/baton-proxy.jsonl`, or the shared-file case this sink's own
+    docstring advertises — raises EPERM on chmod. `open(path, "a")` succeeded
+    there before, and nothing catches an OSError: `emitter.start()` is unguarded
+    (`proxy.py`), so a raise here kills `_bootstrap()` and the wrapped MCP server
+    never spawns. Hardening must not turn a working config into a dead server."""
+    p = tmp_path / "events.jsonl"
+    p.write_text("")
+    p.chmod(0o644)
+
+    def _boom(*a: object, **k: object) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    # BOTH, so the test cannot pass by patching a call the sink does not make.
+    monkeypatch.setattr(os, "chmod", _boom)
+    monkeypatch.setattr(os, "fchmod", _boom)
+    s = FileSink(str(p))
+    s.write(_evt("tool_call_end"))
+    s.close()
+    assert "tool_call_end" in p.read_text()
 
 
 def test_file_sink_hardens_an_existing_world_readable_file(tmp_path: Path) -> None:

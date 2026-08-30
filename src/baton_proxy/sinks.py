@@ -83,15 +83,35 @@ class FileSink(Sink):
     deliberately leaves alone. At the default umask that is world-readable on
     a shared box. ``os.open`` sets the mode only when it CREATES, so the chmod
     is not redundant — a file an earlier version left at 0644 stays there
-    without it, and appending is exactly when it starts holding payloads."""
+    without it, and appending is exactly when it starts holding payloads.
+
+    ``fchmod`` on the descriptor, never ``chmod`` on the path: the default sink
+    is a fixed name in a world-writable directory (``config.py``), so on the
+    shared box this hardening is FOR, the path can be a symlink another account
+    planted between the open and the chmod. The descriptor names the file we
+    actually opened.
+
+    A failure to harden is logged, not raised. An appendable file this user does
+    not own — another account's file at the default path, or the shared file
+    this docstring advertises — refuses chmod with EPERM, and ``emitter.start()``
+    is unguarded, so raising would kill the proxy at bootstrap and the wrapped
+    server would never spawn. Availability first, with the loss stated."""
 
     def __init__(self, path: str) -> None:
         if not path:
             raise ValueError("FileSink requires a non-empty path")
         self._path = path
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o600)
         self._handle: io.TextIOBase = os.fdopen(fd, "a", buffering=1, encoding="utf-8")
-        os.chmod(path, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError as exc:
+            logger.warning(
+                "baton-proxy: could not set 0600 on event file %s (%s); it holds "
+                "unredacted tool arguments and results — check its permissions",
+                path,
+                exc,
+            )
 
     def write(self, event: dict[str, Any]) -> None:
         self._handle.write(json.dumps(event) + "\n")
