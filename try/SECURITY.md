@@ -171,12 +171,23 @@ Notes a reviewer should hold onto:
   the only remaining record of your original entry.
 - **Literal values in `env` and `headers` are never printed, and a URL is printed
   as scheme and host only.** Wherever the kit displays a config entry it collapses
-  those to `<literal value, not shown>`; the key and header *names*, the command
-  and the arguments stay visible, so a printed entry is still enough to restore by
-  hand. A `${VAR}` reference is shown as-is in `env`, because it is a pointer
-  rather than a credential. This matters more here than on an ordinary command
-  line: the kit is narrated by an agent, so anything it prints is read into a
-  model's context.
+  those to `<literal value, not shown>` — or to `<${VAR} reference, not shown>`
+  where the value is a `${VAR}` pointer the kit still declines to print, so the
+  label never calls your own variable reference a literal. A `${VAR}` reference is
+  shown as-is in `env`, because it is a pointer rather than a credential; in
+  `headers` it is named but not shown, because a header is a credential slot
+  whatever shape its value takes. The key and header *names*, the command and the
+  arguments stay visible. This matters more here than on an ordinary command line:
+  the kit is narrated by an agent, so anything it prints is read into a model's
+  context.
+
+  **What a printout is enough for.** For a **stdio** entry it is enough to restore
+  by hand: the command and arguments are the entry, and only `env` values are
+  withheld. For a **remote** entry it is not — `url` and `headers` are the only
+  content an http entry has, and both are collapsed, leaving the type, a
+  scheme-and-host URL and a header name. The exact restore for those lives in the
+  state file below, which keeps the full URL and the header value verbatim, and in
+  `uninstall`, which puts them back and then compares every byte on disk.
 
   **The limit, stated plainly: a credential passed as a command-line argument
   still prints.** A server configured as `--api-key sk-…` in its `args` will show

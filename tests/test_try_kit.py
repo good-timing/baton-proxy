@@ -866,6 +866,42 @@ def test_redaction_covers_an_entry_shape_we_never_wrote():
     assert "hooks.zapier.com" in out, "scheme+host stays, so the entry is recognisable"
 
 
+def test_a_hidden_var_reference_is_not_called_a_literal():
+    """The value stays hidden either way; what changes is the claim. A header of
+    `Bearer ${ACME_TOKEN}` labelled `<literal value, not shown>` tells the reader
+    something false about their own config, inside the refusal path that exists
+    so they can reconcile it by hand."""
+    out = kit.entry_json(
+        {
+            "type": "http",
+            "url": "https://x/mcp",
+            "headers": {"Authorization": "Bearer ${ACME_TOKEN}"},
+        }
+    )
+    assert "ACME_TOKEN" not in out, "still hidden — this changes the label, not the visibility"
+    assert kit.HIDDEN_VAR_REF in out
+    assert kit.HIDDEN not in out, "nothing here is a literal"
+
+
+def test_a_literal_beside_a_var_reference_is_still_called_a_literal():
+    """The label must not fail in the other direction either. `Bearer sk-live
+    ${X}` does hold a literal, so the strict end of the rule is what keeps the
+    new label true — a contains-a-${VAR}-anywhere test would call it a pointer."""
+    out = kit.entry_json(
+        {
+            "type": "http",
+            "url": "https://x",
+            "headers": {"Authorization": "Bearer sk-live-abc ${X}"},
+            # The env rule's own documented strict edge: a composite hides, and
+            # it hides as a LITERAL, because part of it may be one.
+            "env": {"OTHER": "/usr/local/bin:${PATH}"},
+        }
+    )
+    assert "sk-live-abc" not in out
+    assert kit.HIDDEN in out
+    assert kit.HIDDEN_VAR_REF not in out
+
+
 def test_a_users_own_BATON_prefixed_variable_is_not_treated_as_ours():
     """SECURITY.md §7 explicitly contemplates a user owning a BATON_-prefixed
     variable. A prefix test would print its literal value on the grounds that we

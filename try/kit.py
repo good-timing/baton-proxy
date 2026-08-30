@@ -341,7 +341,28 @@ def safe_endpoint(url: str) -> str:
 # value may be the literal secret.
 _VAR_REF = re.compile(r"^\$\{[^}]*\}$")
 
+# The same pointer, allowed one leading scheme word — ``Bearer ${ACME_TOKEN}``,
+# the shape every remote MCP config uses. Deliberately NOT "contains a ${VAR}
+# anywhere": ``Bearer sk-live-abc ${X}`` does hold a literal, and labelling that
+# a reference would be the same false claim in the other direction.
+_VAR_REF_VALUE = re.compile(r"^(?:\S+[ \t]+)?\$\{[^}]*\}$")
+
 HIDDEN = "<literal value, not shown>"
+HIDDEN_VAR_REF = "<${VAR} reference, not shown>"
+
+
+def hidden_label(value: str) -> str:
+    """Which not-shown label is TRUE of this value.
+
+    Neither label shows anything; the choice is only about what we assert. A
+    header of ``Bearer ${ACME_TOKEN}`` is not a literal, and saying it is makes
+    a false statement about the reader's own config — inside the refusal path
+    that exists so they can reconcile it by hand.
+
+    Used for every hidden value, ``env`` and ``headers`` alike, rather than
+    fixed on the field that surfaced it: the rule is about the value, and this
+    file has already paid twice for scoping a rule to one field."""
+    return HIDDEN_VAR_REF if _VAR_REF_VALUE.match(value.strip()) else HIDDEN
 
 
 # Exactly what build_wrapped_entry writes. Keyed to the literal names rather than
@@ -364,7 +385,7 @@ def shown_env_value(key: str, value: str) -> str:
     error than printing a token that happens to sit beside one."""
     if key in _OUR_ENV_KEYS:
         return value
-    return value if _VAR_REF.match(value.strip()) else HIDDEN
+    return value if _VAR_REF.match(value.strip()) else hidden_label(value)
 
 
 def redact_entry(entry: dict) -> dict:
@@ -402,8 +423,9 @@ def redact_entry(entry: dict) -> dict:
     if isinstance(headers, dict):
         # Header names, never header values — the rule safe_endpoint already
         # follows for the candidate list. No ${VAR} exemption: a bearer header is
-        # a credential slot whatever shape its value takes.
-        out["headers"] = {k: HIDDEN for k in headers}
+        # a credential slot whatever shape its value takes. The LABEL still tells
+        # the truth about which shape it is; that costs no visibility.
+        out["headers"] = {k: hidden_label(str(v)) for k, v in headers.items()}
     url = entry.get("url")
     if isinstance(url, str) and url:
         out["url"] = safe_endpoint(url)
