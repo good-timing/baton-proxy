@@ -1161,6 +1161,25 @@ def _pump_client_to_server(child_stdin: Any, processor: MessageProcessor) -> Non
         except Exception:
             logger.exception("baton-proxy: forward to upstream failed")
 
+    # The client closed our stdin — that is how an MCP client shuts a stdio
+    # server down. Close the upstream's stdin so IT sees the same EOF and
+    # exits; without this the loop below in `run_proxy` (`child.wait()`) blocks
+    # forever, because the upstream is a healthy process waiting on a pipe
+    # nobody will ever write to again.
+    #
+    # The rest of run_proxy's shutdown hangs off that wait: `drain_pending`
+    # (so every *_start gets a matching end) and `emitter.stop()` (the queue
+    # flush) are both AFTER it. So the cost of not closing is not a stray
+    # process — it is that the client SIGTERMs us seconds later with the final
+    # events still in the queue, which is the silent-no-emit shape this whole
+    # file exists to catch, at the one moment nobody is watching. The original
+    # code assumed shutdown always begins upstream-side (a crashed server);
+    # the far commoner direction is the client quitting.
+    try:
+        child_stdin.close()
+    except Exception:
+        logger.exception("baton-proxy: closing the upstream's stdin failed")
+
 
 def _pump_server_to_client(child_stdout: Any, processor: MessageProcessor) -> None:
     """stdio server->client I/O loop. Message logic lives in the processor."""

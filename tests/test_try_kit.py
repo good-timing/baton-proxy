@@ -15,6 +15,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1213,7 +1216,7 @@ WIDE_AUDIT_RE = r"urlopen|socket|http\.client|requests\.|boto3|subprocess"
 # as (path, lineno, substring-of-the-line) so a moved line fails loudly instead
 # of a bare count quietly absorbing a swap.
 EXPECTED_AUDIT_HITS = {
-    ("src/baton_proxy/proxy.py", 1252, "subprocess.Popen("),
+    ("src/baton_proxy/proxy.py", 1271, "subprocess.Popen("),
     ("src/baton_proxy/transport_http.py", 135, "urllib.request.urlopen(req"),
     ("src/baton_proxy/transport_http.py", 187, "urlopen(timeout=inf) blocks forever"),
     ("src/baton_proxy/sinks.py", 153, "urllib.request.urlopen(req"),
@@ -1388,3 +1391,246 @@ def test_every_kit_command_in_the_docs_parses(monkeypatch, capsys):
         assert rc == 0
         assert dispatched == [f"cmd_{argv[0]}"], f"{where}: {argv} reached {dispatched}"
 
+
+# ---------------------------------------------------------------------------
+# TK-F-8 — the composed stdio path: setup writes an entry, a client launches
+# that entry, events land.
+#
+# Everything above this line tests the kit's config surgery against a config
+# object. That is the shape of the wrap, and the shape has never been the
+# failure mode. The failure mode is that the shape is right, every test above
+# is green, the prospect uses their server for five days, and `receipt` reports
+# zero — discovered at the END of a trial rather than the start. Nothing in
+# this repo composed the three parties (kit writes → client launches → proxy
+# emits) until here.
+#
+# "Exactly as the config says" is the load-bearing phrase: the entry is read
+# BACK OFF DISK and its `command`/`args`/`env` are used verbatim, so a wrap
+# that only works when a test helpfully supplies a missing PYTHONPATH fails
+# here the way it would fail on a stranger's machine.
+# ---------------------------------------------------------------------------
+
+TESTS_DIR = Path(__file__).resolve().parent
+STDIO_FIXTURE = TESTS_DIR / "fixture_server.py"
+
+# One minimal but complete MCP session. `tools/list` is not decoration: the
+# surface snapshot is emitted off the handshake+list, so a run without it
+# cannot distinguish "the proxy captured nothing" from "we never asked".
+_SESSION = [
+    {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "tk-f-8-client", "version": "0.1.0"},
+        },
+    },
+    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+    {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {"name": "echo", "arguments": {"text": "hello from a wrapped server"}},
+    },
+]
+
+TK_F_8_TENANT = "trial-tkf8"
+
+
+def _kit_home_at(home: Path):
+    """Save/restore the three module globals `kit_home` monkeypatches.
+
+    A plain fixture cannot be used here: the composed run is module-scoped (one
+    subprocess for several assertions) and `monkeypatch` is function-scoped.
+    SRC_DIR stays real deliberately — the wrap must point at the actual proxy
+    source, which is the whole thing under test."""
+    saved = (kit.TRY_DIR, kit.STATE_PATH, kit.EVENTS_PATH)
+    kit.TRY_DIR = home
+    kit.STATE_PATH = home / "state.json"
+    kit.EVENTS_PATH = home / "events.jsonl"
+    return saved
+
+
+def _drive(entry: dict, messages: list[dict], *, timeout: int = 20) -> tuple[str, str]:
+    """Launch `entry` the way an MCP client does and drive one session.
+
+    The env is the parent environment stripped of `BATON_*` (so a developer's
+    own exports cannot make a broken wrap look healthy) with the ENTRY's env
+    merged on top — which is what a client actually does. Passing only the
+    entry's env would be a different, easier test: the wrapped command is a
+    Python interpreter, and stripping the inherited environment changes how it
+    resolves its own installation."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
+    env.update({str(k): str(v) for k, v in (entry.get("env") or {}).items()})
+    proc = subprocess.Popen(
+        [entry["command"], *[str(a) for a in entry.get("args") or []]],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    payload = "".join(json.dumps(m) + "\n" for m in messages)
+    try:
+        out, err = proc.communicate(input=payload, timeout=timeout)
+    except subprocess.TimeoutExpired:  # pragma: no cover - only on a hang
+        proc.kill()
+        out, err = proc.communicate()
+        pytest.fail(
+            f"the wrapped entry did not exit within {timeout}s of the client\n"
+            f"closing stdin\nstdout:\n{out}\nstderr:\n{err}"
+        )
+    return out, err, proc.returncode
+
+
+@pytest.fixture(scope="module")
+def stdio_run(tmp_path_factory):
+    """setup → read the entry back off disk → launch it → collect what landed."""
+    home = tmp_path_factory.mktemp("kit-home")
+    saved = _kit_home_at(home)
+    try:
+        config_path = home / "mcp.json"
+        config_path.write_text(
+            canonical(
+                {
+                    "mcpServers": {
+                        "fixture": {
+                            "command": sys.executable,
+                            "args": [str(STDIO_FIXTURE)],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        rc = kit.main(
+            [
+                "setup",
+                "fixture",
+                "--config-file",
+                str(config_path),
+                "--tenant",
+                TK_F_8_TENANT,
+                "--vendor",
+                "toybox",
+            ]
+        )
+        assert rc == 0
+        entry = json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"]["fixture"]
+        stdout, stderr, returncode = _drive(entry, _SESSION)
+        # `communicate()` returns after the proxy exits, which joins its drain
+        # thread — every queued event is on disk by now, so no sleep.
+        return {
+            "entry": entry,
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": returncode,
+            "events": kit.read_events(home / "events.jsonl"),
+            "home": home,
+        }
+    finally:
+        kit.TRY_DIR, kit.STATE_PATH, kit.EVENTS_PATH = saved
+
+
+def _replies(stdout: str) -> list[dict]:
+    out = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+@pytest.mark.integration
+def test_the_session_actually_completed_through_the_wrapped_entry(stdio_run):
+    """The guard against green-by-emptiness in the other direction: if the
+    wrapped server never answered, "no events" would be a launch failure
+    reported as a capture failure, and every diagnosis below would be aimed at
+    the wrong half."""
+    replies = _replies(stdio_run["stdout"])
+    ids = {r.get("id") for r in replies}
+    assert {1, 2, 3} <= ids, (
+        f"the client did not get answers to initialize/tools/list/tools/call: {ids}\n"
+        f"stderr:\n{stdio_run['stderr']}"
+    )
+    echo = next(r for r in replies if r.get("id") == 3)
+    assert "error" not in echo, echo
+
+
+@pytest.mark.integration
+def test_the_upstream_surface_lands(stdio_run):
+    """`surface_snapshot` is what proves the handshake completed THROUGH the
+    proxy rather than around it. Its absence is the signature of a wrap that
+    launches and forwards but never observes."""
+    snapshots = [e for e in stdio_run["events"] if e.get("event_type") == "surface_snapshot"]
+    assert snapshots, (
+        "nothing captured the tool surface — the proxy was not in the path\n"
+        f"stderr:\n{stdio_run['stderr']}"
+    )
+    names = [t.get("name") for t in snapshots[0]["payload"]["tools"]]
+    assert "echo" in names, names
+    # The double-wrap check, same reasoning as the bridge grader: a snapshot is
+    # what the UPSTREAM served, so a `baton_` name here means a second proxy is
+    # nested inside the first.
+    assert not [n for n in names if str(n).startswith("baton_")], names
+
+
+@pytest.mark.integration
+def test_the_call_lands_as_a_matched_start_end_pair(stdio_run):
+    """One `tools/call` in, one start and one end out, same session, same tool.
+
+    A start with no end is the shape of a proxy that observes the request and
+    loses the response — which `receipt` would report as a healthy call count
+    while the durations and results were never captured."""
+    events = stdio_run["events"]
+    starts = [
+        e
+        for e in events
+        if e.get("event_type") == "tool_call_start" and e["payload"]["tool_name"] == "echo"
+    ]
+    ends = [
+        e
+        for e in events
+        if e.get("event_type") == "tool_call_end" and e["payload"]["tool_name"] == "echo"
+    ]
+    assert len(starts) == 1, f"expected 1 tool_call_start for echo, got {len(starts)}"
+    assert len(ends) == 1, f"expected 1 tool_call_end for echo, got {len(ends)}"
+    assert starts[0]["session_id"] == ends[0]["session_id"] is not None
+    assert starts[0]["sequence_number"] < ends[0]["sequence_number"]
+
+
+@pytest.mark.integration
+def test_every_landed_event_carries_the_tenant_setup_was_given(stdio_run):
+    """`--tenant` is how a trial's file is ours rather than everyone's. The
+    default is the sentinel `local`, and a wrap that silently kept it puts
+    every trial on earth in one merged bucket — a capture that looks complete
+    and is unattributable."""
+    events = stdio_run["events"]
+    assert events
+    assert {e.get("tenant_id") for e in events} == {TK_F_8_TENANT}
+    assert {e.get("vendor_id") for e in events} == {"toybox"}
+
+
+@pytest.mark.integration
+def test_the_wrapped_entry_exits_when_the_client_disconnects(stdio_run):
+    """Closing stdin is how an MCP client shuts a stdio server down; the server
+    is expected to exit, and a client that has to escalate to SIGTERM does so
+    after a grace period it chooses.
+
+    This was RED when the assertion was first written: `_pump_client_to_server`
+    returned on stdin EOF without closing the UPSTREAM's stdin, so the upstream
+    sat healthy on a pipe nobody would write to again and `child.wait()` never
+    returned. The damage is not a stray process. `run_proxy` hangs its entire
+    shutdown off that wait — `drain_pending`, which gives every in-flight
+    `*_start` a matching end, and `emitter.stop()`, which flushes the queue —
+    so the client's SIGTERM arrived with the last events still unwritten. A
+    trial's final call being the one that never lands is not a shape any test
+    above this line could see, because they all end at a config object."""
+    assert stdio_run["returncode"] == 0, stdio_run["stderr"]
