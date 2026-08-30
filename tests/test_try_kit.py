@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
@@ -1225,28 +1226,39 @@ EXPECTED_AUDIT_HITS = {
 }
 
 
-def _audited_files():
-    """Every file `grep -r src/ try/` would read, in a stable order."""
+# What §9's commands exclude, and what `try/.gitignore` lists: the trial's own
+# captured data. events.jsonl holds complete tool arguments and results, so a
+# reviewer who wrapped a server that talks about `subprocess.run(` has that text
+# sitting inside src|try — and the six-match promise is about OUR CODE, not
+# about what their agent happened to say. Pinned against try/.gitignore below.
+TRIAL_ARTIFACTS = ("events.jsonl", "state.json", "config-backup.*")
+
+
+def _audited_files(root: Path = REPO_ROOT):
+    """Every file §9's `grep -r src/ try/` would read, in a stable order."""
     for base in ("src", "try"):
-        for path in sorted((REPO_ROOT / base).rglob("*")):
-            if path.is_file() and "__pycache__" not in path.parts:
-                yield path
+        for path in sorted((root / base).rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            if any(fnmatch(path.name, pat) for pat in TRIAL_ARTIFACTS):
+                continue
+            yield path
 
 
-def _grep(pattern: str):
+def _grep(pattern: str, root: Path = REPO_ROOT):
     """`grep -rnE <pattern> src/ try/` as (relative_path, lineno, line)."""
     import re
 
     rx = re.compile(pattern)
     hits = []
-    for path in _audited_files():
+    for path in _audited_files(root):
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue  # grep skips binaries too
         for n, line in enumerate(text.splitlines(), start=1):
             if rx.search(line):
-                hits.append((str(path.relative_to(REPO_ROOT)), n, line))
+                hits.append((str(path.relative_to(root)), n, line))
     return hits
 
 
@@ -1268,6 +1280,54 @@ def test_security_md_section_9_narrow_grep_returns_exactly_its_six():
         "SECURITY.md §9 promises a reviewer SIX matches; this grep now returns "
         f"{len(hits)}:\n" + "\n".join(f"  {p}:{n}: {line.strip()}" for p, n, line in hits)
     )
+
+
+def test_the_audit_grep_ignores_the_trials_own_captured_data(tmp_path: Path):
+    """A reviewer who RAN the kit has try/events.jsonl in the tree it tells them
+    to grep, and that file is full of verbatim tool results. One payload quoting
+    `subprocess.run(` makes §9's six-match promise read as seven — green in CI,
+    red on the machine of the one person who actually used the thing.
+
+    Built in a tmp tree on purpose: writing try/events.jsonl in this checkout
+    would overwrite a live trial's captured events."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "try").mkdir()
+    (tmp_path / "src" / "real.py").write_text("x = subprocess.run(cmd)\n", encoding="utf-8")
+    (tmp_path / "try" / "events.jsonl").write_text(
+        '{"payload": {"result": "I ran subprocess.run(cmd) for you"}}\n', encoding="utf-8"
+    )
+    (tmp_path / "try" / "state.json").write_text('{"c": "urlopen("}\n', encoding="utf-8")
+    (tmp_path / "try" / "config-backup.20260830T000000Z.json").write_text(
+        '{"x": "Popen("}\n', encoding="utf-8"
+    )
+    assert [h[0] for h in _grep(NARROW_AUDIT_RE, root=tmp_path)] == ["src/real.py"]
+
+
+def test_section_9_excludes_every_artifact_the_kit_can_leave_behind():
+    """The exclusion has to hold in the DOCUMENT, not only in this test — the
+    reviewer runs the printed command, not our grep. And the list has to track
+    try/.gitignore: anything the kit is allowed to leave behind is something the
+    published grep will read on a used checkout."""
+    import re
+
+    gitignore = (REPO_ROOT / "try" / ".gitignore").read_text(encoding="utf-8")
+    ignored = [
+        line.strip() for line in gitignore.splitlines() if line.strip() and not line.startswith("#")
+    ]
+    assert sorted(ignored) == sorted(TRIAL_ARTIFACTS), (
+        "try/.gitignore and the audit exclusion list have drifted"
+    )
+    security_md = (REPO_ROOT / "try" / "SECURITY.md").read_text(encoding="utf-8")
+    section_9 = security_md.split("## 9.")[1]
+    grep_lines = [ln for ln in section_9.splitlines() if ln.startswith("grep -")]
+    assert len(grep_lines) >= 2, "§9's two audit greps"
+    for line in grep_lines[:2]:
+        for pattern in TRIAL_ARTIFACTS:
+            # A glob is shell-quoted in the document, and must be — unquoted,
+            # `config-backup.*` would be expanded by the shell before grep saw it.
+            assert re.search(rf"--exclude='?{re.escape(pattern)}'?", line), (
+                f"§9's published grep would still read {pattern}:\n  {line}"
+            )
 
 
 def test_one_of_the_six_is_a_comment_not_a_call_site():

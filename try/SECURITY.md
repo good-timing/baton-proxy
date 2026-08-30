@@ -455,11 +455,14 @@ The claims above are mechanical. Re-derive them:
 # 1. Every network- or process-capable call site, proxy AND kit. Six matches:
 #    the five in the §4 table, plus one comment line in transport_http.py.
 #    The kit contributes none — it only reads and writes local files.
-grep -rnE "urlopen\(|Popen\(|subprocess\.run\(|boto3\.client\(" src/ try/
+#    The excludes are YOUR data, not our code: if you have already run the kit,
+#    try/ also holds the events it captured, and a result your agent quoted can
+#    contain any string at all. Drop them on a fresh clone; keep them after.
+grep -rnE "urlopen\(|Popen\(|subprocess\.run\(|boto3\.client\(" --exclude=events.jsonl --exclude=state.json --exclude='config-backup.*' src/ try/
 
 #    Widen it if you would rather not trust our regex — this catches every
 #    mention, imports and prose included, and there are no other call sites:
-grep -rn "urlopen\|socket\|http.client\|requests\.\|boto3\|subprocess" src/ try/
+grep -rn "urlopen\|socket\|http.client\|requests\.\|boto3\|subprocess" --exclude=events.jsonl --exclude=state.json --exclude='config-backup.*' src/ try/
 
 # 2. The dependency list — expect it to be empty.
 grep -n "dependencies" pyproject.toml
