@@ -101,11 +101,17 @@ class FileSink(Sink):
         if not path:
             raise ValueError("FileSink requires a non-empty path")
         self._path = path
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        # getattr, because O_CLOEXEC and fchmod are both Unix-only: on Windows
+        # they are AttributeError, and an AttributeError here would kill
+        # `_bootstrap()` and the wrapped server with it, where the plain
+        # `open(path, "a")` this replaced simply worked. Windows ends up
+        # unhardened and warned, which is the stated posture, rather than dead.
+        cloexec = getattr(os, "O_CLOEXEC", 0)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | cloexec, 0o600)
         self._handle: io.TextIOBase = os.fdopen(fd, "a", buffering=1, encoding="utf-8")
         try:
             os.fchmod(fd, 0o600)
-        except OSError as exc:
+        except (OSError, AttributeError) as exc:
             logger.warning(
                 "baton-proxy: could not set 0600 on event file %s (%s); it holds "
                 "unredacted tool arguments and results — check its permissions",

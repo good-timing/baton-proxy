@@ -417,8 +417,8 @@ it should not leave, delete it; we will never know it existed.
   git-ignored, and it **grows without bound** for as long as the wrap is in
   place. The receipt command reports its size honestly; run it whenever you like.
   It is created `0600`, and an existing file is re-set to `0600` when the proxy
-  opens it — or, on the rare file this user cannot re-mode (one another account
-  owns), left as it is with a warning to the proxy's log rather than a refusal
+  opens it — or, on the rare file it cannot re-mode (one another account owns, or
+  a platform without the call), left as it is with a warning to the proxy's log rather than a refusal
   to start. This is the file that holds the payloads of §5 — arguments and
   results, unscrubbed per §6 — so at the default umask it would be readable by
   every account on a shared machine.
