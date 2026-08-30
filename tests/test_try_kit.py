@@ -1040,3 +1040,302 @@ def test_one_bearer_normalization_serves_both_callers():
     plus = {**sole, "headers": {**sole["headers"], "X-T": "b"}}
     assert not kit.is_wrappable(plus)
     assert kit.bearer_header(plus) == ("${T}", ["X-T"])
+
+
+# ---------------------------------------------------------------------------
+# The CLI contract.
+#
+# Everything above calls apply_wrap/apply_unwrap/cmd_* directly. `main` — the
+# argparse wiring and the exit codes it produces — had no test at all, which
+# means the surface an agent actually drives was the one surface nothing
+# pinned. kit.py:30 states the contract as "0 success, 1 refusal, 2 usage", and
+# try/CLAUDE.md is written against it: "a refusal is an answer" (CLAUDE.md:31)
+# tells the agent to relay a 1 verbatim rather than retry, and CLAUDE.md:84-86
+# promises that `receipt` and `uninstall` "will reject the flag if you pass it".
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def kit_home(tmp_path, monkeypatch):
+    """Point every path the kit writes into at a tmp dir.
+
+    Not optional cleanliness: `cmd_setup` drops a `config-backup.*` beside
+    TRY_DIR and `write_state_file` writes STATE_PATH, both of which are the
+    REAL `try/` directory by default. Without this a test run stomps a live
+    trial's state — the hazard `spikes/http_entry_wrap/run_kit_bridge_e2e.sh`
+    carries today. SRC_DIR is deliberately left real: `cmd_setup` refuses when
+    it is missing, and that refusal is not what these tests are about.
+    """
+    home = tmp_path / "kit-home"
+    home.mkdir()
+    monkeypatch.setattr(kit, "TRY_DIR", home)
+    monkeypatch.setattr(kit, "STATE_PATH", home / "state.json")
+    monkeypatch.setattr(kit, "EVENTS_PATH", home / "events.jsonl")
+    return home
+
+
+def _config(tmp_path, data) -> Path:
+    path = tmp_path / "mcp.json"
+    path.write_text(canonical(data), encoding="utf-8")
+    return path
+
+
+def test_setup_returns_zero_through_main(tmp_path, kit_home, capsys):
+    """The success leg of the 0/1/2 contract, driven the way the agent drives
+    it. `cmd_setup` returning 0 is already implied by other tests; that `main`
+    hands that 0 back rather than swallowing it is not."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    rc = kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "trial-t"])
+    assert rc == 0
+    assert (kit_home / "state.json").exists()
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("cmd", ["receipt", "uninstall"])
+def test_receipt_and_uninstall_reject_the_config_file_flag(cmd, tmp_path, kit_home):
+    """CLAUDE.md:84-86 tells the agent `--config-file` is setup-only because the
+    path is recorded in state.json, so the other two find it themselves. The
+    mechanism is that neither subparser declares the flag — so this is argparse
+    RAISING SystemExit(2), not a Refuse returning 1. Asserting the code and not
+    merely "it failed" is the point: a 1 here would read to the agent as a
+    refusal to relay, and a 2 as its own malformed command."""
+    with pytest.raises(SystemExit) as exc:
+        kit.main([cmd, "--config-file", str(tmp_path / "mcp.json")])
+    assert exc.value.code == 2
+
+
+def test_no_subcommand_is_a_usage_error(kit_home):
+    """`add_subparsers(required=True)`. A bare `kit.py` must not print a receipt
+    or, worse, do something."""
+    with pytest.raises(SystemExit) as exc:
+        kit.main([])
+    assert exc.value.code == 2
+
+
+def test_a_refusal_returns_one_and_says_so_only_on_stderr(kit_home, capsys):
+    """The refusal leg. `main` catches Refuse, prefixes it with `kit.py <cmd>: `
+    and returns 1 — it does not raise, and it does not print to stdout.
+
+    stdout staying empty is load-bearing rather than tidy: CLAUDE.md:63-77 has
+    the agent orient by reading `receipt`'s stdout, and a refusal leaking into
+    that stream is a refusal an agent can mistake for a report."""
+    rc = kit.main(["uninstall"])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert out == ""
+    assert err.startswith("kit.py uninstall: ")
+    assert "nothing recorded to reverse" in err
+
+
+def test_setup_refusal_also_returns_one(tmp_path, kit_home, capsys):
+    """The same leg reached through a different command, because `main`'s except
+    clause names `args.cmd` — a refusal raised under `setup` must be labelled
+    `setup`, not carry whichever command was added to the parser first."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    rc = kit.main(["setup", "nosuchserver", "--config-file", str(path)])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert out == ""
+    assert err.startswith("kit.py setup: ")
+
+
+# ---------------------------------------------------------------------------
+# SECURITY.md §9's audit greps.
+#
+# §9 hands a reviewer four commands and tells them what to expect. Those are
+# the most load-bearing sentences in the document — they are the ones a
+# skeptical reader runs FIRST, and the whole point of the kit is that its
+# claims are mechanical rather than promised. Nothing enforced them, and one of
+# the six expected matches is a COMMENT line, so an ordinary reword falsifies a
+# published security document with every test still green.
+#
+# Asserted as a match SET rather than a count: a count survives a deleted call
+# site paired with a new one, which is the swap that matters most.
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = KIT_PATH.resolve().parent.parent
+
+# SECURITY.md:443, transcribed. The ERE maps to Python's `re` unchanged.
+NARROW_AUDIT_RE = r"urlopen\(|Popen\(|subprocess\.run\(|boto3\.client\("
+# SECURITY.md:447, the widened form offered to a reviewer who would rather not
+# trust our regex.
+WIDE_AUDIT_RE = r"urlopen|socket|http\.client|requests\.|boto3|subprocess"
+
+# The five call sites of §4's table, plus the one comment line §9 names. Stored
+# as (path, lineno, substring-of-the-line) so a moved line fails loudly instead
+# of a bare count quietly absorbing a swap.
+EXPECTED_AUDIT_HITS = {
+    ("src/baton_proxy/proxy.py", 1252, "subprocess.Popen("),
+    ("src/baton_proxy/transport_http.py", 135, "urllib.request.urlopen(req"),
+    ("src/baton_proxy/transport_http.py", 187, "urlopen(timeout=inf) blocks forever"),
+    ("src/baton_proxy/sinks.py", 125, "urllib.request.urlopen(req"),
+    ("src/baton_proxy/sinks.py", 157, 'boto3.client("s3")'),
+    ("src/baton_proxy/scan.py", 510, "subprocess.run(cmd"),
+}
+
+
+def _audited_files():
+    """Every file `grep -r src/ try/` would read, in a stable order."""
+    for base in ("src", "try"):
+        for path in sorted((REPO_ROOT / base).rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts:
+                yield path
+
+
+def _grep(pattern: str):
+    """`grep -rnE <pattern> src/ try/` as (relative_path, lineno, line)."""
+    import re
+
+    rx = re.compile(pattern)
+    hits = []
+    for path in _audited_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue  # grep skips binaries too
+        for n, line in enumerate(text.splitlines(), start=1):
+            if rx.search(line):
+                hits.append((str(path.relative_to(REPO_ROOT)), n, line))
+    return hits
+
+
+def test_security_md_section_9_narrow_grep_returns_exactly_its_six():
+    """§9: "Six matches: the five in the §4 table, plus one comment line in
+    transport_http.py."
+
+    Note what makes this stable at all: SECURITY.md quotes the regex as
+    `urlopen\\(` — escaped — so the document does not match its own grep.
+    Unescaping it while editing the doc would add two matches and make the
+    sentence wrong, which is exactly the class this pins."""
+    hits = _grep(NARROW_AUDIT_RE)
+    found = {(p, n, line.strip()) for p, n, line in hits}
+    for path, lineno, needle in EXPECTED_AUDIT_HITS:
+        assert any(p == path and n == lineno and needle in line for p, n, line in found), (
+            f"§9's expected match is gone or moved: {path}:{lineno} ({needle!r})"
+        )
+    assert len(hits) == 6, (
+        "SECURITY.md §9 promises a reviewer SIX matches; this grep now returns "
+        f"{len(hits)}:\n" + "\n".join(f"  {p}:{n}: {line.strip()}" for p, n, line in hits)
+    )
+
+
+def test_one_of_the_six_is_a_comment_not_a_call_site():
+    """§9 distinguishes "the five in the §4 table" from "one comment line". A
+    reviewer counting call sites and getting six would conclude the table is
+    incomplete — so the comment is part of the claim, not noise around it."""
+    hits = _grep(NARROW_AUDIT_RE)
+    comments = [(p, n) for p, n, line in hits if line.strip().startswith("#")]
+    assert comments == [("src/baton_proxy/transport_http.py", 187)]
+
+
+def test_the_kit_contributes_no_audited_call_site():
+    """§9: "The kit contributes none — it only reads and writes local files."
+    The narrow grep covers `try/` precisely so a reviewer can see that zero."""
+    assert [h for h in _grep(NARROW_AUDIT_RE) if h[0].startswith("try/")] == []
+
+
+def test_the_widened_grep_introduces_no_new_call_site():
+    """§9's second command exists for a reviewer who would rather not trust our
+    regex: "this catches every mention, imports and prose included, and there
+    are no other call sites."
+
+    So the widened set may grow freely with prose and imports — but any line in
+    it that CALLS something network- or process-capable must already be one of
+    the six. This is the assertion that catches a `requests.post(` or a
+    `socket.socket(` the narrow regex was never written to see."""
+    import re
+
+    call_rx = re.compile(
+        r"(urlopen|Popen|subprocess\.run|boto3\.client|requests\.\w+|http\.client\.\w+|socket\.socket)\s*\("
+    )
+    narrow = {(p, n) for p, n, _ in _grep(NARROW_AUDIT_RE)}
+    strays = [
+        (p, n, line.strip())
+        for p, n, line in _grep(WIDE_AUDIT_RE)
+        if p.endswith(".py") and call_rx.search(line) and (p, n) not in narrow
+    ]
+    assert not strays, "call site the narrow §9 grep cannot see: " + repr(strays)
+
+
+def test_the_dependency_list_is_still_empty():
+    """§9 step 2: "The dependency list — expect it to be empty." A reviewer runs
+    `grep -n dependencies pyproject.toml` and reads the answer off the line, so
+    the claim is about the shipped install, not about `[dev]`."""
+    import tomllib
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert data["project"]["dependencies"] == []
+
+
+# ---------------------------------------------------------------------------
+# The documented commands parse.
+#
+# `try/CLAUDE.md` is not documentation the agent might read — it is auto-loaded
+# when someone runs `claude` from `try/`, so every invocation in it is a command
+# the agent WILL run, verbatim, on a stranger's machine. A flag rename that
+# leaves the doc behind teaches a command that exits 2 on first use, and the
+# agent has been told (CLAUDE.md:31) not to retry with different flags.
+#
+# Parse-only. Nothing here executes; `parse_args` is the whole assertion.
+# ---------------------------------------------------------------------------
+
+# Placeholders the docs use for a value the person supplies. Substituted rather
+# than skipped, because dropping the argument would test a different command
+# than the one on the page.
+_DOC_PLACEHOLDERS = {
+    "<server-name>": "notion",
+    "<name>": "notion",
+    "<label>": "trial-doc",
+}
+
+
+def _documented_kit_commands():
+    """Every `python3 kit.py …` invocation in the two docs, as argv."""
+    import re
+    import shlex
+
+    # Stop at a `#` comment (CLAUDE.md's cheat-sheet annotates each line) or at
+    # the closing backtick of an inline-code span.
+    rx = re.compile(r"python3 kit\.py ([^`\n#]*)")
+    for doc in ("CLAUDE.md", "SECURITY.md"):
+        path = REPO_ROOT / "try" / doc
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            for m in rx.finditer(line):
+                tail = m.group(1).strip().rstrip(".")
+                argv = [_DOC_PLACEHOLDERS.get(tok, tok) for tok in shlex.split(tail)]
+                yield f"try/{doc}:{n}", argv
+
+
+def test_the_docs_document_commands_that_actually_exist():
+    """Guard against the guard: if the extractor silently matches nothing, this
+    file passes while checking zero commands — the green-by-emptiness failure."""
+    found = list(_documented_kit_commands())
+    assert len(found) >= 6, f"extractor found only {len(found)}; the docs have more"
+    assert {tuple(argv[:1]) for _, argv in found} == {("setup",), ("receipt",), ("uninstall",)}
+
+
+def test_every_kit_command_in_the_docs_parses(monkeypatch, capsys):
+    """Driven through `main` with the three handlers stubbed, so the parse is
+    real and nothing runs.
+
+    Through `main` rather than a parser built here, because kit.py builds its
+    parser inline and the alternative was to refactor shipped, security-reviewed
+    code for testability. The stub buys a second assertion for free: not just
+    that argparse accepts the argv, but that it dispatches to the handler the
+    document's reader would expect."""
+    dispatched: list[str] = []
+    for name in ("cmd_setup", "cmd_receipt", "cmd_uninstall"):
+        monkeypatch.setattr(kit, name, lambda _args, _n=name: dispatched.append(_n) or 0)
+
+    for where, argv in _documented_kit_commands():
+        dispatched.clear()
+        try:
+            rc = kit.main(argv)
+        except SystemExit as e:  # pragma: no cover - only on a real regression
+            pytest.fail(
+                f"{where} documents a command argparse rejects "
+                f"(exit {e.code}): python3 kit.py {' '.join(argv)}\n"
+                f"{capsys.readouterr().err}"
+            )
+        assert rc == 0
+        assert dispatched == [f"cmd_{argv[0]}"], f"{where}: {argv} reached {dispatched}"

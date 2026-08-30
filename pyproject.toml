@@ -62,3 +62,23 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# strict_markers, which baton and baton-console do not set, because this repo
+# shipped `make test-fast -m "not slow and not integration"` against a marker
+# list that did not exist. Registration alone downgrades a typo'd marker from a
+# silent no-op to a warning in a `-q` run nobody reads; strict makes it a
+# collection error. The filter is the whole point of the lane, so it must not be
+# able to quietly select everything.
+#
+# The ini option, NOT `addopts = ["--strict-markers"]` -- measured on pytest
+# 9.0.3: addopts IS applied (a bogus flag there is a usage error), but the CLI
+# flag routed through it does not enable the check, while the same flag typed on
+# the command line does. `--strict-markers` is documented as "Enables the
+# strict_markers option", so set the option.
+strict_markers = true
+markers = [
+    "slow: long-running (soak/stress); excluded from make test-fast",
+    # Needs something outside this process: a spawned proxy, a fixture server on
+    # a real port, a real `claude` binary.
+    "integration: drives a real subprocess or a real server",
+    "perf: wall-clock latency/overhead assertions; noisy on shared CI runners by nature, so CI-gated as continue-on-error rather than merge-blocking. Excluded from make test-fast.",
+]
