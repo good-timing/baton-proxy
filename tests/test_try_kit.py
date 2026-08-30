@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -1694,3 +1695,247 @@ def test_the_wrapped_entry_exits_when_the_client_disconnects(stdio_run):
     trial's final call being the one that never lands is not a shape any test
     above this line could see, because they all end at a config object."""
     assert stdio_run["returncode"] == 0, stdio_run["stderr"]
+
+
+# ---------------------------------------------------------------------------
+# TK-F-9 — the composed bridge path.
+#
+# Same shape as TK-F-8 one transport over: the kit rewrites a remote entry into
+# the proxy's `--url` bridge, moving the bearer out of a `headers` slot and into
+# `BATON_UPSTREAM_AUTH_TOKEN`. Four parties now, not three — kit writes, client
+# launches, bearer travels, events land — and until this test the composed path
+# was first exercised on a prospect's machine.
+#
+# The graders are lifted from `baton-internal/spikes/http_entry_wrap/
+# check_kit_bridge.py:29-34,:54-55`, WITH their reasoning, because they were
+# spending an LLM to grade something a scripted client can grade for free. The
+# design note's residue for the agent tier is narrow and none of it is here:
+# `${VAR}` expansion is a CLIENT behaviour, and a session's MCP server set
+# binding at client startup is what makes the restart step load-bearing.
+#
+# Both credential shapes run. The literal arm has no stand-in anywhere: the
+# token in the config IS the token on the wire, so every assertion grades the
+# product. The reference arm needs the client's half played by this test, which
+# is stated on the assertion rather than hidden — it is the shape every remote
+# MCP config actually uses, so a chain that only works for literals is a chain
+# that works for nobody.
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(TESTS_DIR))
+import fixture_http_server  # noqa: E402
+
+# Contains the word "bearer" ON PURPOSE, lifted from the spike's sentinel. It is
+# what makes the token-split check below a real check: a grader that counted
+# occurrences of "bearer" in the header would be grading the fixture's own
+# choice of string instead of the wire.
+TK_F_9_SENTINEL = "sentinel-bearer-4f2a91"
+TK_F_9_TENANT = "trial-tkf9"
+
+# The two wrappable remote shapes. `literal` is graded end to end with nothing
+# standing in; `reference` needs this test to expand `${TK_F_9_TOKEN}` the way
+# an MCP client does before launch.
+_CREDENTIAL_SHAPES = ["literal", "reference"]
+
+
+@pytest.fixture(scope="module", params=_CREDENTIAL_SHAPES)
+def bridge_run(request, tmp_path_factory):
+    """setup on a remote entry → launch the bridge → collect both sides."""
+    shape = request.param
+    httpd = fixture_http_server.serve(0, require_auth=TK_F_9_SENTINEL)
+    host, port = httpd.server_address[:2]
+    url = f"http://{host}:{port}/mcp"
+    server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    server_thread.start()
+
+    home = tmp_path_factory.mktemp(f"kit-home-bridge-{shape}")
+    saved = _kit_home_at(home)
+    try:
+        header = f"Bearer {TK_F_9_SENTINEL}" if shape == "literal" else "Bearer ${TK_F_9_TOKEN}"
+        config_path = home / "mcp.json"
+        config_path.write_text(
+            canonical(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "type": "http",
+                            "url": url,
+                            "headers": {"Authorization": header},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        rc = kit.main(
+            [
+                "setup",
+                "remote",
+                "--config-file",
+                str(config_path),
+                "--tenant",
+                TK_F_9_TENANT,
+                "--vendor",
+                "toybox-remote",
+            ]
+        )
+        assert rc == 0
+        entry = json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"]["remote"]
+
+        launch = dict(entry)
+        if shape == "reference":
+            # The client's half, played here and nowhere else. A real MCP client
+            # expands `${VAR}` in an entry's env against its own environment at
+            # launch; the kit deliberately never resolves it, which is what
+            # keeps "we never see a credential" true for the remote class. That
+            # ONE substitution is the only stand-in in this test.
+            launch["env"] = {
+                k: (TK_F_9_SENTINEL if v == "${TK_F_9_TOKEN}" else v)
+                for k, v in entry["env"].items()
+            }
+
+        stdout, stderr, returncode = _drive(launch, _SESSION)
+        return {
+            "shape": shape,
+            "entry": entry,
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": returncode,
+            "events": kit.read_events(home / "events.jsonl"),
+            "authorizations": list(httpd.authorizations),
+        }
+    finally:
+        kit.TRY_DIR, kit.STATE_PATH, kit.EVENTS_PATH = saved
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.mark.integration
+def test_the_bridge_session_completed_and_the_process_exited(bridge_run):
+    """Green-by-emptiness guard plus the shutdown property, which the stdio path
+    has already had to pay for once.
+
+    `run_http_proxy` is a SEPARATE shutdown implementation from `run_proxy` — a
+    main-thread stdin loop with its own drain-and-stop in a `finally` — so the
+    stdio fix does not cover it and its clean exit cannot be assumed from the
+    other test passing."""
+    replies = _replies(bridge_run["stdout"])
+    assert {1, 2, 3} <= {r.get("id") for r in replies}, bridge_run["stderr"]
+    assert bridge_run["returncode"] == 0, bridge_run["stderr"]
+
+
+@pytest.mark.integration
+def test_the_bearer_arrived_at_the_upstream(bridge_run):
+    """No header at all is the signature of a bridge that dropped the credential
+    on the way — which presents to the prospect as their own remote server
+    refusing them, days after setup said everything was fine."""
+    assert bridge_run["authorizations"], (
+        "no Authorization header ever arrived at the upstream\n" + bridge_run["stderr"]
+    )
+
+
+@pytest.mark.integration
+def test_every_authorization_value_is_exactly_two_parts(bridge_run):
+    """Token-wise, NOT substring — lifted verbatim from the spike's grader with
+    its reason: the sentinel itself contains the word "bearer", so counting
+    occurrences grades the fixture instead of the wire.
+
+    Two parts is also what catches the doubled prefix. The kit strips `Bearer `
+    when it moves the value into `BATON_UPSTREAM_AUTH_TOKEN` precisely because
+    the bridge re-adds it; a regression on either side yields
+    `Bearer Bearer <tok>`, which an upstream rejects with a 401 that names
+    nothing."""
+    values = sorted(set(bridge_run["authorizations"]))
+    # Not decoration: a loop over an empty list passes, so under a mutation that
+    # drops the header entirely this grader went green while the run had failed
+    # completely. Found by mutating, which is the only way that shape is ever
+    # found.
+    assert values, "nothing to grade — no Authorization header arrived at all"
+    for value in values:
+        parts = value.split()
+        assert len(parts) == 2 and parts[0].lower() == "bearer", (
+            f"malformed Authorization: {value!r} (want exactly `Bearer <token>`)"
+        )
+
+
+@pytest.mark.integration
+def test_no_unexpanded_variable_reference_reached_the_wire(bridge_run):
+    """A literal `${` upstream means the reference was never resolved by anyone.
+
+    On the `literal` arm this grades the product outright: the kit must move the
+    value across without mangling it into something reference-shaped. On the
+    `reference` arm the expansion is this test's, so what it grades is narrower
+    and still worth having — that the kit wrote the reference somewhere a client
+    CAN expand, rather than into a slot the client never looks at."""
+    values = sorted(set(bridge_run["authorizations"]))
+    assert values, "nothing to grade — no Authorization header arrived at all"
+    for value in values:
+        assert "${" not in value, (
+            f"a literal ${{VAR}} reached the wire — nothing expanded it: {value!r}"
+        )
+
+
+@pytest.mark.integration
+def test_the_token_on_the_wire_is_the_one_from_the_config(bridge_run):
+    """The value, not just the shape. A bridge that sent a well-formed bearer
+    carrying the wrong token would pass every assertion above it."""
+    tokens = {v.split()[1] for v in bridge_run["authorizations"] if len(v.split()) == 2}
+    assert tokens == {TK_F_9_SENTINEL}, tokens
+
+
+@pytest.mark.integration
+def test_the_remote_surface_lands_and_no_proxy_is_nested(bridge_run):
+    """`surface_snapshot` records what the UPSTREAM served. Its absence means the
+    handshake did not complete through the proxy; a `baton_`-prefixed name in it
+    means two proxies are nested, because the outer one would be seeing the
+    inner one's injected tools as if they were the vendor's. Both graders come
+    from the spike, where the second cost an LLM call to reach."""
+    snapshots = [e for e in bridge_run["events"] if e.get("event_type") == "surface_snapshot"]
+    assert snapshots, (
+        "no surface_snapshot — the handshake did not complete through the proxy\n"
+        + bridge_run["stderr"]
+    )
+    names = [t.get("name") for t in snapshots[0]["payload"]["tools"]]
+    assert "echo" in names, names
+    assert not [n for n in names if str(n).startswith("baton_")], (
+        f"upstream served a baton_ tool — two proxies are nested: {names}"
+    )
+
+
+@pytest.mark.integration
+def test_the_bridged_call_lands_with_the_tenant_label(bridge_run):
+    """The same end-of-chain assertion as the stdio path: a matched pair, on the
+    tenant setup was given. `--tenant` is what makes a trial's file ours rather
+    than everyone's."""
+    events = bridge_run["events"]
+    starts = [
+        e
+        for e in events
+        if e.get("event_type") == "tool_call_start" and e["payload"]["tool_name"] == "echo"
+    ]
+    ends = [
+        e
+        for e in events
+        if e.get("event_type") == "tool_call_end" and e["payload"]["tool_name"] == "echo"
+    ]
+    assert len(starts) == 1, f"expected 1 tool_call_start for echo, got {len(starts)}"
+    assert len(ends) == 1, f"expected 1 tool_call_end for echo, got {len(ends)}"
+    assert events
+    assert {e.get("tenant_id") for e in events} == {TK_F_9_TENANT}
+
+
+@pytest.mark.integration
+def test_the_kit_never_wrote_the_credential_into_the_config(bridge_run):
+    """The composed proof of the promise the unit tests make about the wrap: on
+    the reference arm the entry on disk must still hold `${TK_F_9_TOKEN}` and no
+    resolved value, because the kit resolves nothing. Asserted here as well as
+    upstairs because this is the entry that was actually LAUNCHED — a
+    transformation that only holds for a config object nobody runs is not the
+    promise."""
+    on_disk = json.dumps(bridge_run["entry"])
+    if bridge_run["shape"] == "reference":
+        assert "${TK_F_9_TOKEN}" in on_disk
+        assert TK_F_9_SENTINEL not in on_disk
+    else:
+        # The literal was already in the config the user wrote; the kit moved it
+        # between slots and must not have copied it into a second one.
+        assert on_disk.count(TK_F_9_SENTINEL) == 1

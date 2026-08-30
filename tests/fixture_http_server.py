@@ -17,6 +17,9 @@ What it exercises, deliberately:
 * **Bearer auth.** When ``serve(require_auth=<token>)`` is set, every POST must
   carry ``Authorization: Bearer <token>`` or the server returns 401. Lets the
   auth test assert the header is threaded from ``BATON_UPSTREAM_AUTH_TOKEN``.
+  Every raw ``Authorization`` value seen is appended to ``server.authorizations``
+  whether it passes the gate or not, so a test can grade the value's SHAPE
+  rather than only its correctness.
 * **Session id.** The ``initialize`` response carries an ``Mcp-Session-Id``
   header; the fixture then *requires* that header to be echoed on every
   subsequent request (409 otherwise), so a test can prove the proxy captures
@@ -112,6 +115,18 @@ class _Handler(BaseHTTPRequestHandler):
         self.server.last_user_agent = self.headers.get("User-Agent")  # type: ignore[attr-defined]
         self.server.last_via = self.headers.get("Via")  # type: ignore[attr-defined]
 
+        # Every Authorization value seen, RAW and before the gate below judges
+        # it. The gate is an equality check, so it can only answer "right or
+        # wrong" — and the interesting failures are the ones that would be
+        # wrong in a specific way a test wants to name: an unexpanded ``${VAR}``
+        # the client never resolved, a doubled ``Bearer Bearer``, a value that
+        # does not split into two parts. Recorded before the 401 return so a
+        # rejected attempt is visible too; otherwise a run that never
+        # authenticated looks the same as a run that never sent a header.
+        auth = self.headers.get("Authorization")
+        if auth is not None:
+            self.server.authorizations.append(auth)  # type: ignore[attr-defined]
+
         # --- Auth gate -----------------------------------------------------
         required = getattr(self.server, "require_auth", None)
         if required:
@@ -201,6 +216,7 @@ def serve(
     httpd.initialize_sse = initialize_sse  # type: ignore[attr-defined]
     httpd.last_user_agent = None  # type: ignore[attr-defined]
     httpd.last_via = None  # type: ignore[attr-defined]
+    httpd.authorizations = []  # type: ignore[attr-defined]
     return httpd
 
 
