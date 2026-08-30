@@ -16,10 +16,12 @@ install:
 test:
 	$(BIN)/pytest -q
 
-# Fast subset for tight iteration loops — skips tests marked `slow` or
-# `integration`. Equivalent to `make test` until those markers are applied.
+# Fast subset for tight iteration loops — skips tests marked `slow`,
+# `integration` or `perf`. Equivalent to `make test` until those markers are
+# applied. Every marker whose description claims exclusion here has to be in
+# this expression; tests/test_tooling.py pins that.
 test-fast:
-	$(BIN)/pytest -q -m "not slow and not integration"
+	$(BIN)/pytest -q -m "not slow and not integration and not perf"
 
 # `.` and not `src/ tests/` — try/kit.py is shipped code a prospect's security
 # reviewer reads, and it lived outside every local gate. `.` is also literally

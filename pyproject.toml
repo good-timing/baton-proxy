@@ -80,5 +80,5 @@ markers = [
     # Needs something outside this process: a spawned proxy, a fixture server on
     # a real port, a real `claude` binary.
     "integration: drives a real subprocess or a real server",
-    "perf: wall-clock latency/overhead assertions; noisy on shared CI runners by nature, so CI-gated as continue-on-error rather than merge-blocking. Excluded from make test-fast.",
+    "perf: wall-clock latency/overhead assertions; noisy on shared runners by nature. Excluded from make test-fast. NOT separately CI-gated — CI runs the whole suite, so a perf test IS merge-blocking today; give it wide margins or a soft lane before adding one.",
 ]
