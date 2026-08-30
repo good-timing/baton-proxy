@@ -28,6 +28,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import sys
 import urllib.error
 import urllib.parse
@@ -75,15 +76,22 @@ class FileSink(Sink):
     Line-buffered text mode: each write() flushes on the trailing newline so
     a `tail -f` or `cat` observer sees events immediately. POSIX append +
     one write() per event keeps lines atomic up to PIPE_BUF — multiple
-    proxies sharing the same file won't shred each other's lines."""
+    proxies sharing the same file won't shred each other's lines.
+
+    The file is 0600, not the default umask, because of what is IN it: every
+    tool call's full arguments and full results, business data the scrubber
+    deliberately leaves alone. At the default umask that is world-readable on
+    a shared box. ``os.open`` sets the mode only when it CREATES, so the chmod
+    is not redundant — a file an earlier version left at 0644 stays there
+    without it, and appending is exactly when it starts holding payloads."""
 
     def __init__(self, path: str) -> None:
         if not path:
             raise ValueError("FileSink requires a non-empty path")
         self._path = path
-        self._handle: io.TextIOBase = open(  # noqa: SIM115 — closed in .close()
-            path, "a", buffering=1, encoding="utf-8"
-        )
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        self._handle: io.TextIOBase = os.fdopen(fd, "a", buffering=1, encoding="utf-8")
+        os.chmod(path, 0o600)
 
     def write(self, event: dict[str, Any]) -> None:
         self._handle.write(json.dumps(event) + "\n")

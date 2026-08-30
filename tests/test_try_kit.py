@@ -1168,8 +1168,8 @@ EXPECTED_AUDIT_HITS = {
     ("src/baton_proxy/proxy.py", 1252, "subprocess.Popen("),
     ("src/baton_proxy/transport_http.py", 135, "urllib.request.urlopen(req"),
     ("src/baton_proxy/transport_http.py", 187, "urlopen(timeout=inf) blocks forever"),
-    ("src/baton_proxy/sinks.py", 125, "urllib.request.urlopen(req"),
-    ("src/baton_proxy/sinks.py", 157, 'boto3.client("s3")'),
+    ("src/baton_proxy/sinks.py", 133, "urllib.request.urlopen(req"),
+    ("src/baton_proxy/sinks.py", 165, 'boto3.client("s3")'),
     ("src/baton_proxy/scan.py", 510, "subprocess.run(cmd"),
 }
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,32 @@ def test_file_sink_flushes_per_line(tmp_path: Path) -> None:
 def test_file_sink_empty_path_raises() -> None:
     with pytest.raises(ValueError, match="non-empty path"):
         FileSink("")
+
+
+def test_file_sink_creates_the_file_0600(tmp_path: Path) -> None:
+    """The event file holds every tool call's full arguments and full results —
+    business data the scrubber deliberately does not touch. Created at the
+    default umask it is world-readable on a shared box, which republishes the
+    payloads to every account on it."""
+    p = tmp_path / "events.jsonl"
+    FileSink(str(p)).close()
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+
+def test_file_sink_hardens_an_existing_world_readable_file(tmp_path: Path) -> None:
+    """``os.open`` sets the mode only when it CREATES, so the chmod is not
+    redundant: a file left behind by an earlier version — or by an operator's
+    own ``touch`` — stays 0644 without it, and appending to it is precisely
+    when it starts holding payloads."""
+    p = tmp_path / "events.jsonl"
+    p.write_text('{"event_type": "tool_call_start"}\n')
+    p.chmod(0o644)
+    s = FileSink(str(p))
+    s.write(_evt("tool_call_end"))
+    s.close()
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    # Hardening must not truncate what was already recorded.
+    assert len(p.read_text().splitlines()) == 2
 
 
 # =============================================================================
