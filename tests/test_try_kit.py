@@ -3659,3 +3659,20 @@ def test_the_ending_splits_a_clobbered_capture_from_an_empty_one():
     )
 
 
+def test_setups_come_back_line_follows_the_kit_directory_under_test(tmp_path, kit_home, capsys):
+    """`kit_home` monkeypatches `kit.TRY_DIR`, which a module-level f-string
+    freezes past. Production is unaffected — `TRY_DIR` comes off `__file__` —
+    but every setup assertion would then be reading the developer's own
+    checkout path, and a future pin on "the come-back line names the kit
+    directory" would pass while checking the wrong one."""
+    path = _project_config(tmp_path, "/Users/someone/work/app")
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    out, _err = capsys.readouterr()
+    # Scoped to the come-back line. `str(kit.TRY_DIR) in out` passes on the
+    # `backup:` line above it, which reads TRY_DIR at call time and always did —
+    # so the whole-output form is green while the line under test is wrong.
+    tail = out[out.index("python3 kit.py receipt") :]
+    line = next(ln for ln in tail.splitlines() if ln.startswith("from "))
+    assert line == f"from {kit.TRY_DIR}", f"the come-back line names another directory:\n{line}"
+
+

@@ -84,6 +84,12 @@ _PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
 # gets redacted: an http entry hides its header values and shortens its url to
 # scheme and host, and a pointer that mentioned only env would leave someone
 # staring at a truncated URL with no idea it was deliberate.
+STATE_POINTER = (
+    "\n\n  What is hidden above is hidden, not lost — env and header values shown\n"
+    "  as `<literal …>`, and any URL shortened to scheme and host. The entry\n"
+    "  exactly as it was is in try/state.json under `original_entry`."
+)
+
 # The one address this kit names, and the only one it ever will. Pinned as a
 # constant because CLAUDE.md says it too, and a document that names a different
 # address than the code prints is wrong in the single place a person acts on it
@@ -95,6 +101,7 @@ _PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
 # anywhere by knowing where a file may go.
 TEAM_EMAIL = "team@goodtiming.ai"
 
+
 # Setup is the last thing that speaks before the kit goes quiet. Once they walk
 # away from that window there is no agent anywhere that knows this kit exists,
 # and nothing in the session they open next mentions Baton — so the ending is
@@ -103,15 +110,24 @@ TEAM_EMAIL = "team@goodtiming.ai"
 # Future-conditional throughout. Nothing has been captured at setup time and
 # nothing may ever be, so this says what they will find, never that there is
 # something to send.
-COME_BACK = (
-    "Use the server the way you normally would, then come back and run\n"
-    "  python3 kit.py receipt\n"
-    # On its own line: this path is interpolated and can be long, and a sentence
-    # continuing after it wraps past 80 columns on an ordinary checkout.
-    f"from {TRY_DIR}\n\n"
-    "Run it early — the first day, not the last. An empty file on day one is a\n"
-    "five-minute fix; on day five it is a wasted trial."
-)
+def come_back() -> str:
+    """Where to run `receipt` from, and when.
+
+    A function rather than a module constant because `TRY_DIR` is read at call
+    time everywhere else in this file, and the tests relocate it. A module-level
+    f-string freezes the developer's own checkout into the string at import,
+    which production never notices — `TRY_DIR` comes off `__file__` — and which
+    silently points every assertion about this line at the wrong directory."""
+    return (
+        "Use the server the way you normally would, then come back and run\n"
+        "  python3 kit.py receipt\n"
+        # On its own line: this path is interpolated and can be long, and a
+        # sentence continuing after it wraps past 80 columns.
+        f"from {TRY_DIR}\n\n"
+        "Run it early — the first day, not the last. An empty file on day one is\n"
+        "a five-minute fix; on day five it is a wasted trial."
+    )
+
 
 ENDING_NOTE = (
     "How the trial ends, while you still have this window:\n\n"
@@ -125,11 +141,6 @@ ENDING_NOTE = (
     "you run `python3 kit.py uninstall`."
 )
 
-STATE_POINTER = (
-    "\n\n  What is hidden above is hidden, not lost — env and header values shown\n"
-    "  as `<literal …>`, and any URL shortened to scheme and host. The entry\n"
-    "  exactly as it was is in try/state.json under `original_entry`."
-)
 
 # Not "fully quit and reopen", which was false and was verified false: a second
 # terminal picked the wrap up with the original session still running. Each
@@ -1295,7 +1306,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         # days later has usually lost the window that carried it — a multi-day
         # trial is what the kit asks for, so cold re-entry is the normal case.
         print(f"\n{start_where(state['scope'], state['config_path'])}")
-        print(f"\n{COME_BACK}")
+        print(f"\n{come_back()}")
         print(f"\n{ENDING_NOTE}")
         return 0
 
@@ -1434,7 +1445,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     # exist, and after the handoff no agent anywhere else knows the kit is here.
     print("\nLeave this window open — it holds the security detail and the diff above.")
     print(f"\n{start_where(scope, path)}")
-    print(f"\n{COME_BACK}")
+    print(f"\n{come_back()}")
     print(f"\n{ENDING_NOTE}")
     return 0
 
@@ -1591,6 +1602,13 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     # ignores one it has seen, so the whole file can go again and only the new
     # events land. Someone who does not know that either sends once and stops,
     # or hand-splits the file, which is where the real mistakes live.
+    #
+    # This is the one sentence here that asserts behaviour living in another
+    # repo, so it is cited rather than assumed: baton-console
+    # `ingest/app.py` inserts events `ON CONFLICT (event_id) DO NOTHING`, and
+    # `tests/test_ingest.py` holds the re-POST at one row. Nothing in THIS repo
+    # can keep that true — if ingest ever stops deduping, this line is a false
+    # promise made to someone who resent a week of data.
     print()
     print("Sending it again later is safe — we key on the event ids already in the")
     print("file, so a second send adds only what is new. Use the server for another")
