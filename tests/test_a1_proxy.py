@@ -443,7 +443,7 @@ class _FakeChild:
     once; the thing under test is the shutdown, not the pumps.
     """
 
-    def __init__(self, *, exits_after: float | None, unkillable: bool = False) -> None:
+    def __init__(self, *, exits_after: float | None) -> None:
         """`exits_after=None` never exits on its own; a float is seconds until it does.
 
         The delay is load-bearing, not padding. A child already dead on the
@@ -459,7 +459,6 @@ class _FakeChild:
         self.killed = False
         self.returncode: int | None = None
         self.wait_calls = 0
-        self._unkillable = unkillable
         self._exit = threading.Event()
         if exits_after is not None:
             if exits_after <= 0:
@@ -493,9 +492,6 @@ class _FakeChild:
             self.terminated = True
         elif sig == signal.SIGKILL:
             self.killed = True
-        if self._unkillable:
-            # Uninterruptible sleep: even SIGKILL does not land.
-            return
         # A real child killed by a signal reports -N, and that is the whole
         # subject of the exit-status test below.
         self._settle(-sig)
@@ -549,7 +545,6 @@ def _shutdown_env(monkeypatch) -> None:
 def _tight_graces(monkeypatch) -> None:
     monkeypatch.setattr(proxy_mod, "_UPSTREAM_EXIT_GRACE", 0.05)
     monkeypatch.setattr(proxy_mod, "_UPSTREAM_KILL_GRACE", 0.05)
-    monkeypatch.setattr(proxy_mod, "_UPSTREAM_ABANDON_GRACE", 0.05)
 
 
 class _NeverEofStdin:
@@ -642,29 +637,6 @@ def test_a_genuine_upstream_crash_is_still_reported(monkeypatch):
 
     assert not child.terminated, "we never signalled it; it died on its own"
     assert worker.rc == 3, f"the upstream's own exit code was lost (got {worker.rc})"
-
-
-def test_an_unkillable_upstream_still_lets_the_proxy_exit(monkeypatch):
-    """Review finding 3. SIGKILL cannot be caught, but it does not land on a
-    process wedged in uninterruptible I/O — a hung NFS mount, a stuck device.
-
-    The commit this test belongs to exists to remove an unbounded wait; ending
-    the ladder with one puts the same hang back at the last step, with the same
-    consequence. So the ladder has a final rung: give up, say so, and let the
-    queue flush.
-    """
-    _shutdown_env(monkeypatch)
-    _tight_graces(monkeypatch)
-    child = _FakeChild(exits_after=None, unkillable=True)
-    monkeypatch.setattr(proxy_mod.subprocess, "Popen", _spawning(child, []))
-    monkeypatch.setattr(sys, "stdin", iter(()))
-
-    worker = _run_proxy_in_a_worker()
-
-    assert child.killed, "precondition: the ladder should have reached SIGKILL"
-    assert not worker.is_alive(), (
-        "run_proxy is still waiting on a process that SIGKILL will never reap"
-    )
 
 
 def test_a_healthy_session_is_never_signalled(monkeypatch):

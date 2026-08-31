@@ -1327,7 +1327,6 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
 # prevent, just further along.
 _UPSTREAM_EXIT_GRACE = 1.0
 _UPSTREAM_KILL_GRACE = 1.0
-_UPSTREAM_ABANDON_GRACE = 1.0
 
 
 def _signal_upstream(child: Any, sig: int) -> None:
@@ -1378,29 +1377,23 @@ class _UpstreamShutdown:
     Nothing here runs during a live session. `arm` is called by the client pump
     on its way out, so a session lasting hours arms no timer and costs no
     wakeups — which the first version of this code got wrong, polling
-    `wait(timeout=…)` in a loop for the whole session. Each rung sits on its own
-    timer so no step can block another, and the main thread does exactly one
-    blocking `wait`.
+    `wait(timeout=…)` in a loop for the whole session. The main thread just
+    blocks on `child.wait()`; these timers are what make that safe.
+
+    Two rungs, TERM then KILL, and then it stops. A process that survives
+    SIGKILL is wedged in uninterruptible I/O, and covering that case needs a
+    reaper thread and a give-up signal to interrupt the main thread's wait —
+    machinery out of proportion to a state you reach by having a hung mount.
     """
 
     def __init__(self, child: Any) -> None:
         self._child = child
         self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
-        self.finished = threading.Event()
-        self.rc: int | None = None
         self.signalled = False
 
-    def reap(self) -> None:
-        """Block until the upstream exits. One wait, for the whole session."""
-        try:
-            self.rc = self._child.wait()
-        except Exception:
-            logger.exception("baton-proxy: waiting on the upstream failed")
-        finally:
-            self.finished.set()
-
     def arm(self) -> None:
+        """Called by the client pump on its way out. Starts the clock."""
         self._schedule(_UPSTREAM_EXIT_GRACE, self._terminate)
 
     def cancel(self) -> None:
@@ -1411,8 +1404,6 @@ class _UpstreamShutdown:
 
     def _schedule(self, delay: float, step: Any) -> None:
         with self._lock:
-            if self.finished.is_set():
-                return
             self._timer = threading.Timer(delay, step)
             self._timer.daemon = True
             self._timer.start()
@@ -1437,22 +1428,8 @@ class _UpstreamShutdown:
         logger.warning("baton-proxy: the upstream ignored SIGTERM; killing it")
         self.signalled = True
         _signal_upstream(self._child, signal.SIGKILL)
-        self._schedule(_UPSTREAM_ABANDON_GRACE, self._abandon)
 
-    def _abandon(self) -> None:
-        """The last rung: SIGKILL cannot be caught, but it does not land on a
-        process wedged in uninterruptible I/O. Ending the ladder in an unbounded
-        wait would put back the hang this whole mechanism removes, so we stop
-        waiting, say so loudly, and let the queue flush."""
-        if self._child.poll() is not None:
-            return
-        logger.error(
-            "baton-proxy: the upstream survived SIGKILL (stuck in uninterruptible "
-            "I/O?); abandoning it so the event queue can still be flushed"
-        )
-        self.finished.set()
-
-    def result(self) -> int:
+    def result(self, rc: int) -> int:
         """The upstream's own verdict — never the signal we sent it.
 
         A child killed by a signal reports `-N`, `main` turns that into
@@ -1461,9 +1438,6 @@ class _UpstreamShutdown:
         propagating it would have the client log a crash on every clean exit.
         A crash the upstream arrived at on its own still travels.
         """
-        rc = self.rc
-        if rc is None:
-            return 0  # abandoned above; the session ended fine from the client's view
         if self.signalled and rc < 0 and -rc in (signal.SIGTERM, signal.SIGKILL):
             return 0
         return rc
@@ -1508,7 +1482,6 @@ def run_proxy(argv: list[str]) -> int:
         return 127
 
     shutdown = _UpstreamShutdown(child)
-    threading.Thread(target=shutdown.reap, name="baton-proxy-reap", daemon=True).start()
 
     t_in = threading.Thread(
         target=_pump_client_to_server,
@@ -1525,9 +1498,10 @@ def run_proxy(argv: list[str]) -> int:
     t_in.start()
     t_out.start()
 
-    shutdown.finished.wait()
+    # One blocking wait, for the whole session. The escalation above is what
+    # bounds it once the client has gone.
+    rc = shutdown.result(child.wait())
     shutdown.cancel()
-    rc = shutdown.result()
     # t_out terminates naturally once child's stdout closes (which happens
     # on child exit). Give it a moment to drain final responses + their
     # tool_call_end events before we stop the emitter. t_in is blocked on
