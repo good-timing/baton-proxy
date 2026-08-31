@@ -447,7 +447,11 @@ delete the folder — that is the entire footprint.
   standard library. Python ≥ 3.11.
 - 12 source files, ~4,800 lines, with a test suite you can run.
 - The `baton-spec` git submodule is **used only by tests**; a plain `git clone`
-  without `--recurse-submodules` runs fine.
+  without `--recurse-submodules` runs fine. Two tests skip without it —
+  `test_emitted_events_conform_to_shared_schema` and
+  `test_vectors_still_conform_to_the_schema_shipped_alongside_them`, which check
+  emitted events against the shared wire schema. They are the "2 skipped" in
+  §9.5's run, and `-rs` prints that same reason on the day.
 
 ## 9. Verify all of this yourself
 
@@ -480,8 +484,8 @@ grep -n -A20 "_guard_remote_consent" src/baton_proxy/emitter.py
 #    installs anything: pytest and ruff, into a virtualenv you control. The kit
 #    itself never needs it.
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest tests/test_try_kit.py -v   # the config surgery, on its own
-.venv/bin/pytest                            # everything
+.venv/bin/pytest tests/test_try_kit.py -v -rs   # the config surgery, on its own
+.venv/bin/pytest -rs                           # everything, with skip reasons
 ```
 
 To watch it work before trusting it, run the proxy against your server and read

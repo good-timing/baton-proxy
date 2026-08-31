@@ -1331,6 +1331,66 @@ def test_section_9_excludes_every_artifact_the_kit_can_leave_behind():
             )
 
 
+# The two tests a plain `git clone` cannot run. §9.5's suite prints "2 skipped"
+# with no reason attached, and a reviewer reading a security document does not
+# get to guess which two. The only skip in the suite is the `event_schema`
+# fixture, so this list IS the set of submodule-dependent tests — pinned below
+# against the file rather than trusted.
+SUBMODULE_SKIPPED_TESTS = (
+    "test_emitted_events_conform_to_shared_schema",
+    "test_vectors_still_conform_to_the_schema_shipped_alongside_them",
+)
+
+
+def _tests_needing_the_submodule() -> set[str]:
+    """Every test function that takes the fixture which skips on a plain clone."""
+    import ast
+
+    src = (REPO_ROOT / "tests" / "test_spec_conformance.py").read_text(encoding="utf-8")
+    return {
+        node.name
+        for node in ast.parse(src).body
+        if isinstance(node, ast.FunctionDef)
+        and node.name.startswith("test_")
+        and "event_schema" in {a.arg for a in node.args.args}
+    }
+
+
+def test_section_9_asks_for_the_skip_reasons_it_will_produce():
+    """Finding 9. `pytest` reports "2 skipped" and, without `-rs`, no reason.
+
+    The reviewer §9 is written for is one we are not in the room with, running
+    the suite to check the claims above it. Two silent skips in the run that is
+    supposed to be the proof read as two things unverified — when what they are
+    is the wire-format conformance pair, which needs a submodule §8 already says
+    the trial does not need."""
+    security_md = (REPO_ROOT / "try" / "SECURITY.md").read_text(encoding="utf-8")
+    section_9 = security_md.split("## 9.")[1]
+    pytest_lines = [ln for ln in section_9.splitlines() if "pytest" in ln and ln.startswith(".")]
+    assert len(pytest_lines) == 2, f"§9.5's two pytest invocations: {pytest_lines}"
+    for line in pytest_lines:
+        assert " -rs" in line, f"§9 runs the suite and hides why it skipped:\n  {line}"
+
+
+def test_section_8_names_the_two_tests_the_submodule_gates():
+    """Finding 9, the other half. `-rs` prints the reason on the day; §8 says it
+    in the document, for the reviewer reading before they run anything.
+
+    The names are checked against the suite, not just quoted: §8 naming a test
+    that has been renamed is worse than §8 naming none, because a reviewer who
+    greps for it and finds nothing has been given a reason to distrust the rest
+    of the section."""
+    live = _tests_needing_the_submodule()
+    assert live == set(SUBMODULE_SKIPPED_TESTS), (
+        "the set of tests that skip without the submodule has changed; §8 and "
+        f"§9's skip count both describe it: {sorted(live)}"
+    )
+    section_8 = (REPO_ROOT / "try" / "SECURITY.md").read_text(encoding="utf-8")
+    section_8 = section_8.split("## 8.")[1].split("## 9.")[0]
+    for name in SUBMODULE_SKIPPED_TESTS:
+        assert name in section_8, f"§8 does not name the test it makes skip: {name}"
+
+
 def test_one_of_the_six_is_a_comment_not_a_call_site():
     """§9 distinguishes "the five in the §4 table" from "one comment line". A
     reviewer counting call sites and getting six would conclude the table is
