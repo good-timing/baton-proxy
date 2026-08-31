@@ -1342,18 +1342,71 @@ SUBMODULE_SKIPPED_TESTS = (
 )
 
 
+def _requested_fixtures(node) -> set[str]:
+    """Fixture names a test asks for, by argument OR by `usefixtures`."""
+    import ast
+
+    names = {a.arg for a in node.args.args} | {a.arg for a in node.args.kwonlyargs}
+    for dec in node.decorator_list:
+        func = dec.func if isinstance(dec, ast.Call) else None
+        if isinstance(func, ast.Attribute) and func.attr == "usefixtures":
+            names |= {
+                a.value
+                for a in dec.args
+                if isinstance(a, ast.Constant) and isinstance(a.value, str)
+            }
+    return names
+
+
 def _tests_needing_the_submodule() -> set[str]:
-    """Every test function that takes the fixture which skips on a plain clone."""
+    """Every test function that takes the fixture which skips on a plain clone.
+
+    `ast.walk`, not `.body`, and both function nodes, and `usefixtures` as well
+    as the argument list: each narrower reading is a way for a third gated test
+    to be added and stay invisible here, which is how the "2 skipped" this
+    defends goes stale while its own guard is still green."""
     import ast
 
     src = (REPO_ROOT / "tests" / "test_spec_conformance.py").read_text(encoding="utf-8")
     return {
         node.name
-        for node in ast.parse(src).body
-        if isinstance(node, ast.FunctionDef)
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
         and node.name.startswith("test_")
-        and "event_schema" in {a.arg for a in node.args.args}
+        and "event_schema" in _requested_fixtures(node)
     }
+
+
+def _skip_sites() -> dict[str, int]:
+    """Every place under `tests/` that can turn a test into a skip.
+
+    Counts `pytest.skip` and the `skip`/`skipif` marks by attribute name, which
+    over-detects rather than under-detects — the safe direction for a guard
+    whose whole job is to notice a skip nobody told the document about."""
+    import ast
+
+    sites: dict[str, int] = {}
+    for path in sorted((REPO_ROOT / "tests").glob("*.py")):
+        found = sum(
+            isinstance(node, ast.Attribute) and node.attr in ("skip", "skipif")
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        )
+        if found:
+            sites[path.name] = found
+    return sites
+
+
+def test_the_submodule_fixture_is_the_suites_only_skip():
+    """Finding 1. `_tests_needing_the_submodule` reads ONE file, and the "2
+    skipped" it defends is a whole-suite count.
+
+    A `pytest.skip` added in any other test file changes that count and leaves
+    every assertion below untouched — SECURITY.md:453 would say 2 while the run
+    a reviewer does says 3, which is the document being wrong on the one number
+    it offers as checkable."""
+    assert _skip_sites() == {"test_spec_conformance.py": 1}, (
+        f"the suite's skip sites changed; §8 names them and §9.5 counts them: {_skip_sites()}"
+    )
 
 
 def test_section_9_asks_for_the_skip_reasons_it_will_produce():
@@ -2156,6 +2209,15 @@ def test_each_offered_row_says_whether_the_server_is_remote(tmp_path, kit_home, 
     # nothing, which is the state this finding started from.
     assert kit.KIND_REMOTE not in rows["alpha"], f"alpha is not remote: {rows['alpha']!r}"
     assert kit.KIND_STDIO not in rows["charlie"], f"charlie is not stdio: {rows['charlie']!r}"
+    # And the doc's vocabulary IS the module's. Reading the constants above only
+    # makes this test follow a rename; it does not stop one. `CLAUDE.md` gates
+    # the two warnings named above on the literal word, so a renamed constant
+    # with an untouched doc leaves the agent hunting a word no row carries.
+    claude_md = (REPO_ROOT / "try" / "CLAUDE.md").read_text(encoding="utf-8")
+    for kind in (kit.KIND_STDIO, kit.KIND_REMOTE):
+        assert f"`{kind}`" in claude_md, (
+            f"the rows are marked {kind!r} and CLAUDE.md never says that word"
+        )
 
 
 def test_the_offered_rows_share_one_indent(tmp_path, kit_home, capsys):
