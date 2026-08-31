@@ -443,7 +443,7 @@ class _FakeChild:
     once; the thing under test is the shutdown, not the pumps.
     """
 
-    def __init__(self, *, exits_after: float | None) -> None:
+    def __init__(self, *, exits_after: float | None, ignores_sigterm: bool = False) -> None:
         """`exits_after=None` never exits on its own; a float is seconds until it does.
 
         The delay is load-bearing, not padding. A child already dead on the
@@ -452,6 +452,7 @@ class _FakeChild:
         client's disconnect — measured: with an immediate exit, deleting the
         gate entirely left both tests green.
         """
+        self._ignores_sigterm = ignores_sigterm
         self.stdin = _RecordingStdin()
         self.stdout: Any = iter(())
         self.pid = -1
@@ -490,6 +491,9 @@ class _FakeChild:
     def send_signal(self, sig: int) -> None:
         if sig == signal.SIGTERM:
             self.terminated = True
+            if self._ignores_sigterm:
+                # Traps it and keeps running — the reason there is a second rung.
+                return
         elif sig == signal.SIGKILL:
             self.killed = True
         # A real child killed by a signal reports -N, and that is the whole
@@ -637,6 +641,34 @@ def test_a_genuine_upstream_crash_is_still_reported(monkeypatch):
 
     assert not child.terminated, "we never signalled it; it died on its own"
     assert worker.rc == 3, f"the upstream's own exit code was lost (got {worker.rc})"
+
+
+def test_an_upstream_that_ignores_sigterm_is_killed(monkeypatch):
+    """The second rung, which nothing covered until a mutation said so.
+
+    SIGTERM is a request, and a server is free to trap it — plenty do, to run
+    cleanup, and some then hang in the cleanup. Without SIGKILL behind it the
+    escalation is a request the upstream can decline, and declining puts back
+    exactly the hang this whole mechanism exists to remove.
+
+    This gap was opened by removing the give-up rung: the test that asserted
+    SIGKILL fires went out with it, and deleting the SIGKILL call then left the
+    suite green.
+    """
+    _shutdown_env(monkeypatch)
+    _tight_graces(monkeypatch)
+    child = _FakeChild(exits_after=None, ignores_sigterm=True)
+    monkeypatch.setattr(proxy_mod.subprocess, "Popen", _spawning(child, []))
+    monkeypatch.setattr(sys, "stdin", iter(()))
+
+    worker = _run_proxy_in_a_worker()
+
+    assert child.terminated, "precondition: SIGTERM is asked for first"
+    assert child.killed, (
+        "the upstream declined SIGTERM and was left alone, so the proxy waits "
+        "on a process that already said no"
+    )
+    assert not worker.is_alive(), "run_proxy never returned"
 
 
 def test_a_healthy_session_is_never_signalled(monkeypatch):
