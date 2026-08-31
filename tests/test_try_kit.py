@@ -3385,9 +3385,7 @@ def test_a_session_that_only_read_resources_is_not_called_dead(tmp_path, kit_hom
     assert "3" in out, f"the reads it did make are not reported at all:\n{out}"
 
 
-def test_a_resource_only_session_beside_a_calling_one_raises_no_note(
-    tmp_path, kit_home, capsys
-):
+def test_a_resource_only_session_beside_a_calling_one_raises_no_note(tmp_path, kit_home, capsys):
     """The note's own claim is that a row reading `0 calls` may mean another
     server took them. A row with resource reads in it means the opposite."""
     _wrapped(tmp_path, kit_home, capsys)
@@ -3401,3 +3399,23 @@ def test_a_session_with_nothing_in_it_at_all_is_still_diagnosed(tmp_path, kit_ho
     _wrapped(tmp_path, kit_home, capsys)
     _write_events(kit_home, ("bee5d1a2", 0))
     assert _fired(_receipt_output(capsys)) == [NOTHING_CALLED_MARKER]
+
+
+def test_uninstall_does_not_promise_a_restore_it_could_not_verify(
+    tmp_path, kit_home, capsys, monkeypatch
+):
+    """Review finding. The unverified branch prints "the entry on disk does not
+    match what setup recorded… Compare by hand" — and then printed "New sessions
+    will use your original server again", which is the claim the line above just
+    withdrew. The note it replaced was neutral about what would load, so this
+    was introduced by the rewrite, in the one output where being wrong is
+    expensive: the person is being asked to check a config by hand."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    monkeypatch.setattr(kit, "restored_matches_on_disk", lambda *_a, **_k: False)
+    assert kit.main(["uninstall"]) == 0
+    out, _err = capsys.readouterr()
+    assert "WARNING" in out
+    assert "original server again" not in out, f"it promised what it could not check:\n{out}"
+    assert (kit_home / "state.json").exists(), "the unverified branch still keeps the record"

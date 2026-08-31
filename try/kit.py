@@ -112,6 +112,17 @@ UNINSTALL_NOTE = (
     "place the proxy is still in the path."
 )
 
+# Only printed where the restore verified. Saying "new sessions will use your
+# original server again" directly under a warning that the file does not match
+# what was recorded asserts the thing the warning just withdrew — and what a
+# session loads is exactly the file that failed the comparison.
+UNVERIFIED_NOTE = (
+    "What a new session loads is whatever is in that file, which is the thing\n"
+    "that did not match — so check it before assuming the trial is off your\n"
+    "machine. The session running now keeps the server it already launched\n"
+    "either way."
+)
+
 
 class Refuse(Exception):
     """A refusal carrying a user-facing message. Raised anywhere the kit would
@@ -1564,7 +1575,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
             "\n  WARNING: the entry on disk does not match what setup recorded.\n"
             f"  {STATE_PATH} has been KEPT so the original is not lost. Compare by hand."
         )
-    print(f"\n{UNINSTALL_NOTE}")
+    print(f"\n{UNINSTALL_NOTE if verified else UNVERIFIED_NOTE}")
     left = []
     if EVENTS_PATH.exists():
         left.append(f"  {EVENTS_PATH}  ({human_size(EVENTS_PATH.stat().st_size)})")
