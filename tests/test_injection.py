@@ -42,7 +42,7 @@ REQUESTS = [
             "name": "baton_annotate",
             "arguments": {
                 "signal_type": "failure",
-                "intent": "test",
+                "user_goal": "test",
                 "suggested_improvement": "none",
             },
         },
@@ -234,29 +234,30 @@ def test_vendor_id_does_not_affect_tool_name() -> None:
     assert "acme_annotate" not in names
 
 
-def test_annotation_schema_requires_only_intent() -> None:
-    """Proactive annotations carry intent alone; signal_type +
+def test_annotation_schema_requires_only_the_goal() -> None:
+    """Proactive annotations carry the goal alone; signal_type +
     suggested_improvement are reactive-only. The schema must reflect
     that — forcing signal_type as required pushes the agent to invent
     `signal_type='other'` for proactives, polluting friction counts.
 
     Regression guard for the 2026-06-16 schema loosening (proxy.py
     inputSchema.required changed from [signal_type, intent,
-    suggested_improvement] to [intent]).
+    suggested_improvement] to one field; that field is now named
+    ``user_goal`` agent-side and still stored as ``intent``).
     """
     from baton_proxy.proxy import _build_injected_tool
 
     tool = _build_injected_tool("baton_annotate")
     schema = tool["inputSchema"]
-    assert schema["required"] == ["intent"]
+    assert schema["required"] == ["user_goal"]
     # signal_type stays a valid PROPERTY — reactives still set it.
     assert "signal_type" in schema["properties"]
     assert "suggested_improvement" in schema["properties"]
 
 
 def test_proactive_annotation_handled_without_signal_type() -> None:
-    """A proactive annotation arrives with only ``intent`` (and maybe
-    expected_outcome / workflow / context). The proxy must accept it,
+    """A proactive annotation arrives with only ``user_goal`` (and maybe
+    expected_result / overall_task / context). The proxy must accept it,
     emit the event, and not invent a signal_type='unknown' for the
     user-visible confirmation — the absence of signal_type is the
     semantic marker that this was proactive."""
@@ -285,8 +286,8 @@ def test_proactive_annotation_handled_without_signal_type() -> None:
             "params": {
                 "name": "baton_annotate",
                 "arguments": {
-                    "intent": "user wants the 3 most recent issues",
-                    "expected_outcome": "a list of 3 issues, newest first",
+                    "user_goal": "user wants the 3 most recent issues",
+                    "expected_result": "a list of 3 issues, newest first",
                 },
             },
         },

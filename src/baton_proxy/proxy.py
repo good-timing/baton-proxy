@@ -118,20 +118,28 @@ def _build_injected_tool(tool_name: str) -> dict[str, Any]:
                     "type": "string",
                     "enum": list(SIGNAL_TYPES),
                 },
-                "intent": {"type": "string"},
-                "expected_outcome": {"type": "string"},
+                "user_goal": {"type": "string"},
+                "expected_result": {"type": "string"},
                 "overall_task": {"type": "string"},
                 "suggested_improvement": {"type": "string"},
                 "context": {"type": "object"},
             },
-            # intent is the only required field — proactive annotations
-            # (filed BEFORE a tool call to capture the user's goal) carry
-            # intent alone. signal_type + suggested_improvement are reactive-
-            # only, set AFTER a tool call returned an unhelpful result.
-            # Treating signal_type as required forces agents to invent a
+            # user_goal is the only required field — proactive annotations
+            # (filed BEFORE a tool call to capture the user's goal) carry it
+            # alone. signal_type + suggested_improvement are reactive-only,
+            # set AFTER a tool call returned an unhelpful result. Treating
+            # signal_type as required forces agents to invent a
             # signal_type='other' for proactives, polluting friction counts
             # downstream.
-            "required": ["intent"],
+            #
+            # These names now match the INJECTED params exactly, which is the
+            # point (one concept, one name) but means the two mechanisms can no
+            # longer be told apart by param name. They stay separate
+            # structurally: injection runs only over upstream tools, before
+            # this one is appended, so it never enters the param registry — and
+            # a call to this tool is answered here rather than forwarded, so it
+            # never reaches the strip.
+            "required": ["user_goal"],
         },
     }
 
@@ -674,9 +682,13 @@ class MessageProcessor:
                     try:
                         self._emitter.enqueue_annotation(
                             signal_type=args.get("signal_type"),
-                            intent=args.get("intent"),
+                            # Agent-facing names -> wire keys, as with
+                            # overall_task below: `user_goal` is stored as
+                            # `intent`, `expected_result` as
+                            # `expected_outcome`.
+                            intent=args.get("user_goal"),
                             suggested_improvement=args.get("suggested_improvement"),
-                            expected_outcome=args.get("expected_outcome"),
+                            expected_outcome=args.get("expected_result"),
                             # Agent-facing param ``overall_task`` -> wire key
                             # ``workflow``, the same split the injected params
                             # use (``overall_task`` -> ``call_workflow``):
@@ -692,7 +704,7 @@ class MessageProcessor:
                         # A real proactive (intent, no signal_type) claims the
                         # session's turn-opener slot — the param->annotation
                         # synthesis below must not double-open it.
-                        if args.get("intent") and not args.get("signal_type"):
+                        if args.get("user_goal") and not args.get("signal_type"):
                             self._proactive_emitted = True
                 try:
                     response = _handle_injected_call(

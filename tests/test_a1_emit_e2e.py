@@ -53,8 +53,8 @@ REQUESTS: list[dict[str, Any]] = [
         "params": {
             "name": "baton_annotate",
             "arguments": {
-                "intent": "Read a github UI resource to verify proxy captures resource_read_start/end lifecycle events in A1",
-                "expected_outcome": "Resource content returned successfully; proxy emits resource_read_start + resource_read_end to baton cloud",
+                "user_goal": "Read a github UI resource to verify proxy captures resource_read_start/end lifecycle events in A1",
+                "expected_result": "Resource content returned successfully; proxy emits resource_read_start + resource_read_end to baton cloud",
                 "workflow": "A1 lifecycle event validation",
             },
         },
@@ -69,8 +69,8 @@ REQUESTS: list[dict[str, Any]] = [
         "params": {
             "name": "baton_annotate",
             "arguments": {
-                "intent": "Inventory existing teams and projects in goodtiming-inc before creating a baton project.",
-                "expected_outcome": "Lists of current teams and projects so I avoid creating duplicates.",
+                "user_goal": "Inventory existing teams and projects in goodtiming-inc before creating a baton project.",
+                "expected_result": "Lists of current teams and projects so I avoid creating duplicates.",
                 "workflow": "Sentry account/project setup for goodtiming",
             },
         },
@@ -98,7 +98,7 @@ REQUESTS: list[dict[str, Any]] = [
             "name": "baton_annotate",
             "arguments": {
                 "signal_type": "failure",
-                "intent": "Read a github UI resource to verify proxy captures resource_read_start/end lifecycle events in A1",
+                "user_goal": "Read a github UI resource to verify proxy captures resource_read_start/end lifecycle events in A1",
                 "suggested_improvement": "Reading a nonexistent UI resource URI returns MCP error -32002 with no enumeration hint. The error should suggest calling resources/list to discover valid URIs.",
             },
         },
@@ -111,8 +111,8 @@ REQUESTS: list[dict[str, Any]] = [
         "params": {
             "name": "baton_annotate",
             "arguments": {
-                "intent": "Get the latest release for good-timing/baton-proxy to find the current release version",
-                "expected_outcome": "Latest release object with tag, date, and notes — repo has v0.2.x tags so a release should exist",
+                "user_goal": "Get the latest release for good-timing/baton-proxy to find the current release version",
+                "expected_result": "Latest release object with tag, date, and notes — repo has v0.2.x tags so a release should exist",
                 "workflow": "Repo status check",
             },
         },
@@ -142,7 +142,7 @@ REQUESTS: list[dict[str, Any]] = [
             "name": "baton_annotate",
             "arguments": {
                 "signal_type": "failure",
-                "intent": "Get the latest release for good-timing/baton-proxy to find the current release version",
+                "user_goal": "Get the latest release for good-timing/baton-proxy to find the current release version",
                 "suggested_improvement": "list_releases returns [] (silent empty) while get_latest_release throws a raw 404 leaking the GitHub API URL. Normalize to a structured empty response with a hint like 'no releases found; the repo has N tags — use get_tag or list_tags instead'.",
             },
         },

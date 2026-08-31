@@ -205,17 +205,37 @@ def test_registry_upserts_across_paginated_lists() -> None:
 
 
 def test_registry_skips_proxy_own_tools() -> None:
+    """The proxy's own tools are never injected into.
+
+    Asserted through the REGISTRY, not through param names. The annotation tool
+    natively declares `user_goal`/`expected_result`/`overall_task` — the same
+    three names injection adds — so "does this tool have a goal param" no
+    longer distinguishes a tool that was injected into from one that always had
+    them, and the old name-absence assertion would now pass for the wrong
+    reason if injection DID run over it.
+
+    The registry is the property that still separates them, and it is the one
+    that matters: an entry is what makes `_extract_goal_params` strip those
+    names from a call. An annotation tool in the registry would have its own
+    arguments stripped out from under it — the agent's goal text silently
+    removed from the very call that exists to record it.
+    """
     proc, _ = _processor()
     out = proc.handle_server_message(_tools_list_response([_tool("alpha")]))
-    # _inject_into_response appended the proxy's tools AFTER param injection —
-    # they must carry no goal params and no registry entry.
-    injected_names = {"baton_annotate", "baton_session_report"}
-    for tool in out["result"]["tools"]:
-        if tool["name"] in injected_names:
-            assert USER_GOAL_PARAM_NAME not in tool["inputSchema"]["properties"]
-            assert EXPECTED_RESULT_PARAM_NAME not in tool["inputSchema"]["properties"]
+    own = {"baton_annotate", "baton_session_report"}
+
+    served = {t["name"] for t in out["result"]["tools"]}
+    # `baton_session_report` is only injected when a file sink is configured,
+    # which this fixture has not; `baton_annotate` is always served, and its
+    # presence is what makes the registry assertion below meaningful.
+    assert "baton_annotate" in served
+
     with proc._registry_lock:
-        assert not (injected_names & set(proc._param_registry))
+        registry = set(proc._param_registry)
+    assert not (own & registry)
+    # ...and the upstream tool IS in it, so the assertion above is not passing
+    # because injection did nothing at all.
+    assert "alpha" in registry
 
 
 def test_off_mode_injects_and_strips_nothing() -> None:
@@ -286,7 +306,7 @@ def test_real_annotate_proactive_suppresses_param_annotation() -> None:
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
 
     # A real proactive via the injected annotate tool claims the slot...
-    proc.handle_client_message(_call("baton_annotate", {"intent": "the user's goal"}, msg_id=9))
+    proc.handle_client_message(_call("baton_annotate", {"user_goal": "the user's goal"}, msg_id=9))
     # ...so the param intent must NOT synthesise a second proactive.
     proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}, msg_id=10))
 
@@ -304,7 +324,7 @@ def test_reactive_annotate_does_not_claim_the_proactive_slot() -> None:
     proc.handle_client_message(
         _call(
             "baton_annotate",
-            {"intent": "goal", "signal_type": "failure", "suggested_improvement": "s"},
+            {"user_goal": "goal", "signal_type": "failure", "suggested_improvement": "s"},
             msg_id=9,
         )
     )
@@ -508,7 +528,12 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
         assert EXPECTED_RESULT_PARAM_NAME in tools[name]["inputSchema"]["properties"], name
         # optional mode: required untouched
         assert USER_GOAL_PARAM_NAME not in (tools[name]["inputSchema"].get("required") or [])
-    assert USER_GOAL_PARAM_NAME not in tools["baton_annotate"]["inputSchema"]["properties"]
+    # The annotate tool DECLARES these names itself now, so absence no longer
+    # proves injection skipped it — see test_registry_skips_proxy_own_tools,
+    # which asserts that structurally. What is still checkable here is that
+    # its own contract was not rewritten by injection's "required" pass.
+    annotate_schema = tools["baton_annotate"]["inputSchema"]
+    assert annotate_schema["required"] == ["user_goal"]
 
     # Strip exactness: the upstream reports exactly which keys it received.
     assert by_id[3]["result"]["content"][0]["text"] == "keys: text"
@@ -565,7 +590,7 @@ def test_intent_param_e2e_required_mode() -> None:
     # expected_result stays optional even in required mode.
     assert EXPECTED_RESULT_PARAM_NAME not in tools["echo"]["inputSchema"]["required"]
     # The annotate tool's required list is its own contract — untouched.
-    assert tools["baton_annotate"]["inputSchema"]["required"] == ["intent"]
+    assert tools["baton_annotate"]["inputSchema"]["required"] == ["user_goal"]
 
 
 def test_intent_param_e2e_off_mode() -> None:
@@ -654,7 +679,7 @@ def test_the_agent_facing_task_label_lands_on_the_wire_key() -> None:
     proc.handle_client_message(
         _call(
             "baton_annotate",
-            {"intent": "the user's goal", "overall_task": "morning meeting prep"},
+            {"user_goal": "the user's goal", "overall_task": "morning meeting prep"},
             msg_id=9,
         )
     )
@@ -680,7 +705,7 @@ def test_the_retired_param_name_is_not_still_accepted() -> None:
     proc.handle_client_message(
         _call(
             "baton_annotate",
-            {"intent": "the user's goal", "workflow": "morning meeting prep"},
+            {"user_goal": "the user's goal", "workflow": "morning meeting prep"},
             msg_id=9,
         )
     )
@@ -768,3 +793,52 @@ def test_a_call_without_the_label_passes_none_to_the_emitter() -> None:
 
     starts = [c for c in emitter.calls if c[0] == "tool_call_start"]
     assert starts[0][1]["call_workflow"] is None
+
+
+def test_the_annotation_goal_and_expectation_land_on_their_wire_keys() -> None:
+    """`user_goal` -> `intent`, `expected_result` -> `expected_outcome`.
+
+    Same split as the task label: the agent is asked in the vocabulary the
+    injected params use, and the event keeps the key the console and every
+    stored event already carry. Both directions are pinned in one test because
+    they share a seam — the three `args.get` calls sit on consecutive lines,
+    and a careless edit takes them together.
+    """
+    proc, emitter = _processor()
+    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
+
+    proc.handle_client_message(
+        _call(
+            "baton_annotate",
+            {"user_goal": "find the invoice", "expected_result": "one PDF"},
+            msg_id=9,
+        )
+    )
+
+    annotations = [c for c in emitter.calls if c[0] == "annotation"]
+    assert len(annotations) == 1
+    payload = annotations[0][1]
+    assert payload["intent"] == "find the invoice"
+    assert payload["expected_outcome"] == "one PDF"
+
+
+def test_a_real_proactive_still_claims_the_sessions_turn_opener() -> None:
+    """The gate that stops the proxy opening two turns for one session reads
+    the agent-facing name, so it has to be renamed with the params.
+
+    Missing it is invisible in the obvious place — the annotation still emits,
+    with the right text, on the right key. What breaks is one line later: the
+    session gets a SECOND, synthesised proactive from the first tool call, so
+    every consumer counting turn openers double-counts, and the proactive that
+    is supposed to be the agent's own is joined by one Baton invented.
+    """
+    proc, emitter = _processor()
+    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
+
+    proc.handle_client_message(_call("baton_annotate", {"user_goal": "the goal"}, msg_id=9))
+    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}, msg_id=10))
+
+    annotations = [c for c in emitter.calls if c[0] == "annotation"]
+    assert len(annotations) == 1, "the injected-param path opened a second proactive"
+    assert annotations[0][1]["intent"] == "the goal"
+    assert annotations[0][1].get("intent_source") is None, "the survivor is the synthesised one"

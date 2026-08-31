@@ -149,8 +149,8 @@ def test_description_carries_field_reference() -> None:
     a one-line entry the agent can consult while filling in the call."""
     description = build_annotation_tool_description()
     for field in (
-        "intent:",
-        "expected_outcome:",
+        "user_goal:",
+        "expected_result:",
         "overall_task:",
         "signal_type:",
         "suggested_improvement:",

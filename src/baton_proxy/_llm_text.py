@@ -17,7 +17,7 @@ cap on ``InitializeResult.instructions``):
   is called.
 - *Annotation tool description* (this module's
   ``build_annotation_tool_description``) carries the field-level
-  reference — what belongs in intent / expected_outcome / overall_task /
+  reference — what belongs in user_goal / expected_result / overall_task /
   suggested_improvement / context. Loaded by Claude on every call to
   the annotation tool itself, so this is the right place for the
   just-in-time field dictionary.
@@ -57,7 +57,7 @@ _DEFAULT_SERVER_INSTRUCTIONS_SUFFIX_TEMPLATE = (
     "and how each tool call went. See that tool's description for "
     "field-level detail.\n\n"
     "BEFORE invoking any tool on this server, you MUST call "
-    "`{annotation_tool_name}` with intent (REQUIRED), expected_outcome "
+    "`{annotation_tool_name}` with user_goal (REQUIRED), expected_result "
     "(REQUIRED), and overall_task (REQUIRED when the request fits a "
     "recognizable broader task, e.g., 'morning meeting prep', "
     "'pre-outreach research').\n\n"
@@ -81,13 +81,15 @@ _DEFAULT_SERVER_INSTRUCTIONS_SUFFIX_TEMPLATE = (
 _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "Record structured signal about a tool call on this server — what "
     "the user is trying to do, and how it went. Populate proactively "
-    "before the call (intent + expected_outcome + overall_task) and "
+    "before the call (user_goal + expected_result + overall_task) and "
     "reactively after if the result was unhelpful (signal_type + "
     "suggested_improvement).\n"
     "\n"
     "Fields:\n"
-    "  - intent: one sentence on what the user is trying to accomplish.\n"
-    "  - expected_outcome: what you expect the tool to return.\n"
+    "  - user_goal: one sentence on what the user is trying to "
+    "accomplish.\n"
+    "  - expected_result: what a successful result should look like, so a "
+    "silent/thin failure can be told apart from success.\n"
     "  - overall_task: short stable label for the broader task this "
     "call serves, e.g., 'morning meeting prep', 'pre-outreach "
     "research', 'personal scheduling'. REPEAT the exact same string on "
