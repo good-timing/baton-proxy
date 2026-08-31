@@ -841,6 +841,11 @@ now rather than at the end of the trial. In order:
 """
 
 
+STATE_CLEARED = (
+    "Setup state has been cleared — this receipt is reading the event file left\n"
+    "behind by a trial that has already been ended."
+)
+
 NOT_SET_UP = """\
 No events, and no setup state — this folder has no record of a wrap.
 
@@ -1182,6 +1187,10 @@ def cmd_receipt(args: argparse.Namespace) -> int:
         events_path = Path(state.get("events_path", EVENTS_PATH))
     else:
         events_path = EVENTS_PATH
+    # Read BEFORE the header: without state, the header line depends on whether
+    # there are events, and getting that wrong is what made two of the doc's
+    # rows match one output.
+    events = read_events(events_path)
 
     print("Baton trial receipt")
     print("=" * 60)
@@ -1190,6 +1199,13 @@ def cmd_receipt(args: argparse.Namespace) -> int:
         print(f"config         : {describe(Path(state['config_path']), state['scope'])}")
         print(f"wrapped at     : {state['wrapped_at']}")
         print(f"labels         : tenant={state['tenant_id']} vendor={state['vendor_id']}")
+    elif events:
+        # `uninstall` unlinks state.json and LEAVES events.jsonl — it prints it
+        # under "left behind" — so every receipt after a finished trial lands
+        # here. Saying "No setup state found" fired the doc's first row and its
+        # last from one output: the agent is told nothing is wrapped yet AND
+        # that the trial is running, and the person has already ended it.
+        print(STATE_CLEARED)
     else:
         print("No setup state found — this receipt is reading the event file directly.")
     print(f"event file     : {events_path}")
@@ -1198,7 +1214,6 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     print(f"launch check   {launch_check(state)}")
     print()
 
-    events = read_events(events_path)
     if not events:
         # The kit can answer the most likely cause for free rather than listing
         # four diagnostics that all miss it. The client rewrites this config

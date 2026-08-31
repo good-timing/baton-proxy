@@ -2426,12 +2426,32 @@ def test_receipt_branch_four_counts(tmp_path, kit_home, capsys):
     assert "No events have been captured yet" not in out
 
 
+# The phrase `CLAUDE.md` routes the post-uninstall case on. Tied to the module
+# below rather than retyped, because a reworded constant with an untouched doc
+# is the drift this whole branch exists to stop.
+STATE_CLEARED_MARKER = "Setup state has been cleared"
+
+
 def _fired(out: str) -> list[str]:
     return [
         m
-        for m in ("No setup state found", "THE WRAP IS GONE", "No events have been captured yet")
+        for m in (
+            "No setup state found",
+            STATE_CLEARED_MARKER,
+            "THE WRAP IS GONE",
+            "No events have been captured yet",
+        )
         if m in out
     ]
+
+
+def _counts_shown(out: str) -> bool:
+    """Branch four has no banner of its own, so it is read off its labels.
+
+    Without this the exclusivity test cannot see branch four at all, and an
+    overlap between a header and the counts — which is exactly what the
+    post-uninstall receipt was — stays invisible to it."""
+    return all(label in out for label in ("sessions", "tool calls", "events"))
 
 
 def test_the_no_state_branch_fires_alone_too(kit_home, capsys):
@@ -2453,6 +2473,50 @@ def test_the_four_receipt_branches_are_mutually_exclusive(tmp_path, kit_home, ca
     capsys.readouterr()
     out = _receipt_output(capsys)
     assert _fired(out) == ["No events have been captured yet"], _fired(out)
+
+
+def _ended_trial(kit_home):
+    """The state `uninstall` leaves: events on disk, state.json gone."""
+    (kit_home / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "tool_call_start",
+                "session_id": "s1",
+                "captured_at": "2026-08-30T10:00:00Z",
+                "payload": {"tool_name": "echo", "call_intent": "check the wrap"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert not (kit_home / "state.json").exists()
+
+
+def test_an_ended_trial_is_its_own_branch_not_branch_one(kit_home, capsys):
+    """`uninstall` unlinks state.json and LEAVES events.jsonl — it prints it
+    under "left behind" — so EVERY receipt after a finished trial has events and
+    no state. That output opened with "No setup state found" and then printed
+    the full counts, so the doc's first row and its last both matched it: the
+    agent is told nothing is wrapped yet AND that the trial is running, of a
+    person who ended it themselves.
+
+    The marker is read out of the module and out of the doc, so a reword in
+    either place fails here rather than silently unrouting the branch."""
+    _ended_trial(kit_home)
+    assert STATE_CLEARED_MARKER in kit.STATE_CLEARED, "the module no longer says this"
+    assert f'"{STATE_CLEARED_MARKER}"' in _claude_md(), "CLAUDE.md no longer quotes this branch"
+    out = _receipt_output(capsys)
+    assert _fired(out) == [STATE_CLEARED_MARKER], _fired(out)
+    assert _counts_shown(out), "an ended trial still reports its numbers:\n" + out
+
+
+def test_the_ended_trial_branch_does_not_read_as_never_set_up(kit_home, capsys):
+    """The half that matters to the person rather than the agent: branch one
+    sends them to *Setting up*, which on a machine whose trial just ended means
+    wrapping a server again to answer a question about one that already ran."""
+    _ended_trial(kit_home)
+    out = _receipt_output(capsys)
+    assert "No setup state found" not in out, "the ended-trial receipt claims nothing ran:\n" + out
 
 
 # --- TK-F-7: the kit will not wrap its own work ----------------------------

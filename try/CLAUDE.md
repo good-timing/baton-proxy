@@ -69,12 +69,17 @@ python3 kit.py receipt
 ```
 
 - **"No setup state found"** → nothing is wrapped yet. Go to *Setting up*.
+- **"Setup state has been cleared"** → the trial was already ended. `uninstall`
+  removes the state and leaves the event file, so the counts below it are a
+  finished trial's, not a running one. Report them if they are wanted. Do not
+  offer *Setting up* as though nothing had run, and do not say the trial is
+  live — the person ended it themselves and knows they did.
 - **State, but no events** → the receipt says which case it is. If it reports
   the wrap is gone, relay that and offer `uninstall` to clear the stale state.
   Otherwise it prints a short checklist; the usual answer is that the client has
   not been restarted since setup. Walk the person through it in order.
-- **Events** → the trial is running. Report the numbers, and if they are ready
-  to finish, go to *Ending it*.
+- **State, and events** → the trial is running. Report the numbers, and if they
+  are ready to finish, go to *Ending it*.
 
 ## Setting up
 
