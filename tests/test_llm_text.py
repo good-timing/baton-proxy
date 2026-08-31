@@ -150,7 +150,7 @@ def test_description_carries_field_reference() -> None:
     for field in (
         "intent:",
         "expected_outcome:",
-        "workflow:",
+        "overall_task:",
         "signal_type:",
         "suggested_improvement:",
         "context:",

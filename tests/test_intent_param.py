@@ -615,3 +615,58 @@ def test_expectation_alone_still_records_its_provenance() -> None:
     assert start["intent_source"] == INTENT_SOURCE_PARAM
     # No goal means no proactive annotation — that gate is intent-keyed.
     assert [c for c in emitter.calls if c[0] == "annotation"] == []
+
+
+def test_the_agent_facing_task_label_lands_on_the_wire_key() -> None:
+    """The annotation tool's param is ``overall_task``; the event key is
+    ``workflow``.
+
+    The two names are deliberately different, and the seam between them is one
+    line in ``proxy.py``. It mirrors the injected params (``overall_task`` ->
+    ``call_workflow``): "task" is what the agent is told, ``workflow`` is what
+    rung 3b groups on. Collapsing them in either direction is a silent data
+    loss — pointing the parser back at ``workflow`` drops every label an agent
+    files under the name the schema actually advertises, and it would drop it
+    quietly, because a missing task label reads downstream as "this agent never
+    supplied one" rather than as an error.
+    """
+    proc, emitter = _processor()
+    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
+
+    proc.handle_client_message(
+        _call(
+            "baton_annotate",
+            {"intent": "the user's goal", "overall_task": "morning meeting prep"},
+            msg_id=9,
+        )
+    )
+
+    annotations = [c for c in emitter.calls if c[0] == "annotation"]
+    assert len(annotations) == 1
+    assert annotations[0][1]["workflow"] == "morning meeting prep"
+    assert "overall_task" not in annotations[0][1]
+
+
+def test_the_retired_param_name_is_not_still_accepted() -> None:
+    """``workflow`` was the agent-facing name and is no longer offered.
+
+    Worth pinning rather than assuming: the proxy serves the tool schema and
+    parses the call in one process, so no agent can be holding a stale schema
+    and there is no skew to absorb. Quietly accepting the old name anyway would
+    leave two spellings live with only one of them documented, which is how the
+    next reader concludes the rename never happened.
+    """
+    proc, emitter = _processor()
+    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
+
+    proc.handle_client_message(
+        _call(
+            "baton_annotate",
+            {"intent": "the user's goal", "workflow": "morning meeting prep"},
+            msg_id=9,
+        )
+    )
+
+    annotations = [c for c in emitter.calls if c[0] == "annotation"]
+    assert len(annotations) == 1
+    assert annotations[0][1]["workflow"] is None

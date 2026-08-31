@@ -118,7 +118,7 @@ def _build_injected_tool(tool_name: str) -> dict[str, Any]:
                 },
                 "intent": {"type": "string"},
                 "expected_outcome": {"type": "string"},
-                "workflow": {"type": "string"},
+                "overall_task": {"type": "string"},
                 "suggested_improvement": {"type": "string"},
                 "context": {"type": "object"},
             },
@@ -673,7 +673,12 @@ class MessageProcessor:
                             intent=args.get("intent"),
                             suggested_improvement=args.get("suggested_improvement"),
                             expected_outcome=args.get("expected_outcome"),
-                            workflow=args.get("workflow"),
+                            # Agent-facing param ``overall_task`` -> wire key
+                            # ``workflow``, the same split the injected params
+                            # use (``overall_task`` -> ``call_workflow``):
+                            # renaming the param must not move the key the
+                            # console groups on.
+                            workflow=args.get("overall_task"),
                             context=ctx,
                             runtime_meta=ann_meta,
                         )
