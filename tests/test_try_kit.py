@@ -16,6 +16,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -2393,7 +2394,9 @@ def test_receipt_branch_three_state_but_no_events(tmp_path, kit_home, capsys):
     out = _receipt_output(capsys)
     assert "No events have been captured yet" in out
     assert "THE WRAP IS GONE" not in out, "this is the other no-events branch"
-    assert "restart" in out.lower(), "the checklist's first item is the restart"
+    # The checklist's first item, reworded 08-31: the wrap is not pending on a
+    # quit, it is pending on a session that has not started yet.
+    assert "NEW client session" in out, f"the usual cause is not named first:\n{out}"
 
 
 def test_receipt_branch_four_counts(tmp_path, kit_home, capsys):
@@ -2630,3 +2633,148 @@ def test_security_md_injected_param_count_matches_the_code():
         f"SECURITY.md §4 does not say {expected!r} optional parameters; the proxy injects "
         f"{_injected_param_names()}"
     )
+
+
+# ---------------------------------------------------------------------------
+# TK-D-1 — "fully quit and reopen" is false, and it is a belief rather than a
+# string (Dave's run, 2026-08-28, blocker 2).
+#
+# Verified on that run: a second terminal picked up the wrap with the original
+# session still live. Each client process reads `~/.claude.json` at startup;
+# there is no daemon to flush, so nothing needs to be quit. The true statement
+# is much narrower — the session ALREADY RUNNING keeps the subprocesses it
+# launched and will never see the change.
+#
+# Two costs to the false one, and the second is the one that matters. We charge
+# a stranger the price of closing their editor at the most abandonable moment in
+# the funnel, for nothing. Then: a reviewer who knows how stdio MCP works can
+# see the claim is false, in the same voice as a security document whose entire
+# power is that it is verifiably accurate.
+#
+# So the pin is over every sink the belief was written into, not over the one
+# constant — it appeared in kit.py, in both docs and in the README
+# ([[feedback_invariant_scoped_to_one_field]]: a rule enforced on one field is
+# not enforced on the record).
+# ---------------------------------------------------------------------------
+
+# The DEMAND forms, not the words. A document is allowed to say "nothing needs
+# to be quit" — that sentence is the fix — and a comment is allowed to name the
+# phrase it retired. What may not survive is anything that asks for the act.
+_QUIT_BELIEF = re.compile(
+    r"(?i)fully (?:quit|restart(?:ed)?)"
+    r"|quit (?:and|then) reopen"
+    r"|reopen (?:the|your) client"
+    r"|needs? (?:a|another) restart"
+    r"|restart (?:the|your)(?: MCP)? client"
+    r"|(?:the|your) client restarts"
+)
+
+# Every file that tells a person or an agent what to do after the config edit.
+# The two docs are swept whole — every line of them is shown to someone. kit.py
+# is swept as its STRING CONSTANTS only: what it prints is the sink, and a
+# comment explaining which phrasing was retired is not a thing anyone is asked
+# to do. That scope is the assertion's honest limit, so it is stated rather
+# than left to the reader of a passing test.
+_RESTART_SINKS = ("try/CLAUDE.md", "try/SECURITY.md", "README.md")
+
+
+def _kit_strings() -> list[tuple[int, str]]:
+    """Every string literal in kit.py, with its line — docstrings included,
+    since the module docstring is read by the reviewer this file is written for."""
+    import ast
+
+    tree = ast.parse((REPO_ROOT / "try" / "kit.py").read_text(encoding="utf-8"))
+    return [
+        (n.lineno, n.value)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    ]
+
+
+def test_the_string_sweep_actually_reaches_the_text_the_kit_prints():
+    """Guard against the guard, second kind: an extractor that returns nothing
+    makes the test below pass while checking no text at all."""
+    strings = _kit_strings()
+    assert len(strings) > 100, f"only {len(strings)} strings extracted from kit.py"
+    assert any("NEXT session your client starts" in s for _n, s in strings), (
+        "the extractor missed RESTART_NOTE, which is the string this is all about"
+    )
+
+
+def test_no_text_the_trial_shows_anyone_asks_them_to_quit_their_client():
+    """The sweep. A phrase deleted from `RESTART_NOTE` and left in `CLAUDE.md`
+    is the same defect, because the agent reads the doc and the person reads the
+    terminal — two sinks, one claim."""
+    offenders = []
+    for rel in _RESTART_SINKS:
+        for n, line in enumerate((REPO_ROOT / rel).read_text(encoding="utf-8").splitlines(), 1):
+            if _QUIT_BELIEF.search(line):
+                offenders.append(f"{rel}:{n}: {line.strip()}")
+    for n, s in _kit_strings():
+        if m := _QUIT_BELIEF.search(s):
+            offenders.append(f"try/kit.py:{n}: …{m.group(0)}…")
+    assert not offenders, "the kit still asks someone to quit their client:\n" + "\n".join(
+        offenders
+    )
+
+
+# Every instance the 08-28 run and the greps after it turned up, verbatim. The
+# regex is the whole assertion above, and one that matches nothing passes
+# forever ([[feedback_control_condition_must_be_able_to_fail]]).
+_THE_BELIEF_AS_IT_WAS_WRITTEN = (
+    "their MCP client is fully quit and reopened; it binds its server set at startup",
+    "> Quit and reopen the client. This session will end with it.",
+    "The change is INERT until you fully restart your MCP client",
+    "  1. Has the MCP client been fully restarted since setup ran?",
+    "- The client needs another restart before the original server is live again.",
+    "- **The change is inert until the client restarts.**",
+    "verifies the result against the file on disk; restart your client",
+)
+
+# Sentences the fix is made of. A sweep that also rejects these has banned the
+# vocabulary rather than the instruction, and the next true sentence about
+# startup behaviour cannot be written.
+_TRUE_REPLACEMENTS = (
+    "This takes effect in the NEXT session your client starts.",
+    "A new terminal is enough — nothing needs to be closed.",
+    "Nothing needs to be quit: a new terminal is enough.",
+    "New sessions will use your original server again.",
+    "a client binds its server set at startup",
+)
+
+
+@pytest.mark.parametrize("line", _THE_BELIEF_AS_IT_WAS_WRITTEN)
+def test_the_sweep_would_notice_the_phrasings_it_was_written_for(line):
+    assert _QUIT_BELIEF.search(line), f"the sweep would have missed {line!r}"
+
+
+@pytest.mark.parametrize("line", _TRUE_REPLACEMENTS)
+def test_the_sweep_leaves_the_true_sentences_alone(line):
+    assert not _QUIT_BELIEF.search(line), f"the sweep rejects its own replacement: {line!r}"
+
+
+def test_setup_says_what_is_actually_required_of_them(tmp_path, kit_home, capsys):
+    """Rendered, not the constant: setup is where the claim is charged, and the
+    replacement has to keep the warning the false version carried. Dropping
+    "the session running now sees nothing" recreates the empty capture from the
+    other direction — someone keeps using the window they already had open."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    out, _err = capsys.readouterr()
+    assert not _QUIT_BELIEF.search(out), out
+    assert "new" in out.lower(), "nothing says a NEW session is what picks the wrap up"
+    assert "running now" in out, f"the already-running session is not warned about:\n{out}"
+
+
+def test_uninstall_does_not_charge_a_restart_it_does_not_need(tmp_path, kit_home, capsys):
+    """Uninstall's true line is gentler still, and it is a different sentence
+    from setup's: nothing is pending, nothing is inert, and there is nothing to
+    verify afterwards. It said "the change is INERT until you fully restart"."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    assert kit.main(["uninstall"]) == 0
+    out, _err = capsys.readouterr()
+    assert not _QUIT_BELIEF.search(out), out
+    assert "original server again" in out, f"uninstall never says what happens next:\n{out}"
+    assert "INERT" not in out, "uninstall is not pending on anything"

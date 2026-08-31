@@ -161,8 +161,10 @@ Notes a reviewer should hold onto:
   variable from the child process's environment (`proxy.py`, `_child_env`), so
   your server never sees Baton's own configuration. If your server legitimately
   needs a variable of its own beginning `BATON_`, it will not receive it.
-- **The change is inert until the client restarts.** An MCP client binds its
-  server set at startup.
+- **The change reaches the next session your client starts, not the one running
+  now.** An MCP client binds its server set at startup, so a session that is
+  already open keeps the server it launched. Nothing needs to be quit: a new
+  terminal is enough, because each client process reads the config itself.
 - **The original entry is recorded byte-for-byte before the write**, and the whole
   config file is backed up first. Removal restores it and prints the restored
   entry rather than claiming success — then **re-reads the file and compares every
@@ -438,7 +440,8 @@ it should not leave, delete it; we will never know it existed.
 **To remove the kit at any point, including mid-trial:** run the uninstall
 command, which restores the recorded entry, prints it for you to check (with any
 literal env values hidden) and verifies the result against the file on disk;
-restart your client; delete this checkout. Nothing else was installed, so there
+delete this checkout. New sessions use your original server from that point on;
+a session already running keeps the wrapped one it launched. Nothing else was installed, so there
 is nothing else to uninstall. Or do it by hand: put the original entry back and
 delete the folder — that is the entire footprint.
 

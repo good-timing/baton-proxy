@@ -8,8 +8,8 @@ one that is wrong, because a stranger approved the trial by reading it.
 Why these three are code and the rest of the trial is prose: a bad config edit is
 silent for days, and a wrong receipt is a claim we repeat to someone else. Those
 are the only two steps whose failure nobody witnesses. Everything else in the
-flow — choosing a server, explaining what is about to happen, restarting the
-client, deciding whether the file may leave the machine — fails loudly and
+flow — choosing a server, explaining what is about to happen, handing over to a
+second terminal, deciding whether the file may leave — fails loudly and
 immediately, so an agent narrating from ``CLAUDE.md`` is the right medium.
 
 The rule this file exists to enforce: **the same code writes the wrap and
@@ -89,9 +89,26 @@ STATE_POINTER = (
     "  exactly as it was is in try/state.json under `original_entry`."
 )
 
+# Not "fully quit and reopen", which was false and was verified false: a second
+# terminal picked the wrap up with the original session still running. Each
+# client process reads the config when it launches, so there is no daemon to
+# flush. The narrower claim is the one that has to survive — a person who keeps
+# working in the window they already had open captures nothing and has no way to
+# see why.
 RESTART_NOTE = (
-    "The change is INERT until you fully restart your MCP client — it binds its\n"
-    "server set at startup. Nothing is captured before that restart."
+    "This takes effect in the NEXT session your client starts. A new terminal is\n"
+    "enough — nothing needs to be closed, because each client process reads the\n"
+    "config when it launches. The session running now keeps the server it already\n"
+    "launched, and nothing is captured through it."
+)
+
+# Uninstall's version, and deliberately not the constant above. Nothing is
+# pending here and nothing is inert: the config already says what it said before
+# setup, so the only thing left to say is what the next session will do.
+UNINSTALL_NOTE = (
+    "New sessions will use your original server again. The session running now\n"
+    "keeps the wrapped server it already launched, so that session is the last\n"
+    "place the proxy is still in the path."
 )
 
 
@@ -826,9 +843,9 @@ No events have been captured yet.
 That is a real answer, not an error — and it is worth getting to the bottom of
 now rather than at the end of the trial. In order:
 
-  1. Has the MCP client been fully restarted since setup ran? The wrap is inert
-     until it is. This is the usual cause.
-  2. Has the wrapped server actually been used since that restart? Opening a
+  1. Has a NEW client session been started since setup ran? A session that was
+     already running never sees the wrap. This is the usual cause.
+  2. Has the wrapped server actually been used in one of those sessions? Opening a
      session is not enough; the agent has to call the server at least once.
      (A session that merely starts does record one tool-surface snapshot, so if
      even that is missing, the proxy is not in the path at all.)
@@ -1106,7 +1123,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
             "  entry whose `Authorization: Bearer` token is written in the config and\n"
             "  which sends no other header. This entry is neither, and wrapping it\n"
             "  anyway would drop something the server needs — which shows up as a dead\n"
-            "  server after the restart, not now.\n"
+            "  server in the next session they start, not now.\n"
             "  → name a different server, or reach this one through an entry of either\n"
             "    shape. Nothing changed."
         )
@@ -1165,7 +1182,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print(entry_json(state["wrapped_entry"]))
     print(f"\n{RESTART_NOTE}")
     print(
-        "\nAfter the restart, use the server normally. Run\n"
+        "\nIn that new session, use the server normally. Run\n"
         "  python3 kit.py receipt\nany time — early is better than late."
     )
     return 0
@@ -1318,7 +1335,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
             "\n  WARNING: the entry on disk does not match what setup recorded.\n"
             f"  {STATE_PATH} has been KEPT so the original is not lost. Compare by hand."
         )
-    print(f"\n{RESTART_NOTE}")
+    print(f"\n{UNINSTALL_NOTE}")
     left = []
     if EVENTS_PATH.exists():
         left.append(f"  {EVENTS_PATH}  ({human_size(EVENTS_PATH.stat().st_size)})")

@@ -168,7 +168,7 @@ Pick the rung you need; the env-var deltas are the entire difference.
 
 ### See it locally
 
-After installing (`{ "command": "baton-proxy", "args": ["--", "npx", "@vendor/mcp-server"] }` in your Claude config) and restarting Claude, drive a few tool calls and try either:
+After installing (`{ "command": "baton-proxy", "args": ["--", "npx", "@vendor/mcp-server"] }` in your Claude config) and starting a new Claude session, drive a few tool calls and try either:
 
 **Conversational** — ask Claude:
 > Show me the friction report for this session.

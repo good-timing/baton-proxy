@@ -15,8 +15,8 @@ python3 kit.py uninstall              # put the original entry back
 ```
 
 Your job is everything the commands deliberately do not do: work out which
-server, explain what is about to happen before it happens, ask for the restart,
-and hand the decision at the end to the person. The commands own the two steps
+server, explain what is about to happen before it happens, hand them a second
+terminal, and hand the decision at the end to the person. The commands own the two steps
 whose failure nobody would witness — the config edit and the receipt — so do not
 reimplement them.
 
@@ -76,8 +76,8 @@ python3 kit.py receipt
   live — the person ended it themselves and knows they did.
 - **State, but no events** → the receipt says which case it is. If it reports
   the wrap is gone, relay that and offer `uninstall` to clear the stale state.
-  Otherwise it prints a short checklist; the usual answer is that the client has
-  not been restarted since setup. Walk the person through it in order.
+  Otherwise it prints a short checklist; the usual answer is that no new client
+  session has been started since setup. Walk the person through it in order.
 - **State, and events** → the trial is running. Report the numbers, and if they
   are ready to finish, go to *Ending it*.
 
@@ -138,16 +138,19 @@ default is a random one if they would rather not.
 **4. Run it.** `python3 kit.py setup <name> --tenant <label>`. It prints the
 resulting config entry — show that to the person rather than summarizing it.
 
-**5. Ask for the restart, then expect to disappear.** The wrap does nothing until
-their MCP client is fully quit and reopened; it binds its server set at startup.
-Say that plainly, and say what happens next, because restarting will end this
-conversation:
+**5. Hand them a second terminal, and stay in this one.** The wrap does nothing
+in the session their client is running right now — a client binds its server set
+at startup — but nothing needs to be closed for it to take effect. The next
+session they start reads the new config. Say both halves, because the first one
+on its own is what produces an empty capture:
 
-> Quit and reopen the client. This session will end with it. When you're back,
-> run `cd baton-proxy/try && claude` again and I'll pick up from the receipt.
+> Leave this window open. Open a second terminal, start your client there, and
+> use the server the way you normally would. Come back to this window whenever
+> you want to see what has been captured.
 
-Then stop. Do not try to keep the session alive or to verify capture before the
-restart — there is nothing to verify yet, and saying otherwise would be wrong.
+Then stop. Do not try to verify capture before they have used the server in that
+new session — there is nothing to verify yet, and saying otherwise would be
+wrong.
 
 ## While it runs
 
@@ -176,7 +179,8 @@ do not push:
 
 `python3 kit.py uninstall` restores the original entry and prints it. Then:
 
-- The client needs another restart before the original server is live again.
+- New sessions get the original server back. One that is already running keeps
+  the wrapped one it launched, so it stays in the path until that session ends.
 - `events.jsonl` and the `config-backup.*` files are left deliberately. Tell the
   person they are there and that deleting them is up to them.
 - Deleting this checkout removes everything else. Nothing was installed.
