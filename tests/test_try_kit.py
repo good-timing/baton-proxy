@@ -3194,11 +3194,33 @@ def _scrubber_limits() -> str:
     return doc[start : doc.index("2. **", start)]
 
 
+def _annotate_branch() -> str:
+    """The proxy's `baton_annotate` branch alone.
+
+    Scoped, because the reader below used to run its regex over the whole
+    module: every `args.get(...)` in `proxy.py`, from any handler. The pin it
+    feeds asserts that one named field is the one the annotation records, and a
+    whole-file read satisfies that as soon as anything anywhere happens to read
+    a field of the same name — green while the disclosure it guards has gone
+    stale, which is the failure shape this file keeps finding."""
+    src = (REPO_ROOT / "src" / "baton_proxy" / "proxy.py").read_text(encoding="utf-8")
+    start = src.index("if tool_name == ANNOTATE_TOOL_NAME:")
+    return src[start : src.index("_handle_injected_call(", start)]
+
+
+def test_the_annotate_slice_is_the_annotate_branch_and_stops_there():
+    """Guard against the guard. A slice that drifted wide would restore exactly
+    the looseness the scoping removed, and every assertion below would stay
+    green while checking the whole module again."""
+    branch = _annotate_branch()
+    assert "enqueue_annotation(" in branch, "the slice is not the annotate branch"
+    assert "def " not in branch, f"the slice ran on into another function:\n{branch[-400:]}"
+
+
 def _annotate_argument_names() -> set[str]:
     """The argument names the proxy reads off a `baton_annotate` call — the
     fields whose contents are prose the model composed."""
-    src = (REPO_ROOT / "src" / "baton_proxy" / "proxy.py").read_text(encoding="utf-8")
-    return set(re.findall(r'args\.get\("([a-z_]+)"\)', src))
+    return set(re.findall(r'args\.get\("([a-z_]+)"\)', _annotate_branch()))
 
 
 def test_the_field_the_run_put_business_data_into_is_still_called_context():
