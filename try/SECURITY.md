@@ -354,7 +354,9 @@ Recorded in full:
   distinct surface.
 - **Intent** — whatever the agent wrote into `user_goal` / `expected_result` /
   `overall_task` and into `baton_annotate`. This is free text the model
-  composed.
+  composed, and it is not only a description of the call: to argue that a result
+  was wrong, an agent will restate the result. See §6's first limit — this is
+  where the second copy of your data comes from.
 
 Recorded in part:
 
@@ -403,6 +405,17 @@ Read these as the actual scope, not as caveats:
    table and column names, document text, row contents, customer records — if
    your server returns it, it lands in the file. The scrubber targets credentials
    and personal identifiers, not the substance of the work.
+
+   **And it can be in the file twice.** The annotations are prose a model wrote,
+   and an agent explaining why a tool call went wrong will restate what came
+   back. In our own end-to-end run the agent copied the returned rows into an
+   annotation's `context` field in order to make its argument — so that data was
+   in the file once as the tool result and once as a sentence about it. Those
+   fields go through the same scrubber, which is why this is a limit and not a
+   bug: a customer name inside a sentence is not a credential and not a pattern,
+   so it reported zero redactions, and it would have reported zero on the prose
+   whatever it said. When you read the file before deciding whether it may
+   leave, read the `annotation` lines too, not only the results.
 2. **Depth limit of 10.** Values nested more than ten levels deep are passed
    through untouched (`DEPTH_LIMIT`, `scrub.py`).
 3. **Strings only.** Numbers, booleans and byte strings are not examined, so a

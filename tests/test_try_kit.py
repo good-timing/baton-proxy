@@ -3118,3 +3118,69 @@ def test_the_six_receipt_rows_are_mutually_exclusive(tmp_path, kit_home, capsys)
     _write_events(kit_home, ("d1e2f3a4", 2), ("bee5d1a2", 0))
     out = _receipt_output(capsys)
     assert _fired(out) == [] and _counts_shown(out)
+
+
+# ---------------------------------------------------------------------------
+# TK-D-4 — §6 discloses that annotations restate what the server returned
+# (Dave's run, 2026-08-28, blocker 4; finding 18).
+#
+# The run found this about ITSELF: to explain why a tool was wrong, the agent
+# wrote the captured rows into the annotation's `context` field. So the business
+# data is in the file twice — once as the tool result, once as model-composed
+# prose — and the scrubber reported zero redactions, which it would also have
+# reported on the prose, because it matches credentials and personal
+# identifiers, not groceries.
+#
+# §6 said results land verbatim. It did not say annotations do too. This
+# document is credible precisely because it volunteers this class of fact
+# unprompted — an omission the reader finds themselves retroactively reframes
+# every volunteered fact as selective rather than honest, and for Snowflake
+# specifically this is the one their reviewer finds.
+# ---------------------------------------------------------------------------
+
+
+def _scrubber_limits() -> str:
+    """§6's first limit, where the business-data claim already lives.
+
+    Scoped like `_injection_disclosure` above: annotations are mentioned in §3
+    and §5 as well, so a whole-file assertion passes while the LIMIT is silent
+    — and the limit is the paragraph a reviewer reads as the honest scope."""
+    doc = (KIT_PATH.parent / "SECURITY.md").read_text()
+    start = doc.index("1. **Business data is not scrubbed.**")
+    return doc[start : doc.index("2. **", start)]
+
+
+def _annotate_argument_names() -> set[str]:
+    """The argument names the proxy reads off a `baton_annotate` call — the
+    fields whose contents are prose the model composed."""
+    src = (REPO_ROOT / "src" / "baton_proxy" / "proxy.py").read_text(encoding="utf-8")
+    return set(re.findall(r'args\.get\("([a-z_]+)"\)', src))
+
+
+def test_the_field_the_run_put_business_data_into_is_still_called_context():
+    """Guard against the guard, and a drift pin: the disclosure below names a
+    field, so the field has to be the one the proxy actually records."""
+    names = _annotate_argument_names()
+    assert "context" in names, f"the annotate call no longer reads `context`: {sorted(names)}"
+
+
+def test_security_md_discloses_that_annotations_restate_the_results():
+    """The disclosure itself, in the limit that already carries its half of the
+    claim. Pinned as prose because prose is what it is: nothing else in this
+    repo makes the statement, and a reader decides on it."""
+    limit = _scrubber_limits()
+    for token in ("annotation", "`context`", "twice"):
+        assert token in limit, f"§6's business-data limit never says {token!r}:\n{limit}"
+    assert "model" in limit, "the disclosure does not say who wrote the prose"
+    assert "zero" in limit, "it does not say the scrubber found nothing in it"
+
+
+def test_section_5_says_the_same_thing_where_intent_is_listed():
+    """The other sink. §5 is the field-by-field list, and someone auditing what
+    is recorded reads it rather than §6's limits."""
+    doc = (KIT_PATH.parent / "SECURITY.md").read_text()
+    start = doc.index("- **Intent** —")
+    bullet = doc[start : doc.index("\n\n", start)]
+    assert "restate" in bullet or "quote" in bullet, (
+        f"§5's intent bullet does not say annotations can carry results:\n{bullet}"
+    )
