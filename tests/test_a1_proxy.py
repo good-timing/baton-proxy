@@ -806,8 +806,11 @@ def test_a_wrapper_that_swallows_sigterm_does_not_leak_the_real_server(tmp_path)
         if proc.poll() is None:
             proc.kill()
         if leaked is not None:
-            with contextlib.suppress(OSError):
-                os.killpg(os.getpgid(leaked), signal.SIGKILL)
+            # `os.kill`, never `os.killpg`. Under a mutation that drops
+            # `start_new_session`, the leaked pid sits in the TEST RUNNER's
+            # group, so a killpg here takes down pytest and the shell that
+            # started it — which is exactly what it did, twice, before this
+            # comment existed.
             with contextlib.suppress(OSError):
                 os.kill(leaked, signal.SIGKILL)
 
