@@ -36,6 +36,7 @@ from baton_proxy.config import Config
 from baton_proxy.proxy import (
     EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
+    OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
     MessageProcessor,
     _inject_goal_params,
@@ -61,17 +62,20 @@ def _tool(name: str = "t", schema: Any = "default") -> dict[str, Any]:
     return t
 
 
-def test_inject_optional_adds_both_params_without_touching_required() -> None:
+def test_inject_optional_adds_all_three_params_without_touching_required() -> None:
     tool = _tool(schema={"type": "object", "properties": {}, "required": ["x"]})
     assert _inject_goal_params(tool, "optional") == {
         USER_GOAL_PARAM_NAME: "injected",
         EXPECTED_RESULT_PARAM_NAME: "injected",
+        OVERALL_TASK_PARAM_NAME: "injected",
     }
     props = tool["inputSchema"]["properties"]
     assert props[USER_GOAL_PARAM_NAME]["type"] == "string"
     assert props[USER_GOAL_PARAM_NAME]["description"]
     assert props[EXPECTED_RESULT_PARAM_NAME]["type"] == "string"
     assert props[EXPECTED_RESULT_PARAM_NAME]["description"]
+    assert props[OVERALL_TASK_PARAM_NAME]["type"] == "string"
+    assert props[OVERALL_TASK_PARAM_NAME]["description"]
     assert tool["inputSchema"]["required"] == ["x"]
 
 
@@ -80,9 +84,11 @@ def test_inject_required_appends_only_user_goal_to_required() -> None:
     assert _inject_goal_params(tool, "required") == {
         USER_GOAL_PARAM_NAME: "injected",
         EXPECTED_RESULT_PARAM_NAME: "injected",
+        OVERALL_TASK_PARAM_NAME: "injected",
     }
-    # Only user_goal is forced required — expected_result stays optional even
-    # in "required" mode, matching baton-sdk's _inject_goal_params.
+    # Only user_goal is forced required — expected_result and overall_task
+    # stay optional even in "required" mode, matching baton-sdk's
+    # _inject_goal_params.
     assert tool["inputSchema"]["required"] == ["x", USER_GOAL_PARAM_NAME]
 
 
@@ -97,16 +103,18 @@ def test_inject_handles_schemaless_tool() -> None:
     _inject_goal_params(tool, "optional")
     assert USER_GOAL_PARAM_NAME in tool["inputSchema"]["properties"]
     assert EXPECTED_RESULT_PARAM_NAME in tool["inputSchema"]["properties"]
+    assert OVERALL_TASK_PARAM_NAME in tool["inputSchema"]["properties"]
 
 
 def test_inject_skips_native_param_untouched_independently() -> None:
-    """A tool that already declares ONE of the two names keeps it untouched
-    while the other still gets injected — dispositions are independent."""
+    """A tool that already declares ONE of the names keeps it untouched while
+    the others still get injected — dispositions are independent."""
     native_def = {"type": "string", "description": "the vendor's own"}
     tool = _tool(schema={"type": "object", "properties": {USER_GOAL_PARAM_NAME: native_def}})
     assert _inject_goal_params(tool, "optional") == {
         USER_GOAL_PARAM_NAME: "native",
         EXPECTED_RESULT_PARAM_NAME: "injected",
+        OVERALL_TASK_PARAM_NAME: "injected",
     }
     # Skip-if-exists means UNTOUCHED — same object, no description rewrite.
     assert tool["inputSchema"]["properties"][USER_GOAL_PARAM_NAME] is native_def
@@ -120,10 +128,12 @@ def test_inject_is_idempotent_across_relists() -> None:
     assert _inject_goal_params(tool, "required") == {
         USER_GOAL_PARAM_NAME: "injected",
         EXPECTED_RESULT_PARAM_NAME: "injected",
+        OVERALL_TASK_PARAM_NAME: "injected",
     }
     assert _inject_goal_params(tool, "required") == {
         USER_GOAL_PARAM_NAME: "native",
         EXPECTED_RESULT_PARAM_NAME: "native",
+        OVERALL_TASK_PARAM_NAME: "native",
     }
     assert tool["inputSchema"]["required"].count(USER_GOAL_PARAM_NAME) == 1
 
@@ -181,8 +191,16 @@ def test_registry_upserts_across_paginated_lists() -> None:
     proc.handle_server_message(_tools_list_response([_tool("beta")], msg_id=3))
     with proc._registry_lock:
         assert proc._param_registry == {
-            "alpha": {USER_GOAL_PARAM_NAME: "injected", EXPECTED_RESULT_PARAM_NAME: "injected"},
-            "beta": {USER_GOAL_PARAM_NAME: "injected", EXPECTED_RESULT_PARAM_NAME: "injected"},
+            "alpha": {
+                USER_GOAL_PARAM_NAME: "injected",
+                EXPECTED_RESULT_PARAM_NAME: "injected",
+                OVERALL_TASK_PARAM_NAME: "injected",
+            },
+            "beta": {
+                USER_GOAL_PARAM_NAME: "injected",
+                EXPECTED_RESULT_PARAM_NAME: "injected",
+                OVERALL_TASK_PARAM_NAME: "injected",
+            },
         }
 
 
@@ -670,3 +688,83 @@ def test_the_retired_param_name_is_not_still_accepted() -> None:
     annotations = [c for c in emitter.calls if c[0] == "annotation"]
     assert len(annotations) == 1
     assert annotations[0][1]["workflow"] is None
+
+
+def test_the_injected_task_label_rides_every_start_event() -> None:
+    """``overall_task`` is stripped like the other two and lands on the start
+    event as ``call_workflow``.
+
+    This is the param the whole grouping rung keys on, and it is the one the
+    proxy did not inject: before this, proxy-captured traffic emitted no
+    ``call_workflow`` at all, so a consumer grouping by task label had nothing
+    to group proxy sessions by and fell back to per-call intent text, which
+    rewords freely and therefore shatters. Stripping matters as much as
+    emitting — the upstream must never see the param, or the vendor's own
+    handler receives an argument its schema never declared.
+    """
+    proc, emitter = _processor()
+    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
+
+    call = _call(
+        "alpha",
+        {
+            USER_GOAL_PARAM_NAME: INTENT_TEXT,
+            OVERALL_TASK_PARAM_NAME: "prepare campaign approval",
+            "real_arg": "kept",
+        },
+        msg_id=10,
+    )
+    proc.handle_client_message(call)
+
+    starts = [c for c in emitter.calls if c[0] == "tool_call_start"]
+    assert len(starts) == 1
+    assert starts[0][1]["call_workflow"] == "prepare campaign approval"
+    # The vendor sees its own arguments and nothing else.
+    assert call["params"]["arguments"] == {"real_arg": "kept"}
+
+
+def test_the_label_repeats_across_calls_without_reopening_a_proactive() -> None:
+    """Every call carries its own label; only the first opens a proactive.
+
+    The label is only useful if it is the SAME string on each call of a task —
+    that exact-string continuity is what the consumer groups on. So the value
+    has to ride every start event, while the once-per-session proactive gate
+    (which exists so one console turn is not opened per tool call) must not
+    also suppress the second call's label.
+    """
+    proc, emitter = _processor()
+    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
+
+    for msg_id in (10, 11):
+        proc.handle_client_message(
+            _call(
+                "alpha",
+                {USER_GOAL_PARAM_NAME: INTENT_TEXT, OVERALL_TASK_PARAM_NAME: "one task"},
+                msg_id=msg_id,
+            )
+        )
+
+    starts = [c for c in emitter.calls if c[0] == "tool_call_start"]
+    assert [s[1]["call_workflow"] for s in starts] == ["one task", "one task"]
+
+    # The synthesised proactive carries the label on the annotation's own key,
+    # mirroring baton-sdk — that is where the consumer's rung 3b looks first.
+    annotations = [c for c in emitter.calls if c[0] == "annotation"]
+    assert len(annotations) == 1
+    assert annotations[0][1]["workflow"] == "one task"
+
+
+def test_a_call_without_the_label_passes_none_to_the_emitter() -> None:
+    """No label supplied means the emitter is handed ``None``.
+
+    The emitter is what turns that into an ABSENT wire key rather than a null
+    one (pinned in ``test_emitter``); the distinction matters because a
+    consumer grouping by exact string would otherwise see every label-less call
+    share one null "group".
+    """
+    proc, emitter = _processor()
+    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
+    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}, msg_id=10))
+
+    starts = [c for c in emitter.calls if c[0] == "tool_call_start"]
+    assert starts[0][1]["call_workflow"] is None

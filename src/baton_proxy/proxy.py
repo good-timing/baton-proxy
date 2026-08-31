@@ -47,6 +47,7 @@ from baton_proxy._llm_text import (
     build_annotation_tool_description,
     build_expected_result_param_description,
     build_instructions_suffix,
+    build_overall_task_param_description,
     build_user_goal_param_description,
 )
 from baton_proxy.config import Config
@@ -82,6 +83,7 @@ REPORT_TOOL_NAME = "baton_session_report"
 # rationale: vendor-neutral, not baton_*, per the white-label rule).
 USER_GOAL_PARAM_NAME = "user_goal"
 EXPECTED_RESULT_PARAM_NAME = "expected_result"
+OVERALL_TASK_PARAM_NAME = "overall_task"
 
 # Provenance value for intent captured via the injected param (vs a real
 # annotate-tool call). Recorded on both the tool_call_start payload and the
@@ -320,9 +322,10 @@ def _evict_overflow(pending: OrderedDict[Any, _PendingCall], emitter: Emitter) -
 
 
 def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
-    """Add ``user_goal``/``expected_result`` to one tool's inputSchema; return
-    each param's disposition, keyed independently — a tool that already
-    declares one of the two names is left untouched for that name only.
+    """Add ``user_goal``/``expected_result``/``overall_task`` to one tool's
+    inputSchema; return each param's disposition, keyed independently — a tool
+    that already declares one of the names is left untouched for that name
+    only.
 
     Disposition is "injected" (param added), "native" (the tool already had
     a param with that name — left untouched, per skip-if-exists). Not a
@@ -345,6 +348,7 @@ def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
     for name, build_desc in (
         (USER_GOAL_PARAM_NAME, build_user_goal_param_description),
         (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description),
+        (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description),
     ):
         if name in props:
             dispositions[name] = "native"
@@ -725,7 +729,9 @@ class MessageProcessor:
 
             # Strip the injected goal params BEFORE the start event is built,
             # so captured params == the vendor-visible arguments exactly.
-            call_intent, call_expected = self._extract_goal_params(safe_tool_name, params)
+            call_intent, call_expected, call_workflow = self._extract_goal_params(
+                safe_tool_name, params
+            )
 
             # The session's FIRST param intent also becomes a proactive
             # annotation (carrying expected_result too, if present) —
@@ -742,6 +748,11 @@ class MessageProcessor:
                         signal_type=None,
                         intent=call_intent,
                         expected_outcome=call_expected,
+                        # Mirrors baton-sdk's ``emit_proactive``: the injected
+                        # ``overall_task`` lands on the annotation's
+                        # ``workflow`` key, which is where the consumer's rung
+                        # 3b looks first.
+                        workflow=call_workflow,
                         suggested_improvement=None,
                         intent_source=INTENT_SOURCE_PARAM,
                         tool_name=safe_tool_name,
@@ -757,6 +768,7 @@ class MessageProcessor:
                     params=params.get("arguments"),
                     call_intent=call_intent,
                     call_expected=call_expected,
+                    call_workflow=call_workflow,
                     # Provenance covers the pair. An agent may fill either param
                     # alone, so key off both — an expectation with no goal is
                     # still injected-param capture, not unattributed.
@@ -870,9 +882,10 @@ class MessageProcessor:
 
     def _extract_goal_params(
         self, tool_name: str, params: dict[str, Any]
-    ) -> tuple[str | None, str | None]:
-        """Strip the injected ``user_goal``/``expected_result`` params from a
-        tools/call; return their values independently (either may be absent).
+    ) -> tuple[str | None, str | None, str | None]:
+        """Strip the injected ``user_goal``/``expected_result``/``overall_task``
+        params from a tools/call; return their values independently (any may be
+        absent).
 
         Mutates ``params["arguments"]`` in place (the same object the transport
         forwards, so the upstream never sees either param). Never raises; on
@@ -880,21 +893,24 @@ class MessageProcessor:
         Mirrors baton-sdk's ``_extract_goal_params``.
         """
         if self._injection.intent_param_mode == "off":
-            return None, None
+            return None, None, None
         try:
             args = params.get("arguments")
             if not isinstance(args, dict):
-                return None, None
+                return None, None, None
             with self._registry_lock:
                 dispositions = self._param_registry.get(tool_name)
             goal = self._extract_one_goal_param(tool_name, args, USER_GOAL_PARAM_NAME, dispositions)
             expected = self._extract_one_goal_param(
                 tool_name, args, EXPECTED_RESULT_PARAM_NAME, dispositions
             )
-            return goal, expected
+            workflow = self._extract_one_goal_param(
+                tool_name, args, OVERALL_TASK_PARAM_NAME, dispositions
+            )
+            return goal, expected, workflow
         except Exception:
             logger.exception("baton-proxy: goal param extraction failed")
-            return None, None
+            return None, None, None
 
     @staticmethod
     def _extract_one_goal_param(
@@ -1026,7 +1042,13 @@ class MessageProcessor:
                     "injected_tools": sorted(self._injection.names),
                     "intent_param": (
                         {
-                            "names": sorted([USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME]),
+                            "names": sorted(
+                                [
+                                    USER_GOAL_PARAM_NAME,
+                                    EXPECTED_RESULT_PARAM_NAME,
+                                    OVERALL_TASK_PARAM_NAME,
+                                ]
+                            ),
                             "mode": mode,
                         }
                         if mode != "off"
@@ -1039,8 +1061,8 @@ class MessageProcessor:
             logger.exception("baton-proxy: surface snapshot capture failed")
 
     def _inject_intent_params(self, msg: dict[str, Any]) -> None:
-        """Add user_goal/expected_result to every upstream tool in a
-        tools/list response.
+        """Add user_goal/expected_result/overall_task to every upstream tool
+        in a tools/list response.
 
         Runs BEFORE ``_inject_into_response`` appends the proxy's own tools, so
         those never grow the params. Records each tool's per-param dispositions

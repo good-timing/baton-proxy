@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from baton_proxy.proxy import (
     EXPECTED_RESULT_PARAM_NAME,
+    OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
     MessageProcessor,
     _Injection,
@@ -141,7 +142,9 @@ def test_snapshot_captures_vendor_true_surface() -> None:
     aug = snap["seam_augmentations"]
     assert "baton_annotate" in aug["injected_tools"]
     assert aug["intent_param"] == {
-        "names": sorted([USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME]),
+        "names": sorted(
+            [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME]
+        ),
         "mode": "optional",
     }
     assert aug["instructions_suffix"] is True

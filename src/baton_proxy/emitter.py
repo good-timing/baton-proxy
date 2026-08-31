@@ -190,18 +190,19 @@ class Emitter:
         params: Mapping[str, Any] | None,
         call_intent: str | None = None,
         call_expected: str | None = None,
+        call_workflow: str | None = None,
         intent_source: str | None = None,
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
         principal: Principal | None = None,
     ) -> None:
-        # `call_intent` / `call_expected` are the values stripped from the
-        # injected per-tool params. They ride the payload as SIBLINGS of params
-        # — params must stay exactly the vendor-visible arguments. The console
-        # ignores unknown payload keys (opaque JSONB), so this is additive on
-        # the wire. Both keys are OMITTED when the caller left the param off:
-        # "the agent said nothing" and "the agent said nothing useful" are
-        # different, and a null would flatten them.
+        # `call_intent` / `call_expected` / `call_workflow` are the values
+        # stripped from the injected per-tool params. They ride the payload as
+        # SIBLINGS of params — params must stay exactly the vendor-visible
+        # arguments. The console ignores unknown payload keys (opaque JSONB),
+        # so this is additive on the wire. Each key is OMITTED when the caller
+        # left that param off: "the agent said nothing" and "the agent said
+        # nothing useful" are different, and a null would flatten them.
         payload: dict[str, Any] = {
             "tool_name": tool_name,
             "params": dict(params) if params else {},
@@ -210,6 +211,8 @@ class Emitter:
             payload["call_intent"] = call_intent
         if call_expected is not None:
             payload["call_expected"] = call_expected
+        if call_workflow is not None:
+            payload["call_workflow"] = call_workflow
         if intent_source is not None:
             payload["intent_source"] = intent_source
         self._enqueue(

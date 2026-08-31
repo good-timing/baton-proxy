@@ -181,6 +181,13 @@ def build_annotation_tool_description() -> str:
 # names match the SDK's spike-proven neutral choice.
 USER_GOAL_PARAM_NAME = "user_goal"
 EXPECTED_RESULT_PARAM_NAME = "expected_result"
+# The task-label grouping key (wire field ``call_workflow``; console rung 3b).
+# Deliberately NOT named ``workflow``: injected params live inside vendor tool
+# schemas, where ``workflow`` is a plausible real vendor param (Workfront
+# approvals, CI pipelines, Notion automations) — a collision would make the
+# strip swallow the vendor's own argument, and the name would invite the model
+# to fill in the vendor object it is touching instead of the meta task label.
+OVERALL_TASK_PARAM_NAME = "overall_task"
 
 _USER_GOAL_PARAM_DESCRIPTION = (
     "OPTIONAL. One sentence: what the user is actually trying to accomplish "
@@ -191,6 +198,35 @@ _EXPECTED_RESULT_PARAM_DESCRIPTION = (
     "OPTIONAL. One sentence: what a successful result should look like, so a "
     "silent/thin failure can be told apart from success."
 )
+
+
+# The stability contract is the load-bearing design element: user_goal/
+# expected_result are call-scoped diagnostics that reword freely, so they
+# cannot key grouping; this param works ONLY if the model repeats the label
+# verbatim while the task is unchanged (measured 2026-08-10: without the
+# contract, 80% of adjacent same-task calls reword their goal text).
+#
+# Granularity is a KNOWN, MEASURED weakness of this text, kept anyway because
+# the obvious fix is worse. Do not reword without scoring against both corpora
+# in baton-internal `spikes/overall_task_a5/` (40 paired live-agent sessions,
+# 2026-08-11, one build per run): the candidate ("the specific task the user is
+# working on right now — not the overall theme") fixes boundary detection
+# (0.700 -> 1.000) but relabels *within* one task (0.200 then 0.400 over-split
+# on identical scripts), and shattering is the failure mode that destroys
+# downstream trust. Byte-identical to baton-sdk's
+# ``_OVERALL_TASK_PARAM_DESCRIPTION`` and baton-ts's
+# ``OVERALL_TASK_PARAM_DESCRIPTION``; a drift test pins all three.
+_OVERALL_TASK_PARAM_DESCRIPTION = (
+    "OPTIONAL. Short stable label for the broader task this call serves "
+    "(e.g. 'prepare campaign approval'). REPEAT the exact same string on "
+    "every call serving the same task; change it only when the user starts "
+    "a different task."
+)
+
+
+def build_overall_task_param_description() -> str:
+    """Build the injected ``overall_task`` param's ``description`` field."""
+    return _OVERALL_TASK_PARAM_DESCRIPTION
 
 
 def build_user_goal_param_description() -> str:

@@ -206,6 +206,36 @@ def test_emits_annotation() -> None:
     assert "context" not in ann["payload"]
 
 
+def test_tool_call_start_omits_the_goal_keys_it_was_not_given() -> None:
+    """The three injected-param siblings are OMITTED when absent, not null.
+
+    ``call_workflow`` is the one that matters most: it is the task-label
+    grouping key, and a null written for "the agent supplied no label" would
+    collect every label-less call into a single spurious group.
+    """
+    server, url = _start_stub()
+    try:
+        e = Emitter(_config_http(url))
+        e.start()
+        e.enqueue_tool_call_start(
+            tool_name="alpha",
+            params={"real_arg": "kept"},
+            call_workflow="prepare campaign approval",
+            # call_intent and call_expected left as None — must be omitted.
+        )
+        assert _wait_for(lambda: len(_StubReceiver.received) >= 1)
+        e.stop()
+    finally:
+        server.shutdown()
+
+    start = _StubReceiver.received[0]
+    assert start["event_type"] == "tool_call_start"
+    assert start["payload"]["call_workflow"] == "prepare campaign approval"
+    assert "call_intent" not in start["payload"]
+    assert "call_expected" not in start["payload"]
+    assert all(v is not None for v in start["payload"].values())
+
+
 def test_sequence_numbers_are_monotonic() -> None:
     server, url = _start_stub()
     try:
