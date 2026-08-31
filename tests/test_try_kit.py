@@ -2833,6 +2833,20 @@ def _project_config(tmp_path, key: str, name: str = "notion") -> Path:
     )
 
 
+@pytest.fixture
+def global_config(tmp_path, monkeypatch):
+    """`~/.claude.json`, relocated. Two of the tests below assert the sentence
+    that is only true for the global config, so the fixture has to make the file
+    they write actually be it — a tmp path with a global-shaped entry inside is
+    a project config as far as the kit is now concerned, and rightly."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+    path = home / ".claude.json"
+    path.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
+    return path
+
+
 def test_setup_names_the_project_directory_the_wrapped_entry_loads_in(tmp_path, kit_home, capsys):
     """Finding 11, at the sink that produced it."""
     key = "/Users/someone/work/app"
@@ -2856,10 +2870,10 @@ def test_the_handoff_never_offers_the_kits_own_directory_as_the_place_to_start(
     assert "baton-proxy/try && claude" not in out, out
 
 
-def test_a_global_entry_is_not_given_an_invented_directory(tmp_path, kit_home, capsys):
+def test_a_global_entry_is_not_given_an_invented_directory(global_config, kit_home, capsys):
     """A global entry loads wherever they start from, so naming a directory
     would be a fresh false instruction rather than the same one corrected."""
-    path = _config(tmp_path, GLOBAL_ONLY)
+    path = global_config
     assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     assert "cd " not in out, f"a global wrap was told to cd somewhere:\n{out}"
@@ -2904,8 +2918,14 @@ def test_every_scope_hands_over_the_line_the_doc_tells_the_agent_to_relay():
     line that is not there and composing its own path, which is the defect."""
     marker = "Open a second terminal"
     assert f"`{marker}`" in _claude_md(), "CLAUDE.md no longer routes on this line"
-    for scope in (None, "/Users/someone/work/app", str(Path.cwd())):
-        assert kit.start_where(scope).startswith(marker), scope
+    home_config = Path.home() / ".claude.json"
+    for scope, config in (
+        (None, home_config),  # global
+        (None, "/Users/someone/work/app/.mcp.json"),  # a project config file
+        ("/Users/someone/work/app", home_config),  # project scope
+        (str(Path.cwd()), home_config),  # project scope, already there
+    ):
+        assert kit.start_where(scope, config).startswith(marker), (scope, config)
 
 
 # A CONCRETE path — `cd <path>` describing the shape of setup's line is the
@@ -3051,20 +3071,21 @@ def test_an_empty_file_under_a_project_scoped_wrap_names_the_directory(tmp_path,
     # of the config location, so asserting over the whole output would pass
     # without the checklist ever asking the question.
     checklist = out[out.index("No events have been captured yet") :]
-    assert "scoped to" in checklist, f"the checklist never asks the question:\n{checklist}"
+    assert "loads in" in checklist, f"the checklist never asks the question:\n{checklist}"
     assert key in checklist, f"it asks, but never names the directory:\n{checklist}"
 
 
-def test_an_empty_file_under_a_global_wrap_invents_no_directory(tmp_path, kit_home, capsys):
+def test_an_empty_file_under_a_global_wrap_invents_no_directory(global_config, kit_home, capsys):
     """The same checklist must not grow a step that is false. A global entry
     loads wherever they start, so "start it from X" would be a new wrong
     instruction replacing the one just fixed."""
-    _wrapped(tmp_path, kit_home, capsys)
+    assert kit.main(["setup", "notion", "--config-file", str(global_config), "--tenant", "t"]) == 0
+    capsys.readouterr()
     out = _receipt_output(capsys)
     assert _fired(out) == ["No events have been captured yet"], _fired(out)
     checklist = out[out.index("No events have been captured yet") :]
     assert "started from" not in checklist, f"a global wrap was given a directory:\n{checklist}"
-    assert "scoped" not in checklist, checklist
+    assert "loads in" not in checklist, checklist
 
 
 def test_the_six_receipt_rows_are_mutually_exclusive(tmp_path, kit_home, capsys):
@@ -3235,3 +3256,81 @@ def test_a_wrap_clobbered_after_a_real_capture_still_says_so(tmp_path, kit_home,
     out = _receipt_output(capsys)
     assert _fired(out) == ["THE WRAP IS GONE"], _fired(out)
     assert _counts_shown(out), "what was captured before it broke still counts:\n" + out
+
+
+# --- Review findings: `scope is None` is not the same claim as "global" ------
+#
+# `iter_entries` returns scope None for the TOP LEVEL of whatever file was
+# read, and `search_paths`' own docstring says `--config-file` is how a project
+# config is reached. So a `.mcp.json` passed with `--config-file` produces
+# scope None — and "registered globally, so it loads wherever you start from"
+# is then false in the one direction that costs a trial: a `.mcp.json` loads for
+# sessions started in its own directory and nowhere else. That is the
+# empty-capture-with-an-invisible-cause failure, re-entered through the
+# --config-file door.
+
+
+def _mcp_json(tmp_path) -> Path:
+    project = tmp_path / "app"
+    project.mkdir()
+    path = project / ".mcp.json"
+    path.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
+    return path
+
+
+def test_a_project_config_file_is_not_described_as_loading_everywhere(tmp_path, kit_home, capsys):
+    path = _mcp_json(tmp_path)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    out, _err = capsys.readouterr()
+    assert "loads wherever you start from" not in out, out
+    assert str(path.parent) in out, f"the directory that file belongs to is not named:\n{out}"
+
+
+def test_the_checklist_asks_the_directory_question_for_a_project_config_file(
+    tmp_path, kit_home, capsys
+):
+    """The receipt's half of the same claim: someone whose file is empty gets
+    the checklist, and for a non-global config the directory question is the one
+    that resolves it."""
+    path = _mcp_json(tmp_path)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    out = _receipt_output(capsys)
+    checklist = out[out.index("No events have been captured yet") :]
+    assert str(path.parent) in checklist, f"the checklist never names it:\n{checklist}"
+
+
+def test_the_global_claim_survives_for_the_config_that_is_actually_global(
+    tmp_path, kit_home, capsys, monkeypatch
+):
+    """The control. `~/.claude.json` IS loaded from everywhere, and the sentence
+    saying so is the right one there — a fix that made every wrap directory-bound
+    would be the same defect pointing the other way."""
+    home = tmp_path / "home"
+    home.mkdir()
+    path = home / ".claude.json"
+    path.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    out, _err = capsys.readouterr()
+    assert "loads wherever you start from" in out, out
+    assert "cd " not in out, out
+
+
+def test_a_project_path_with_a_space_is_handed_over_as_a_runnable_command(
+    tmp_path, kit_home, capsys
+):
+    """`cd /Users/x/Google Drive/app && claude` cds to `/Users/x/Google` and
+    starts the client in the wrong directory — which loads global scope and
+    captures nothing, the exact failure this line was added to prevent. Parsed
+    with the shell's own rules rather than string-matched, so the assertion is
+    that the command WORKS, not that it looks quoted."""
+    import shlex
+
+    key = str(tmp_path / "Google Drive" / "app")
+    path = _project_config(tmp_path, key)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    out, _err = capsys.readouterr()
+    line = next(ln for ln in out.splitlines() if "&& claude" in ln)
+    argv = shlex.split(line)
+    assert argv[:2] == ["cd", key], f"the handed-over command cds elsewhere: {argv}"

@@ -53,6 +53,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import urllib.parse
 import uuid
@@ -880,14 +881,24 @@ _NOT_CAPTURING_STEPS = (
 )
 
 
-def not_capturing(scope: str | None) -> str:
-    """The empty-file checklist, with the directory question when it applies."""
+def not_capturing(scope: str | None, config_path: str | Path) -> str:
+    """The empty-file checklist, with the directory question when it applies.
+
+    It applies whenever the entry is not in the global config — a project scope
+    inside `~/.claude.json`, or the top level of a project config reached with
+    `--config-file`. Both load for one directory; only `~/.claude.json` loads
+    for all of them."""
     steps = list(_NOT_CAPTURING_STEPS)
-    if scope is not None:
+    where = (
+        scope
+        if scope is not None
+        else (None if is_global_config(config_path) else str(Path(config_path).parent))
+    )
+    if where is not None:
         steps.insert(
             1,
-            "Was that session started from the directory this entry is scoped to?\n"
-            f"  {scope}\n"
+            "Was that session started from the directory this entry loads in?\n"
+            f"  {where}\n"
             "A session started anywhere else loads your global servers only — the\n"
             "wrap never runs, and nothing is captured.",
         )
@@ -1058,7 +1069,29 @@ def describe(path: Path, scope: str | None) -> str:
     return f"{path}" + (f" · project {scope}" if scope else " · global mcpServers")
 
 
-def start_where(scope: str | None) -> str:
+def is_global_config(config_path: str | Path) -> bool:
+    """Is this the file a client loads no matter where a session starts?
+
+    Only `~/.claude.json` is. `scope is None` means the entry sits at the top
+    level of whatever file was read, and `--config-file` exists so a project
+    `.mcp.json` can be reached — whose top level loads for sessions started in
+    its own directory and nowhere else. Reading None as "global" put a false
+    sentence in front of exactly the person the directory fix was written for."""
+    try:
+        return Path(config_path).expanduser().resolve() == (Path.home() / ".claude.json").resolve()
+    except OSError:  # pragma: no cover - an unresolvable home is not worth a branch
+        return False
+
+
+def _cd_to(where: str) -> str:
+    """A `cd` a person can paste. Quoted, because `/Users/x/Google Drive/app` is
+    an ordinary macOS path and an unquoted one silently cds to `/Users/x/Google`
+    — which loads global scope and captures nothing, the failure this whole line
+    exists to prevent."""
+    return f"    cd {shlex.quote(where)} && claude"
+
+
+def start_where(scope: str | None, config_path: str | Path) -> str:
     """Where to start the client so the wrapped entry actually loads.
 
     Chosen from the scope setup already holds, never hardcoded — a fixed string
@@ -1074,10 +1107,23 @@ def start_where(scope: str | None) -> str:
     client starts. Only their config decides the second one — the kit wraps in
     place and never moves an entry between scopes, so whatever directory rule
     they already had is the one that survives the trial."""
-    if scope is None:
+    if scope is None and is_global_config(config_path):
         return (
             "Open a second terminal and start your client the way you normally do.\n"
             "This entry is registered globally, so it loads wherever you start from."
+        )
+    if scope is None:
+        # Not global, and the kit does not get to say how their client loads an
+        # arbitrary file. It can say where the file sits and what that means for
+        # the shape it is nearly always in.
+        holder = Path(config_path).parent
+        return (
+            "Open a second terminal and start your client where this entry\n"
+            "applies. It is at the top level of\n"
+            f"  {config_path}\n"
+            "which is not your global config — a project config is loaded for\n"
+            "sessions started in the directory it sits in:\n\n"
+            f"{_cd_to(str(holder))}"
         )
     try:
         already_there = Path(scope).expanduser().resolve() == Path.cwd().resolve()
@@ -1092,7 +1138,7 @@ def start_where(scope: str | None) -> str:
     return (
         "Open a second terminal and start your client where this server is\n"
         "registered:\n\n"
-        f"    cd {scope} && claude\n\n"
+        f"{_cd_to(scope)}\n\n"
         "The entry is scoped to that directory. A session started anywhere else\n"
         "loads your global servers only, and captures nothing."
     )
@@ -1180,7 +1226,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         # The handoff again, not only on the first run. Someone re-running setup
         # days later has usually lost the window that carried it — a multi-day
         # trial is what the kit asks for, so cold re-entry is the normal case.
-        print(f"\n{start_where(state['scope'])}")
+        print(f"\n{start_where(state['scope'], state['config_path'])}")
         return 0
 
     found = discover(args.config_file)
@@ -1317,7 +1363,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     # This window is the only place the security detail and the config diff
     # exist, and after the handoff no agent anywhere else knows the kit is here.
     print("\nLeave this window open — it holds the security detail and the diff above.")
-    print(f"\n{start_where(scope)}")
+    print(f"\n{start_where(scope, path)}")
     print(
         "\nUse the server the way you normally would. Then come back to this window\n"
         "and run\n"
@@ -1391,7 +1437,7 @@ def cmd_receipt(args: argparse.Namespace) -> int:
         # server name and config path printed above — neither of which exists
         # without state. Serving it here fired two of the doc's branches at once
         # and sent the reader back to the command they had just run.
-        print(not_capturing(state["scope"]) if state else NOT_SET_UP)
+        print(not_capturing(state["scope"], state["config_path"]) if state else NOT_SET_UP)
         return 0
 
     s = summarize(events, events_path.stat().st_size)
