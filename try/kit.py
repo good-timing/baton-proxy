@@ -784,6 +784,12 @@ def summarize(events: list[dict], size_bytes: int) -> dict:
     receipt's job is narrower: prove we captured a class of thing you have no
     other way to see."""
     sessions = {e.get("session_id") for e in events if e.get("session_id")}
+    # Per session, not just the total. `sessions 2 / tool calls 2` is true of a
+    # trial where both sessions worked and of one where a second server took
+    # every call from the first — and the second is the one that needs saying.
+    # Keyed on first timestamp so the rows read in the order they happened.
+    calls_by_session: Counter[str] = Counter()
+    first_seen: dict[str, str] = {}
     with_intent: set[str] = set()
     tool_calls = 0
     tools: list[str] = []
@@ -793,11 +799,16 @@ def summarize(events: list[dict], size_bytes: int) -> dict:
     for e in events:
         kind = e.get("event_type", "")
         kinds[kind] += 1
+        sid = e.get("session_id") or ""
         if e.get("captured_at"):
             stamps.append(e["captured_at"])
+            if sid and (sid not in first_seen or e["captured_at"] < first_seen[sid]):
+                first_seen[sid] = e["captured_at"]
         payload = e.get("payload") or {}
         if kind == "tool_call_start":
             tool_calls += 1
+            if sid:
+                calls_by_session[sid] += 1
             if payload.get("call_intent"):
                 with_intent.add(e.get("session_id") or "")
         elif kind == "annotation" and payload.get("intent"):
@@ -815,8 +826,13 @@ def summarize(events: list[dict], size_bytes: int) -> dict:
         for m in re.finditer(r"\[REDACTED:([a-z_\-]+)\]", json.dumps(e.get("payload") or {})):
             redactions[m.group(1)] += 1
 
+    ordered = sorted(sessions - {None}, key=lambda s: (first_seen.get(str(s), ""), str(s)))
+    per_session = [(str(s), calls_by_session[str(s)]) for s in ordered]
+
     return {
         "sessions": len(sessions),
+        "per_session": per_session,
+        "dead_sessions": sum(1 for _s, c in per_session if c == 0),
         "sessions_with_intent": len(with_intent - {""}),
         "tool_calls": tool_calls,
         "tools": tools,
@@ -837,26 +853,76 @@ def human_size(n: int) -> str:
     return f"{n:.1f} GB"
 
 
-NOT_CAPTURING = """\
+_NOT_CAPTURING_HEAD = """\
 No events have been captured yet.
 
 That is a real answer, not an error — and it is worth getting to the bottom of
 now rather than at the end of the trial. In order:
 
-  1. Has a NEW client session been started since setup ran? A session that was
-     already running never sees the wrap. This is the usual cause.
-  2. Has the wrapped server actually been used in one of those sessions? Opening a
-     session is not enough; the agent has to call the server at least once.
-     (A session that merely starts does record one tool-surface snapshot, so if
-     even that is missing, the proxy is not in the path at all.)
-  3. Is the entry that got wrapped the one you actually use? Run
-     `python3 kit.py receipt` from this folder and check the server name
-     and config path printed above.
-  4. Does the wrapped command launch? Run exactly what setup wrote into the
-     entry (printed above as `launch check`). If that fails, the server is dead
-     in your client too — which you would have noticed.
 """
 
+# Written as a list rather than one block because one of the steps only exists
+# for a project-scoped wrap: "start it from there" is the decisive question when
+# the entry is scoped to a directory, and a false instruction when it is global,
+# which is the same defect this checklist is here to catch.
+_NOT_CAPTURING_STEPS = (
+    "Has a NEW client session been started since setup ran? A session that was\n"
+    "already running never sees the wrap. This is the usual cause.",
+    "Has the wrapped server actually been used in one of those sessions? Opening\n"
+    "a session is not enough; the agent has to call the server at least once.\n"
+    "(A session that merely starts does record one tool-surface snapshot, so if\n"
+    "even that is missing, the proxy is not in the path at all.)",
+    "Is the entry that got wrapped the one you actually use? Check the server\n"
+    "name and config path printed above.",
+    "Does the wrapped command launch? Run exactly what setup wrote into the\n"
+    "entry (printed above as `launch check`). If that fails, the server is dead\n"
+    "in your client too — which you would have noticed.",
+)
+
+
+def not_capturing(scope: str | None) -> str:
+    """The empty-file checklist, with the directory question when it applies."""
+    steps = list(_NOT_CAPTURING_STEPS)
+    if scope is not None:
+        steps.insert(
+            1,
+            "Was that session started from the directory this entry is scoped to?\n"
+            f"  {scope}\n"
+            "A session started anywhere else loads your global servers only — the\n"
+            "wrap never runs, and nothing is captured.",
+        )
+    body = "".join(
+        f"  {n}. {step}\n".replace("\n", "\n     ", step.count("\n"))
+        for n, step in enumerate(steps, start=1)
+    )
+    return _NOT_CAPTURING_HEAD + body
+
+
+# Dave's run: `toybox-baton`, a near-duplicate in global scope, answered all four
+# tool calls while the wrapped `toybox` sat idle. Two causes rather than his one,
+# because the kit cannot tell them apart and the other is at least as common on
+# day one — a server that has simply not been used yet looks identical from here.
+NOTHING_CALLED = """\
+CONNECTED, BUT NOTHING CALLED IT. Your server started and we captured its tool
+list, but no tool call ever reached it. Two things do this:
+
+  1. The server has not been called yet. Opening a session is not enough — the
+     agent has to use the server at least once. Ask for that, then run this
+     again.
+  2. Another server in your client is answering these tools, so the wrapped one
+     sits idle. Run /mcp and look for a second entry with a similar tool list —
+     a near-duplicate name is the usual shape.
+"""
+
+# The same finding inside a working trial, where it is a note and not a banner:
+# calls landed, so the trial is not broken, and a session with no calls is
+# ordinary if they simply did not use the server in it.
+DEAD_SESSION_NOTE = """\
+One or more sessions above recorded no calls. That is normal for a session where
+you did not use the server. If you DID use it in one of them, another server in
+your client is probably answering these tools — run /mcp and look for a second
+entry with a similar tool list.
+"""
 
 STATE_CLEARED = (
     "Setup state has been cleared — this receipt is reading the event file left\n"
@@ -1301,11 +1367,23 @@ def cmd_receipt(args: argparse.Namespace) -> int:
         # server name and config path printed above — neither of which exists
         # without state. Serving it here fired two of the doc's branches at once
         # and sent the reader back to the command they had just run.
-        print(NOT_CAPTURING if state else NOT_SET_UP)
+        print(not_capturing(state["scope"]) if state else NOT_SET_UP)
         return 0
 
     s = summarize(events, events_path.stat().st_size)
     print(f"sessions             {s['sessions']}")
+    # The rows are the whole point of blocker 3: an aggregate cannot say that one
+    # of two sessions captured nothing. Bounded at ten, and the count of what is
+    # not shown is printed rather than dropped silently.
+    shown = s["per_session"][-10:]
+    for sid, calls in shown:
+        print(f"                     {sid}  {calls} calls")
+    if len(s["per_session"]) > len(shown):
+        hidden = s["per_session"][: -len(shown)]
+        print(
+            f"                     +{len(hidden)} earlier sessions "
+            f"({sum(1 for _s, c in hidden if c == 0)} with no calls)"
+        )
     print(f"tool calls           {s['tool_calls']}")
     print(f"intent captured      {s['sessions_with_intent']} of {s['sessions']} sessions")
     print(f"tool definitions     {len(s['tools'])} captured exactly as your server served them")
@@ -1322,6 +1400,16 @@ def cmd_receipt(args: argparse.Namespace) -> int:
         print(f"secrets redacted     {sum(s['redactions'].values())} ({detail})")
     else:
         print("secrets redacted     0 — no credential or PII patterns matched")
+    # Both of these need state: on a trial that has already ended the header
+    # says so, and telling someone to go fix a wrap they removed is dead advice.
+    # One banner per output is what makes CLAUDE.md's table a table.
+    if state and s["tool_calls"] == 0:
+        print()
+        print(NOTHING_CALLED, end="")
+    elif state and s["dead_sessions"]:
+        print()
+        print(DEAD_SESSION_NOTE, end="")
+
     print()
     print("This file has not left your machine, and nothing here sends it.")
     print("Read it before you decide whether it may: it contains the full arguments")

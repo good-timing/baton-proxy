@@ -2438,6 +2438,23 @@ def test_receipt_branch_four_counts(tmp_path, kit_home, capsys):
 STATE_CLEARED_MARKER = "Setup state has been cleared"
 
 
+# The banner an agent routes on. Six rows now, five banners: the counts row has
+# no banner of its own and is read off its labels by `_counts_shown` below.
+#
+#   1  no state, no events        "No setup state found"
+#   2  no state, events           "Setup state has been cleared"   (+counts)
+#   3  state, no events, gone     "THE WRAP IS GONE"
+#   4  state, no events           "No events have been captured yet"
+#   5  state, events, no calls    "CONNECTED, BUT NOTHING CALLED IT"  (+counts)
+#   6  state, events, calls       — counts only
+#
+# Row 5 requires state deliberately: on a trial that has already ENDED, row 2
+# wins. Its remedy is to go look at /mcp and fix a live wrap, which is dead
+# advice once the wrap is gone, and two banners in one output is the defect this
+# property exists to stop.
+NOTHING_CALLED_MARKER = "CONNECTED, BUT NOTHING CALLED IT"
+
+
 def _fired(out: str) -> list[str]:
     return [
         m
@@ -2446,6 +2463,7 @@ def _fired(out: str) -> list[str]:
             STATE_CLEARED_MARKER,
             "THE WRAP IS GONE",
             "No events have been captured yet",
+            NOTHING_CALLED_MARKER,
         )
         if m in out
     ]
@@ -2907,3 +2925,196 @@ def test_the_doc_never_names_a_directory_to_start_the_clients_session_in():
     assert not _DOC_PICKS_A_DIRECTORY.search("hands over a `cd <path> && claude`")
     offenders = [line for line in _claude_md().splitlines() if _DOC_PICKS_A_DIRECTORY.search(line)]
     assert not offenders, "CLAUDE.md names a start directory itself:\n" + "\n".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# TK-D-3 — the receipt diagnoses instead of reporting (Dave's run, 2026-08-28,
+# blocker 3; findings 13 and 17).
+#
+# A near-duplicate server in global scope, `toybox-baton`, answered all four
+# tool calls while the wrapped `toybox` sat idle. The receipt printed
+# `sessions 2 / tool calls 2` — meaning one of the two sessions recorded zero —
+# and said nothing about it. It held the exact evidence and reported it as a
+# statistic.
+#
+# This is the only screen a stranger sees after something goes wrong, so it is
+# the one chance to turn "it didn't work" into a next step. Zero events and zero
+# CALLS are different failures with different causes; the counts have to be per
+# session or the difference is not even representable.
+# ---------------------------------------------------------------------------
+
+
+def _session_events(sid: str, calls: int, hour: int = 10) -> list[dict]:
+    """One session: its tool-surface snapshot, then `calls` matched pairs.
+
+    Every session records a snapshot even if the agent never calls the server
+    (SECURITY.md §5) — which is exactly why a zero-call session is invisible in
+    an aggregate and obvious per session."""
+    out: list[dict] = [
+        {
+            "event_type": "surface_snapshot",
+            "session_id": sid,
+            "captured_at": f"2026-08-30T{hour:02d}:00:00Z",
+            "payload": {"tools": [{"name": "search"}, {"name": "fetch"}]},
+        }
+    ]
+    for i in range(calls):
+        out.append(
+            {
+                "event_type": "tool_call_start",
+                "session_id": sid,
+                "captured_at": f"2026-08-30T{hour:02d}:{i + 1:02d}:00Z",
+                "payload": {"tool_name": "search", "call_intent": "look something up"},
+            }
+        )
+        out.append(
+            {
+                "event_type": "tool_call_end",
+                "session_id": sid,
+                "captured_at": f"2026-08-30T{hour:02d}:{i + 1:02d}:01Z",
+                "payload": {"tool_name": "search", "result": {}, "duration_ms": 3},
+            }
+        )
+    return out
+
+
+def _write_events(kit_home, *sessions: tuple[str, int]) -> None:
+    rows: list[dict] = []
+    for n, (sid, calls) in enumerate(sessions):
+        rows.extend(_session_events(sid, calls, hour=10 + n))
+    (kit_home / "events.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8"
+    )
+
+
+def _wrapped(tmp_path, kit_home, capsys, scope_key: str | None = None):
+    path = _project_config(tmp_path, scope_key) if scope_key else _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    return path
+
+
+def test_daves_run_no_longer_reports_a_dead_session_as_a_statistic(tmp_path, kit_home, capsys):
+    """`sessions 2 / tool calls 2`, one of them dead. The shape of his run."""
+    _wrapped(tmp_path, kit_home, capsys)
+    _write_events(kit_home, ("d1e2f3a4", 2), ("bee5d1a2", 0))
+    out = _receipt_output(capsys)
+    assert "bee5d1a2" in out, f"the dead session is not named:\n{out}"
+    assert "0 calls" in out, f"its count is not readable per session:\n{out}"
+    assert "/mcp" in out, f"the likely cause is not named:\n{out}"
+
+
+def test_a_mixed_capture_is_the_counts_branch_and_not_a_banner(tmp_path, kit_home, capsys):
+    """The diagnostic rides INSIDE the counts row rather than replacing it —
+    calls landed, so the headline is what was captured. A banner here would
+    route the agent to a failure on a trial that is working."""
+    _wrapped(tmp_path, kit_home, capsys)
+    _write_events(kit_home, ("d1e2f3a4", 2), ("bee5d1a2", 0))
+    out = _receipt_output(capsys)
+    assert _fired(out) == [], _fired(out)
+    assert _counts_shown(out)
+
+
+def test_a_session_that_connected_and_called_nothing_is_its_own_branch(tmp_path, kit_home, capsys):
+    """Row 5. Handshake events present, zero calls anywhere: the file is not
+    empty, so the empty-file checklist does not apply, and the counts alone say
+    `sessions 1 / tool calls 0` without saying what to do about it."""
+    _wrapped(tmp_path, kit_home, capsys)
+    _write_events(kit_home, ("bee5d1a2", 0))
+    out = _receipt_output(capsys)
+    assert _fired(out) == [NOTHING_CALLED_MARKER], _fired(out)
+    assert _counts_shown(out), "row 5 still reports its numbers:\n" + out
+    assert "/mcp" in out, "the cause Dave's run hit is not named:\n" + out
+    assert f'"{NOTHING_CALLED_MARKER}"' in _claude_md(), "CLAUDE.md does not route on this row"
+
+
+def test_an_ended_trial_that_captured_nothing_is_still_the_ended_trial_branch(kit_home, capsys):
+    """Two rows could match this: uninstall leaves events and removes state, and
+    those events can be all-handshake. Row 2 wins — row 5's remedy is to go fix
+    a live wrap, and there is no wrap left to fix."""
+    _write_events(kit_home, ("bee5d1a2", 0))
+    (kit_home / "state.json").unlink(missing_ok=True)
+    out = _receipt_output(capsys)
+    assert _fired(out) == [STATE_CLEARED_MARKER], _fired(out)
+
+
+def test_an_empty_file_under_a_project_scoped_wrap_names_the_directory(tmp_path, kit_home, capsys):
+    """Row 4, carrying finding 11's other half. `receipt` is where someone lands
+    when the trial produced nothing, so the checklist has to ask the question
+    the wrong-directory bug makes decisive — and it can only ask it when the
+    entry is project-scoped."""
+    key = "/Users/someone/work/app"
+    _wrapped(tmp_path, kit_home, capsys, scope_key=key)
+    out = _receipt_output(capsys)
+    assert _fired(out) == ["No events have been captured yet"], _fired(out)
+    # Scoped to the checklist: the header already prints the project key as part
+    # of the config location, so asserting over the whole output would pass
+    # without the checklist ever asking the question.
+    checklist = out[out.index("No events have been captured yet") :]
+    assert "scoped to" in checklist, f"the checklist never asks the question:\n{checklist}"
+    assert key in checklist, f"it asks, but never names the directory:\n{checklist}"
+
+
+def test_an_empty_file_under_a_global_wrap_invents_no_directory(tmp_path, kit_home, capsys):
+    """The same checklist must not grow a step that is false. A global entry
+    loads wherever they start, so "start it from X" would be a new wrong
+    instruction replacing the one just fixed."""
+    _wrapped(tmp_path, kit_home, capsys)
+    out = _receipt_output(capsys)
+    assert _fired(out) == ["No events have been captured yet"], _fired(out)
+    checklist = out[out.index("No events have been captured yet") :]
+    assert "started from" not in checklist, f"a global wrap was given a directory:\n{checklist}"
+    assert "scoped" not in checklist, checklist
+
+
+def test_the_six_receipt_rows_are_mutually_exclusive(tmp_path, kit_home, capsys):
+    """The property that makes the doc's table a table, over every row at once.
+
+    It has failed twice on this file, both times because a case nobody ran had
+    two markers in it ([[feedback_invariant_scoped_to_one_field]]). So the cases
+    are enumerated here rather than left one-per-test: the failure was never a
+    wrong assertion, it was a row nothing exercised."""
+    key = "/Users/someone/work/app"
+
+    def fresh() -> None:
+        (kit_home / "events.jsonl").unlink(missing_ok=True)
+        (kit_home / "state.json").unlink(missing_ok=True)
+
+    # 1 — nothing here at all.
+    fresh()
+    assert _fired(_receipt_output(capsys)) == ["No setup state found"]
+
+    # 2 — uninstall's leftovers: events, no state.
+    fresh()
+    _write_events(kit_home, ("d1e2f3a4", 2))
+    assert _fired(_receipt_output(capsys)) == [STATE_CLEARED_MARKER]
+
+    # 3 — wrapped, then restored by hand.
+    fresh()
+    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key)
+    path.write_text(
+        canonical(
+            {
+                "mcpServers": {},
+                "projects": {
+                    key: {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _fired(_receipt_output(capsys)) == ["THE WRAP IS GONE"]
+
+    # 4 — wrapped, still wrapped, nothing landed.
+    fresh()
+    _wrapped(tmp_path, kit_home, capsys, scope_key=key)
+    assert _fired(_receipt_output(capsys)) == ["No events have been captured yet"]
+
+    # 5 — connected, never called.
+    _write_events(kit_home, ("bee5d1a2", 0))
+    assert _fired(_receipt_output(capsys)) == [NOTHING_CALLED_MARKER]
+
+    # 6 — the working trial.
+    _write_events(kit_home, ("d1e2f3a4", 2), ("bee5d1a2", 0))
+    out = _receipt_output(capsys)
+    assert _fired(out) == [] and _counts_shown(out)

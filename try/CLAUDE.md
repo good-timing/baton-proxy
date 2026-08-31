@@ -68,18 +68,32 @@ probably long gone. So begin with:
 python3 kit.py receipt
 ```
 
+Exactly one of these six lines is in any receipt. Read the first one that
+appears, and stop — they do not combine.
+
 - **"No setup state found"** → nothing is wrapped yet. Go to *Setting up*.
 - **"Setup state has been cleared"** → the trial was already ended. `uninstall`
   removes the state and leaves the event file, so the counts below it are a
   finished trial's, not a running one. Report them if they are wanted. Do not
   offer *Setting up* as though nothing had run, and do not say the trial is
   live — the person ended it themselves and knows they did.
-- **State, but no events** → the receipt says which case it is. If it reports
-  the wrap is gone, relay that and offer `uninstall` to clear the stale state.
-  Otherwise it prints a short checklist; the usual answer is that no new client
-  session has been started since setup. Walk the person through it in order.
-- **State, and events** → the trial is running. Report the numbers, and if they
-  are ready to finish, go to *Ending it*.
+- **"THE WRAP IS GONE"** → the entry in the config is no longer the one setup
+  wrote, so the wrap is gone and nothing has been passing through the proxy.
+  Relay that and offer `uninstall` to clear the stale state.
+- **"No events have been captured yet"** → wrapped, still wrapped, nothing
+  landed. The receipt prints a short checklist; walk the person through it in
+  order. Where the entry is scoped to a project directory the checklist names
+  that directory — a session started anywhere else is the most common cause
+  after the one above it.
+- **"CONNECTED, BUT NOTHING CALLED IT"** → their server started and its tool
+  list was captured, but nothing ever called it. The receipt names the two
+  causes; take them in order, and do not describe this as a broken wrap. The
+  capture path is working; nothing came down it.
+- **Counts with none of those lines above them** → the trial is running. Report
+  the numbers, and if they are ready to finish, go to *Ending it*. Sessions are
+  listed one per line: if one shows `0 calls` while another captured, say so
+  rather than reporting the total — that is a session where their agent reached
+  a different server.
 
 ## Setting up
 
