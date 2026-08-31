@@ -2778,3 +2778,132 @@ def test_uninstall_does_not_charge_a_restart_it_does_not_need(tmp_path, kit_home
     assert not _QUIT_BELIEF.search(out), out
     assert "original server again" in out, f"uninstall never says what happens next:\n{out}"
     assert "INERT" not in out, "uninstall is not pending on anything"
+
+
+# ---------------------------------------------------------------------------
+# TK-D-2 — the handoff names the directory the wrap actually loads in (Dave's
+# run, 2026-08-28, blocker 1 — the single highest-loss defect in the flow).
+#
+# In that run setup wrote the wrapped entry to
+# `projects["/Users/davideyler/workplace"]` and then told him to start his
+# client from `…/baton-proxy/try`. A project-scoped server only loads for a
+# session started from its own directory, so following the instruction loads
+# global scope, the wrapped entry never starts, and `events.jsonl` stays empty —
+# after he has read the security page, approved the commands, and let us rewrite
+# his client config. Every cost paid, blank result, and the only conclusion
+# available to him is that Baton does not work. He does not file a bug.
+#
+# The path was never missing: `describe()` prints the project key in setup's own
+# "Wrapped" line. The instruction ignored it. So the sentence is CHOSEN from the
+# scope setup already holds, and a hardcoded string cannot be the fix — which is
+# what these tests pin, one per scope.
+#
+# Two directories, and conflating them is the bug:
+#   try/          — ours. setup, receipt, uninstall run here.
+#   project key   — theirs. where they start the client.
+# ---------------------------------------------------------------------------
+
+
+def _project_config(tmp_path, key: str, name: str = "notion") -> Path:
+    """A config whose only server is scoped to `key`."""
+    return _config(
+        tmp_path,
+        {
+            "mcpServers": {},
+            "projects": {key: {"mcpServers": {name: {"command": "npx", "args": ["-y", "srv"]}}}},
+        },
+    )
+
+
+def test_setup_names_the_project_directory_the_wrapped_entry_loads_in(tmp_path, kit_home, capsys):
+    """Finding 11, at the sink that produced it."""
+    key = "/Users/someone/work/app"
+    path = _project_config(tmp_path, key)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    out, _err = capsys.readouterr()
+    assert f"cd {key} && claude" in out, f"the handoff never names the project path:\n{out}"
+
+
+def test_the_handoff_never_offers_the_kits_own_directory_as_the_place_to_start(
+    tmp_path, kit_home, capsys
+):
+    """The other half, and the one that actually fired: it is not enough that
+    the right path appears somewhere — the WRONG one must not be handed over as
+    a command. `try/` is where the kit's three commands run; it is never where
+    their client starts unless their own config says so."""
+    path = _project_config(tmp_path, "/Users/someone/work/app")
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    out, _err = capsys.readouterr()
+    assert f"cd {kit.TRY_DIR} && claude" not in out, out
+    assert "baton-proxy/try && claude" not in out, out
+
+
+def test_a_global_entry_is_not_given_an_invented_directory(tmp_path, kit_home, capsys):
+    """A global entry loads wherever they start from, so naming a directory
+    would be a fresh false instruction rather than the same one corrected."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    out, _err = capsys.readouterr()
+    assert "cd " not in out, f"a global wrap was told to cd somewhere:\n{out}"
+    assert "second terminal" in out
+
+
+def test_the_cd_is_dropped_when_they_are_already_in_the_project_directory(
+    tmp_path, kit_home, capsys, monkeypatch
+):
+    """Dave: "When the current directory already matches the project key, drop
+    the `cd`." Telling someone to cd to where they are reads as a step they got
+    wrong."""
+    here = (tmp_path / "work").resolve()
+    here.mkdir()
+    monkeypatch.chdir(here)
+    path = _project_config(tmp_path, str(here))
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    out, _err = capsys.readouterr()
+    assert "cd " not in out, f"told to cd to the directory they are standing in:\n{out}"
+    assert "second terminal" in out
+
+
+def test_the_already_wrapped_path_hands_over_the_same_directory(tmp_path, kit_home, capsys):
+    """Cold re-entry is the normal case on a multi-day trial, not a fallback:
+    windows close, laptops sleep. Someone who re-runs setup gets "already
+    wrapped" — and used to get no handoff at all, which is the state the person
+    is in precisely when they have lost the first window."""
+    key = "/Users/someone/work/app"
+    path = _project_config(tmp_path, key)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    out, _err = capsys.readouterr()
+    assert "Already wrapped" in out
+    assert f"cd {key} && claude" in out, f"the second run hands over nothing:\n{out}"
+
+
+def test_every_scope_hands_over_the_line_the_doc_tells_the_agent_to_relay():
+    """The doc tie. `CLAUDE.md` routes the agent to a line by its opening words,
+    so all three scopes have to open with them — and the doc has to still say
+    so. A reworded helper with an untouched doc leaves the agent looking for a
+    line that is not there and composing its own path, which is the defect."""
+    marker = "Open a second terminal"
+    assert f"`{marker}`" in _claude_md(), "CLAUDE.md no longer routes on this line"
+    for scope in (None, "/Users/someone/work/app", str(Path.cwd())):
+        assert kit.start_where(scope).startswith(marker), scope
+
+
+# A CONCRETE path — `cd <path>` describing the shape of setup's line is the
+# handover working, not the defect. What may not appear is a directory the doc
+# picked, which is what `cd baton-proxy/try && claude` was.
+_DOC_PICKS_A_DIRECTORY = re.compile(r"cd\s+(?!<)[^\s`]+\s*&&\s*claude")
+
+
+def test_the_doc_never_names_a_directory_to_start_the_clients_session_in():
+    """The other half of finding 11: the wrong path was IN THE DOC, as a command
+    to run. Only setup knows the right one, so the doc must hand over rather
+    than instruct — including for the kit's own folder, which is right for
+    `kit.py` and wrong for their client."""
+    assert _DOC_PICKS_A_DIRECTORY.search("run `cd baton-proxy/try && claude` again"), (
+        "the check would not have caught the line it was written for"
+    )
+    assert not _DOC_PICKS_A_DIRECTORY.search("hands over a `cd <path> && claude`")
+    offenders = [line for line in _claude_md().splitlines() if _DOC_PICKS_A_DIRECTORY.search(line)]
+    assert not offenders, "CLAUDE.md names a start directory itself:\n" + "\n".join(offenders)

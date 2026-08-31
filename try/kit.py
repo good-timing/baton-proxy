@@ -969,6 +969,46 @@ def describe(path: Path, scope: str | None) -> str:
     return f"{path}" + (f" · project {scope}" if scope else " · global mcpServers")
 
 
+def start_where(scope: str | None) -> str:
+    """Where to start the client so the wrapped entry actually loads.
+
+    Chosen from the scope setup already holds, never hardcoded — a fixed string
+    is the defect this replaces. In the 2026-08-28 run the kit wrote the entry
+    to `projects["/Users/davideyler/workplace"]` and then named its own `try/`
+    directory as the place to restart from: a project-scoped server only loads
+    for a session started from its own directory, so that instruction loads
+    global scope, the wrap never starts, and the file stays empty for reasons
+    the person cannot see.
+
+    Two directories, and conflating them is the whole bug. `try/` is ours and
+    the three commands run there; the project key is theirs and is where the
+    client starts. Only their config decides the second one — the kit wraps in
+    place and never moves an entry between scopes, so whatever directory rule
+    they already had is the one that survives the trial."""
+    if scope is None:
+        return (
+            "Open a second terminal and start your client the way you normally do.\n"
+            "This entry is registered globally, so it loads wherever you start from."
+        )
+    try:
+        already_there = Path(scope).expanduser().resolve() == Path.cwd().resolve()
+    except OSError:  # pragma: no cover - an unreadable cwd is not worth a branch
+        already_there = False
+    if already_there:
+        return (
+            "Open a second terminal in this same directory and start your client\n"
+            f"there. The entry is scoped to {scope}, and it only loads for a session\n"
+            "started from there."
+        )
+    return (
+        "Open a second terminal and start your client where this server is\n"
+        "registered:\n\n"
+        f"    cd {scope} && claude\n\n"
+        "The entry is scoped to that directory. A session started anywhere else\n"
+        "loads your global servers only, and captures nothing."
+    )
+
+
 def write_atomically(path: Path, text: str) -> None:
     """Write via a temp file in the same directory, then ``os.replace``.
 
@@ -1048,6 +1088,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
         print("\nNothing changed. Current entry:\n")
         print(entry_json(state["wrapped_entry"]))
         print(f"\n{RESTART_NOTE}")
+        # The handoff again, not only on the first run. Someone re-running setup
+        # days later has usually lost the window that carried it — a multi-day
+        # trial is what the kit asks for, so cold re-entry is the normal case.
+        print(f"\n{start_where(state['scope'])}")
         return 0
 
     found = discover(args.config_file)
@@ -1181,9 +1225,15 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print("\nThe entry now reads:\n")
     print(entry_json(state["wrapped_entry"]))
     print(f"\n{RESTART_NOTE}")
+    # This window is the only place the security detail and the config diff
+    # exist, and after the handoff no agent anywhere else knows the kit is here.
+    print("\nLeave this window open — it holds the security detail and the diff above.")
+    print(f"\n{start_where(scope)}")
     print(
-        "\nIn that new session, use the server normally. Run\n"
-        "  python3 kit.py receipt\nany time — early is better than late."
+        "\nUse the server the way you normally would. Then come back to this window\n"
+        "and run\n"
+        "  python3 kit.py receipt\n"
+        f"from {TRY_DIR} — early is better than late."
     )
     return 0
 

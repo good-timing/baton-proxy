@@ -148,6 +148,15 @@ on its own is what produces an empty capture:
 > use the server the way you normally would. Come back to this window whenever
 > you want to see what has been captured.
 
+**Where they start it is not yours to choose — setup printed it.** Its output
+carries a line beginning `Open a second terminal`, which either hands over a
+`cd <path> && claude` or says the entry is global and loads anywhere. Relay that
+line as printed. The wrapped entry keeps whatever scope it already had, and a
+project-scoped server only loads for a session started from its own directory —
+so a path you compose yourself produces an empty file for a reason the person
+cannot see. This `try/` folder is where the three commands run. It is not where
+their client starts, unless setup said it was.
+
 Then stop. Do not try to verify capture before they have used the server in that
 new session — there is nothing to verify yet, and saying otherwise would be
 wrong.
