@@ -1349,10 +1349,23 @@ def _signal_upstream(child: Any, sig: int) -> None:
         killpg = None
     if killpg is not None:
         try:
-            killpg(os.getpgid(child.pid), sig)
-            return
+            pgid: int | None = os.getpgid(child.pid)
         except OSError:
-            pass
+            pgid = None  # already reaped, or not ours to ask about
+        # Never signal our OWN group. The group is only safe to signal while
+        # the child has one of its own; if it shares ours — a platform where
+        # `start_new_session` does nothing, or a future edit dropping it — that
+        # group holds the proxy, the MCP client that launched it, and whatever
+        # else shares the terminal, and this would SIGKILL the lot. Found by
+        # mutation: deleting the flag and running the suite SIGTERMed the test
+        # runner. The flag makes the group distinct; this makes the signal safe
+        # even when it is not.
+        if pgid is not None and pgid != os.getpgid(0):
+            try:
+                killpg(pgid, sig)
+                return
+            except OSError:
+                pass
     try:
         child.send_signal(sig)
     except OSError:

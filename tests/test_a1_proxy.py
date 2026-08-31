@@ -810,3 +810,38 @@ def test_a_wrapper_that_swallows_sigterm_does_not_leak_the_real_server(tmp_path)
                 os.killpg(os.getpgid(leaked), signal.SIGKILL)
             with contextlib.suppress(OSError):
                 os.kill(leaked, signal.SIGKILL)
+
+
+def test_the_proxy_never_signals_its_own_process_group(monkeypatch):
+    """Found by a mutation run, and more dangerous than the finding it was
+    checking for.
+
+    `_signal_upstream` signals the child's process GROUP. That is only safe
+    while the child has a group of its own. If it ever shares OURS — a platform
+    where `start_new_session` does nothing, or a future edit dropping the flag —
+    then the group holds the proxy, the MCP client that launched it, and
+    whatever else shares the terminal, and shutdown SIGKILLs the lot.
+
+    Not hypothetical: deleting `start_new_session=True` and running this suite
+    SIGTERMed the test runner itself, which is how this was found. The blast
+    radius is why the guard is here and not merely implied by the flag.
+    """
+    killed: list[tuple[int, int]] = []
+    # Read before patching: `proxy_mod.os` is the same module object this file
+    # imported, so a lambda calling `os.getpgid` would call itself.
+    our_pgid = os.getpgid(0)
+    monkeypatch.setattr(proxy_mod.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)))
+    # The child is in our group — exactly the state the flag is meant to prevent.
+    monkeypatch.setattr(proxy_mod.os, "getpgid", lambda pid: our_pgid)
+    child = _FakeChild(exits_after=None)
+
+    proxy_mod._signal_upstream(child, signal.SIGTERM)
+
+    assert not killed, (
+        f"the proxy signalled its own process group {killed}: that group holds "
+        "the proxy, the client that launched it, and the user's terminal"
+    )
+    assert child.terminated, (
+        "declining the group must not mean declining to signal at all — the "
+        "direct child still has to be asked to stop"
+    )

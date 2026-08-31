@@ -1222,7 +1222,7 @@ WIDE_AUDIT_RE = r"urlopen|socket|http\.client|requests\.|boto3|subprocess"
 # as (path, lineno, substring-of-the-line) so a moved line fails loudly instead
 # of a bare count quietly absorbing a swap.
 EXPECTED_AUDIT_HITS = {
-    ("src/baton_proxy/proxy.py", 1476, "subprocess.Popen("),
+    ("src/baton_proxy/proxy.py", 1489, "subprocess.Popen("),
     ("src/baton_proxy/transport_http.py", 135, "urllib.request.urlopen(req"),
     ("src/baton_proxy/transport_http.py", 187, "urlopen(timeout=inf) blocks forever"),
     ("src/baton_proxy/sinks.py", 159, "urllib.request.urlopen(req"),
