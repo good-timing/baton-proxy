@@ -252,7 +252,7 @@ def http_bridge(entry: dict) -> tuple[str, str] | None:
 
     Every other shape refuses, and each refusal prevents the same failure: an
     entry whose credential we could not carry would wrap cleanly, print success,
-    and surface as a dead server after the restart — days later, with nothing
+    and surface as a dead server in the next session started — days later, with
     pointing at the cause. That failure is what this whole kit is shaped to
     avoid.
 

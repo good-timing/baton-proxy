@@ -2685,6 +2685,14 @@ _QUIT_BELIEF = re.compile(
     r"|needs? (?:a|another) restart"
     r"|restart (?:the|your)(?: MCP)? client"
     r"|(?:the|your) client restarts"
+    # Naming the client by product name is the same demand — README:60 said
+    # "Restart Claude" and sailed through the first version of this sweep,
+    # in a file the sweep claims to cover.
+    r"|restart\s+claude"
+    # And the noun form, which presupposes the event even when it asks for
+    # nothing: "verify it before restarting", "a dead server after the restart".
+    r"|(?:after|before) the restart"
+    r"|before restarting"
 )
 
 # Every file that tells a person or an agent what to do after the config edit.
@@ -2747,6 +2755,9 @@ _THE_BELIEF_AS_IT_WAS_WRITTEN = (
     "- The client needs another restart before the original server is live again.",
     "- **The change is inert until the client restarts.**",
     "verifies the result against the file on disk; restart your client",
+    "That's the entire install. **Restart Claude**, drive the wrapped server",
+    "and surface as a dead server after the restart — days later",
+    "Verify it yourself before restarting:",
 )
 
 # Sentences the fix is made of. A sweep that also rejects these has banned the
@@ -2758,6 +2769,8 @@ _TRUE_REPLACEMENTS = (
     "Nothing needs to be quit: a new terminal is enough.",
     "New sessions will use your original server again.",
     "a client binds its server set at startup",
+    "starting a new Claude session, drive a few tool calls",
+    "surface as a dead server in the next session they start",
 )
 
 

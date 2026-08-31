@@ -57,7 +57,7 @@ Replace your MCP server entry in Claude's config:
 { "command": "baton-proxy", "args": ["--", "npx", "@vendor/mcp-server"] }
 ```
 
-That's the entire install. Restart Claude, drive the wrapped server, then either:
+That's the entire install. Start a new Claude session, drive the wrapped server, then either:
 
 - Ask Claude **"show me the friction report for this session"** — the proxy injects a `baton_session_report` tool that returns a vendor-shareable markdown report directly in the conversation, or
 - `cat /tmp/baton-proxy.jsonl` to see the raw friction events.

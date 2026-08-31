@@ -68,8 +68,7 @@ than 3.11.
 `PYTHONPATH` is what lets it find the package **in the checkout you just
 reviewed, with nothing installed**. Both paths are absolute and
 are written by the setup step; a relative path would resolve against whatever
-directory your client happens to launch from. Verify it yourself before
-restarting:
+directory your client happens to launch from. Verify it yourself first:
 
 ```bash
 PYTHONPATH=src python3 -m baton_proxy --help
@@ -126,7 +125,7 @@ and your client expands it when it launches the entry, exactly as it expanded it
 inside the header. Two things to know about that. It is **client behaviour we
 measured on one version** (Claude Code 2.1.223), not something the MCP
 specification requires; if your client does not expand `${VAR}` in `env`, the
-wrapped server will fail to authenticate after the restart. And if the token in
+wrapped server will fail to authenticate when it next starts. And if the token in
 your entry is a literal rather than a `${VAR}` reference, the question does not
 arise — the literal is copied across as-is, and it is then also written into
 `try/state.json`, which is why that file is created `0600`.

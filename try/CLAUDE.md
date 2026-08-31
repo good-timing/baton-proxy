@@ -119,7 +119,7 @@ going back into the config for it.
 
 Do not argue an entry past a refusal. Every remote refusal — `sse`, extra
 headers, no credential in the config — exists because the wrap would look like it
-worked and produce a server that cannot authenticate after the restart. The
+worked and produce a server that cannot authenticate once it next starts. The
 no-credential case in particular is refused *because* it looks easy: it is
 indistinguishable from OAuth, where the client holds the token and never writes
 it down. If they want that server covered, the answer is to say so to us, not to
