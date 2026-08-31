@@ -215,7 +215,11 @@ _EXPECTED_RESULT_PARAM_DESCRIPTION = (
 # on identical scripts), and shattering is the failure mode that destroys
 # downstream trust. Byte-identical to baton-sdk's
 # ``_OVERALL_TASK_PARAM_DESCRIPTION`` and baton-ts's
-# ``OVERALL_TASK_PARAM_DESCRIPTION``; a drift test pins all three.
+# ``OVERALL_TASK_PARAM_DESCRIPTION``. Each producer pins its own copy in its
+# own suite (no cross-repo read: this suite ships in the Try Kit, where a
+# prospect's clone has no siblings). Three local pins make a change deliberate
+# and visible in review; they cannot notice the three drifting apart, so change
+# all three together.
 _OVERALL_TASK_PARAM_DESCRIPTION = (
     "OPTIONAL. Short stable label for the broader task this call serves "
     "(e.g. 'prepare campaign approval'). REPEAT the exact same string on "

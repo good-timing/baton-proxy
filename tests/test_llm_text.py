@@ -34,6 +34,7 @@ from baton_proxy._llm_text import (
     SIGNAL_TYPES,
     build_annotation_tool_description,
     build_instructions_suffix,
+    build_overall_task_param_description,
 )
 
 # =============================================================================
@@ -169,3 +170,59 @@ def test_description_does_not_duplicate_triggers() -> None:
     assert "AFTER" not in description
     # It also shouldn't restate the MUST-call conditions.
     assert "MUST call" not in description
+
+
+# ---------------------------------------------------------------------------
+# The task label's wording is a result, not a style choice.
+#
+# It comes out of a scored experiment (baton-internal `spikes/overall_task_a5/`,
+# 40 paired live-agent sessions): one wording misses task boundaries the user
+# does not announce, the other splits single tasks, and the trade was decided
+# in favour of the text below. Rewording it re-runs that experiment on live
+# traffic without scoring it.
+#
+# All three producers must ask in the SAME words, and this is not hypothetical:
+# the revert of the rejected wording landed in baton-sdk and never reached
+# baton-ts, which shipped the losing arm undetected because nothing pinned it.
+# Each producer now pins the literal in its own suite, beside this reasoning —
+# baton-sdk's `_OVERALL_TASK_PARAM_DESCRIPTION` and baton-ts's
+# `llmText.test.ts`. Deliberately NOT a cross-repo read: this suite ships in
+# the Try Kit, where a prospect's clone has no sibling checkouts, and a test
+# that skips for them would break SECURITY.md §8's skip count — a number the
+# document offers a reviewer as checkable.
+#
+# What that costs, stated plainly: three local pins cannot notice the three
+# drifting apart on their own. Each makes a change deliberate and visible in
+# review, which is what was missing when ts drifted; it is not a mechanical
+# guarantee of agreement.
+# ---------------------------------------------------------------------------
+
+SELECTED_WORDING = (
+    "OPTIONAL. Short stable label for the broader task this call serves "
+    "(e.g. 'prepare campaign approval'). REPEAT the exact same string on "
+    "every call serving the same task; change it only when the user starts "
+    "a different task."
+)
+
+
+def test_the_task_label_wording_is_the_one_the_experiment_selected() -> None:
+    assert build_overall_task_param_description() == SELECTED_WORDING
+
+
+def test_the_wording_does_not_carry_the_rejected_candidate() -> None:
+    """Named phrases, so a re-introduction fails by name rather than by diff.
+
+    Both are load-bearing in the rejected text: they scoped the label to the
+    current turn rather than the task, which produced the A -> B -> A relabel a
+    merge-only consumer resolves as three tasks instead of one.
+    """
+    text = build_overall_task_param_description()
+    assert "not the overall theme" not in text
+    assert "working on right now" not in text
+
+
+def test_the_wording_keeps_the_clause_that_makes_it_groupable() -> None:
+    """Grouping is by exact string match, so the repeat clause IS the
+    mechanism: without it 80% of adjacent same-task calls reword and every task
+    shatters, whichever granularity wording is chosen."""
+    assert "REPEAT the exact same string" in build_overall_task_param_description()
