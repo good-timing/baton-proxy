@@ -3676,3 +3676,18 @@ def test_setups_come_back_line_follows_the_kit_directory_under_test(tmp_path, ki
     assert line == f"from {kit.TRY_DIR}", f"the come-back line names another directory:\n{line}"
 
 
+def test_security_md_says_the_file_can_leave_and_who_makes_it_leave():
+    """`kit.py`'s module docstring makes this document authoritative — "if the
+    two ever disagree, the document is the one that is wrong, because a stranger
+    approved the trial by reading it". The email ending added a user-facing exit
+    the document never described.
+
+    Not a contradiction: §4 says nothing Baton records leaves, and nothing does,
+    because the person attaches the file themselves. But Dave's own argument for
+    disclosing upload applies unchanged — someone who reads the security page
+    and then meets an unmentioned address at the end re-reads the whole document
+    as a setup for the ask. The document works because it volunteers."""
+    doc = (KIT_PATH.parent / "SECURITY.md").read_text()
+    section = doc[doc.index("## 4. What leaves your machine") : doc.index("## 5. What is recorded")]
+    assert kit.TEAM_EMAIL in section, "§4 never mentions the address the receipt prints"
+    assert "no upload endpoint" in section, "§4 does not say the kit has no way to send it"

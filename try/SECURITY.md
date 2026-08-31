@@ -297,6 +297,16 @@ a guarantee rather than an intention.
 **In the try configuration: nothing Baton records.** Events are appended to a
 local JSONL file.
 
+**One thing can leave, and only if you send it.** `receipt` ends by printing a
+`gzip` command for the event file and an address — **team@goodtiming.ai** — so
+that a trial does not end at a file with no named next move. That is a sentence,
+not a mechanism. There is no upload endpoint in this kit, nothing in it sends the
+file, and the call-site list below is unchanged by it: if the file goes anywhere
+it is because you attached it to an email yourself, after reading it. Stated here
+because you are reading this before you run anything, and meeting an address at
+the end that this document never mentioned would be a fair reason to re-read
+everything else it told you.
+
 One qualification, and it applies only if you wrapped a **remote** entry: that
 server's traffic was already leaving your machine, because your client was
 dialling the endpoint itself. It still goes to the same endpoint with the same
