@@ -3184,3 +3184,54 @@ def test_section_5_says_the_same_thing_where_intent_is_listed():
     assert "restate" in bullet or "quote" in bullet, (
         f"§5's intent bullet does not say annotations can carry results:\n{bullet}"
     )
+
+
+def test_a_clobbered_wrap_wins_over_the_nothing_called_it_row(tmp_path, kit_home, capsys):
+    """Row 3 is checked only when the file is EMPTY, which is one case too few.
+
+    The client rewrites this config continuously — that is why the row exists at
+    all. Setup runs, a session starts and records its tool-surface snapshot, the
+    client then restores the entry, and every call after that goes to the
+    unwrapped server. The file is no longer empty, so row 3 was never consulted
+    and row 5 fired instead: an affirmative diagnosis naming two causes, neither
+    of which is true, sending the person to `/mcp` to hunt a duplicate that does
+    not exist. The old code printed bare counts here, so this is worse than what
+    it replaced."""
+    key = "/Users/someone/work/app"
+    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key)
+    _write_events(kit_home, ("bee5d1a2", 0))
+    path.write_text(
+        canonical(
+            {
+                "mcpServers": {},
+                "projects": {
+                    key: {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = _receipt_output(capsys)
+    assert _fired(out) == ["THE WRAP IS GONE"], _fired(out)
+
+
+def test_a_wrap_clobbered_after_a_real_capture_still_says_so(tmp_path, kit_home, capsys):
+    """The same row, with calls in the file. Capture STOPPED, which is the fact
+    worth saying, and it is invisible in a total that only ever grows."""
+    key = "/Users/someone/work/app"
+    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key)
+    _write_events(kit_home, ("d1e2f3a4", 2))
+    path.write_text(
+        canonical(
+            {
+                "mcpServers": {},
+                "projects": {
+                    key: {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = _receipt_output(capsys)
+    assert _fired(out) == ["THE WRAP IS GONE"], _fired(out)
+    assert _counts_shown(out), "what was captured before it broke still counts:\n" + out

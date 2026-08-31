@@ -924,6 +924,29 @@ your client is probably answering these tools — run /mcp and look for a second
 entry with a similar tool list.
 """
 
+
+def wrap_is_gone(state: dict, *, had_events: bool) -> str:
+    """Row 3. The entry in the config is not the one setup wrote.
+
+    Two readings, and the difference matters to the person: an empty file means
+    nothing was ever captured, while a file with events in it means capture
+    STOPPED — a distinction invisible in a total that only ever grows."""
+    since = (
+        "Anything counted above was captured before that; nothing has been\n"
+        "captured since, and nothing will be."
+        if had_events
+        else "Nothing has been passing through the proxy."
+    )
+    return (
+        f"THE WRAP IS GONE. `{state['server_name']}` in\n"
+        f"  {describe(Path(state['config_path']), state['scope'])}\n"
+        f"is no longer the entry setup wrote — it has been changed or restored\n"
+        f"since. {since}\n\n"
+        "  → run `python3 kit.py uninstall` to clear the stale state, then\n"
+        "    setup again if you still want the trial.\n"
+    )
+
+
 STATE_CLEARED = (
     "Setup state has been cleared — this receipt is reading the event file left\n"
     "behind by a trial that has already been ended."
@@ -1347,20 +1370,21 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     print(f"launch check   {launch_check(state)}")
     print()
 
+    # Asked once, and asked whether or not the file is empty. Gating it on "no
+    # events" was one case too few: a session records its tool-surface snapshot,
+    # the client then rewrites the entry back — which is why this row exists —
+    # and from then on the file is not empty while nothing more is captured.
+    # Row 5 fired there instead and named two causes, neither of them true.
+    wrap_gone = bool(state) and not wrap_still_present(state)
+
     if not events:
         # The kit can answer the most likely cause for free rather than listing
         # four diagnostics that all miss it. The client rewrites this config
         # continuously and may clobber the entry; someone may have reverted it
         # by hand. Either way "no events" is a symptom, not the finding.
-        if state and not wrap_still_present(state):
-            print(
-                f"THE WRAP IS GONE. `{state['server_name']}` in\n"
-                f"  {describe(Path(state['config_path']), state['scope'])}\n"
-                "is no longer the entry setup wrote — it has been changed or restored\n"
-                "since, so nothing has been passing through the proxy.\n\n"
-                "  → run `python3 kit.py uninstall` to clear the stale state, then\n"
-                "    setup again if you still want the trial.\n"
-            )
+        if wrap_gone:
+            assert state is not None
+            print(wrap_is_gone(state, had_events=False))
             return 0
         # NOT_CAPTURING is written for someone whose setup DID run: its first
         # step asks about the restart since setup, and its third points at a
@@ -1403,7 +1427,11 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     # Both of these need state: on a trial that has already ended the header
     # says so, and telling someone to go fix a wrap they removed is dead advice.
     # One banner per output is what makes CLAUDE.md's table a table.
-    if state and s["tool_calls"] == 0:
+    if wrap_gone:
+        assert state is not None
+        print()
+        print(wrap_is_gone(state, had_events=True), end="")
+    elif state and s["tool_calls"] == 0:
         print()
         print(NOTHING_CALLED, end="")
     elif state and s["dead_sessions"]:
