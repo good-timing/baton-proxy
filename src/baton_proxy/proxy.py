@@ -33,10 +33,10 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
-import time
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -1153,8 +1153,18 @@ class MessageProcessor:
                 logger.exception("baton-proxy: enqueue drain error failed")
 
 
-def _pump_client_to_server(child_stdin: Any, processor: MessageProcessor) -> None:
-    """stdio client->server I/O loop. Message logic lives in the processor."""
+def _pump_client_to_server(
+    child_stdin: Any,
+    processor: MessageProcessor,
+    on_client_gone: Any = None,
+) -> None:
+    """stdio client->server I/O loop. Message logic lives in the processor.
+
+    `on_client_gone` is called once this pump is finished, i.e. once the client
+    has gone, whichever way it went. It is what starts run_proxy's escalation
+    clock, and it is called from the `finally` for the same reason the stdin
+    close is: EOF is the ordinary exit and not the only one.
+    """
     try:
         for line in sys.stdin:
             line = line.strip()
@@ -1228,6 +1238,12 @@ def _pump_client_to_server(child_stdin: Any, processor: MessageProcessor) -> Non
         except Exception:
             logger.exception("baton-proxy: closing the upstream's stdin failed")
 
+        if on_client_gone is not None:
+            try:
+                on_client_gone()
+            except Exception:
+                logger.exception("baton-proxy: arming the upstream shutdown failed")
+
 
 def _pump_server_to_client(child_stdout: Any, processor: MessageProcessor) -> None:
     """stdio server->client I/O loop. Message logic lives in the processor."""
@@ -1299,62 +1315,145 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     return config, injection, emitter, processor
 
 
-# How long the upstream gets to exit after the CLIENT has disconnected, before
-# we escalate. `_pump_client_to_server` closes its stdin on the client's EOF and
-# a well-behaved stdio server exits on that; one that ignores stdin EOF, or is
-# wedged in a call it will never finish, does not.
+# The escalation ladder for an upstream that outlives its client, one grace per
+# rung. `_pump_client_to_server` closes the upstream's stdin on the client's EOF
+# and a well-behaved stdio server exits on that; one that ignores stdin EOF, or
+# is wedged in a call it will never finish, does not.
 #
-# The budget is deliberately small. Everything after the wait — t_out's drain,
-# `drain_pending`, `emitter.stop()` — has to finish before the CLIENT's own
-# SIGTERM lands, and a client escalates seconds after it closes our stdin. A
+# All three are small on purpose. Everything after the wait — t_out's drain,
+# `drain_pending`, `emitter.stop()` — must finish before the CLIENT's own
+# SIGTERM lands, and clients escalate seconds after closing our stdin. A
 # generous grace here would rebuild the very unwritten-events bug it exists to
 # prevent, just further along.
 _UPSTREAM_EXIT_GRACE = 1.0
 _UPSTREAM_KILL_GRACE = 1.0
-# Coarse enough to be free over a session lasting hours, fine enough that an
-# upstream CRASH still surfaces promptly.
-_UPSTREAM_POLL = 0.2
+_UPSTREAM_ABANDON_GRACE = 1.0
 
 
-def _wait_for_upstream(child: Any, client_pump: threading.Thread) -> int:
-    """Wait for the upstream, bounding the wait only once the client is gone.
+def _signal_upstream(child: Any, sig: int) -> None:
+    """Signal the upstream's whole process GROUP, falling back to the child.
 
-    Unbounded while the client is attached, which is the ordinary case: a
-    session lasts as long as the client wants it to, and an upstream that dies
-    mid-session must have its returncode come straight back.
+    Wrapped servers are routinely launched through something that is not the
+    server — `sh -c`, `npx`, `docker run`. A wrapper that does not forward
+    SIGTERM dies while the real server keeps running, and the survivor holds
+    the stdout pipe open, so `t_out.join` below waits out its full timeout and
+    we leak a process per session. Signalling the group reaches both; the child
+    is spawned with `start_new_session=True` so the group exists to be signalled.
 
-    Deliberately NOT written as `client_pump.join()` followed by a bounded
-    `wait` — that reads simpler and is wrong. It would make an upstream crash
-    wait on the client's disconnect, when the whole point of the fast path is
-    that the two are independent.
+    The fallback covers the two ways the group can be unreachable: a platform
+    with no `killpg` at all, and a pid that is already reaped.
     """
-    deadline: float | None = None
-    while True:
-        try:
-            return child.wait(timeout=_UPSTREAM_POLL)
-        except subprocess.TimeoutExpired:
-            pass
-        if client_pump.is_alive():
-            # Client still attached. No clock runs, however long this takes.
-            deadline = None
-            continue
-        if deadline is None:
-            deadline = time.monotonic() + _UPSTREAM_EXIT_GRACE
-        elif time.monotonic() >= deadline:
-            break
-
-    logger.warning(
-        "baton-proxy: the upstream is still running %.1fs after its stdin was "
-        "closed; terminating it so the event queue can be flushed",
-        _UPSTREAM_EXIT_GRACE,
-    )
-    child.terminate()
     try:
-        return child.wait(timeout=_UPSTREAM_KILL_GRACE)
-    except subprocess.TimeoutExpired:
+        killpg = os.killpg
+    except AttributeError:  # pragma: no cover - POSIX only in practice
+        killpg = None
+    if killpg is not None:
+        try:
+            killpg(os.getpgid(child.pid), sig)
+            return
+        except OSError:
+            pass
+    try:
+        child.send_signal(sig)
+    except OSError:
+        pass
+
+
+class _UpstreamShutdown:
+    """Gets the upstream to exit once the client is gone, without ever polling.
+
+    Nothing here runs during a live session. `arm` is called by the client pump
+    on its way out, so a session lasting hours arms no timer and costs no
+    wakeups — which the first version of this code got wrong, polling
+    `wait(timeout=…)` in a loop for the whole session. Each rung sits on its own
+    timer so no step can block another, and the main thread does exactly one
+    blocking `wait`.
+    """
+
+    def __init__(self, child: Any) -> None:
+        self._child = child
+        self._timer: threading.Timer | None = None
+        self._lock = threading.Lock()
+        self.finished = threading.Event()
+        self.rc: int | None = None
+        self.signalled = False
+
+    def reap(self) -> None:
+        """Block until the upstream exits. One wait, for the whole session."""
+        try:
+            self.rc = self._child.wait()
+        except Exception:
+            logger.exception("baton-proxy: waiting on the upstream failed")
+        finally:
+            self.finished.set()
+
+    def arm(self) -> None:
+        self._schedule(_UPSTREAM_EXIT_GRACE, self._terminate)
+
+    def cancel(self) -> None:
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+
+    def _schedule(self, delay: float, step: Any) -> None:
+        with self._lock:
+            if self.finished.is_set():
+                return
+            self._timer = threading.Timer(delay, step)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _terminate(self) -> None:
+        # Already gone: never signal a reaped (and possibly recycled) pid, and
+        # never claim a clean exit as ours — `result` masks the rc we caused.
+        if self._child.poll() is not None:
+            return
+        logger.warning(
+            "baton-proxy: the upstream is still running %.1fs after its stdin was "
+            "closed; terminating it so the event queue can be flushed",
+            _UPSTREAM_EXIT_GRACE,
+        )
+        self.signalled = True
+        _signal_upstream(self._child, signal.SIGTERM)
+        self._schedule(_UPSTREAM_KILL_GRACE, self._kill)
+
+    def _kill(self) -> None:
+        if self._child.poll() is not None:
+            return
         logger.warning("baton-proxy: the upstream ignored SIGTERM; killing it")
-        child.kill()
-        return child.wait()
+        self.signalled = True
+        _signal_upstream(self._child, signal.SIGKILL)
+        self._schedule(_UPSTREAM_ABANDON_GRACE, self._abandon)
+
+    def _abandon(self) -> None:
+        """The last rung: SIGKILL cannot be caught, but it does not land on a
+        process wedged in uninterruptible I/O. Ending the ladder in an unbounded
+        wait would put back the hang this whole mechanism removes, so we stop
+        waiting, say so loudly, and let the queue flush."""
+        if self._child.poll() is not None:
+            return
+        logger.error(
+            "baton-proxy: the upstream survived SIGKILL (stuck in uninterruptible "
+            "I/O?); abandoning it so the event queue can still be flushed"
+        )
+        self.finished.set()
+
+    def result(self) -> int:
+        """The upstream's own verdict — never the signal we sent it.
+
+        A child killed by a signal reports `-N`, `main` turns that into
+        `SystemExit(-N)`, and the shell reports 241 for SIGTERM. For any server
+        that ignores stdin EOF the escalation IS the ordinary shutdown path, so
+        propagating it would have the client log a crash on every clean exit.
+        A crash the upstream arrived at on its own still travels.
+        """
+        rc = self.rc
+        if rc is None:
+            return 0  # abandoned above; the session ended fine from the client's view
+        if self.signalled and rc < 0 and -rc in (signal.SIGTERM, signal.SIGKILL):
+            return 0
+        return rc
 
 
 def run_proxy(argv: list[str]) -> int:
@@ -1382,15 +1481,25 @@ def run_proxy(argv: list[str]) -> int:
             text=True,
             bufsize=1,
             env=_child_env(os.environ),
+            # Its own process group, so shutdown can signal the whole tree and
+            # not just the direct child — see `_signal_upstream`. The trade:
+            # the upstream no longer shares our group, so a Ctrl-C in an
+            # interactive terminal reaches us and not it. MCP clients do not
+            # signal the group (they close stdin, then SIGTERM our pid), so the
+            # path that matters is unaffected.
+            start_new_session=True,
         )
     except (FileNotFoundError, PermissionError) as e:
         logger.error("baton-proxy: cannot spawn upstream %r: %s", argv, e)
         emitter.stop()
         return 127
 
+    shutdown = _UpstreamShutdown(child)
+    threading.Thread(target=shutdown.reap, name="baton-proxy-reap", daemon=True).start()
+
     t_in = threading.Thread(
         target=_pump_client_to_server,
-        args=(child.stdin, processor),
+        args=(child.stdin, processor, shutdown.arm),
         name="baton-proxy-in",
         daemon=True,
     )
@@ -1403,7 +1512,9 @@ def run_proxy(argv: list[str]) -> int:
     t_in.start()
     t_out.start()
 
-    rc = _wait_for_upstream(child, t_in)
+    shutdown.finished.wait()
+    shutdown.cancel()
+    rc = shutdown.result()
     # t_out terminates naturally once child's stdout closes (which happens
     # on child exit). Give it a moment to drain final responses + their
     # tool_call_end events before we stop the emitter. t_in is blocked on
