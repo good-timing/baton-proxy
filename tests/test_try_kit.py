@@ -3604,3 +3604,58 @@ def test_the_doc_says_the_trial_can_be_ended_more_than_once():
     doc = _claude_md()
     ending = doc[doc.index("## Ending it") : doc.index("## Removing it")]
     assert "again" in ending.lower(), f"`Ending it` never says it can be said twice:\n{ending}"
+
+
+# ---------------------------------------------------------------------------
+# Review of the email-ending commit: the doc still denies a capture the receipt
+# now offers to send.
+#
+# `wrap_is_gone` has always had two readings — an empty file means nothing ever
+# passed through, a file with counts means capture STOPPED — and both the
+# marker row and `Ending it` flattened them into the empty one. That was a
+# reporting flaw before this commit and is a contradiction after it: with counts
+# in the file the receipt prints the banner AND the gzip command AND the
+# address, while an agent narrating from the doc says nothing was captured and
+# reaches for uninstall. Which is the close this commit removed, reappearing at
+# a site the `Ending it` slice cannot see.
+# ---------------------------------------------------------------------------
+
+
+def _doc_section(start: str, end: str) -> str:
+    doc = _claude_md()
+    return doc[doc.index(start) : doc.index(end)]
+
+
+def _marker_row(marker: str) -> str:
+    """One bullet of the routing table, from its marker to the next bullet."""
+    table = _doc_section("Exactly one of these six lines", "## Setting up")
+    start = table.index(f'**"{marker}"**')
+    nxt = table.find("\n- **", start)
+    return table[start : nxt if nxt != -1 else len(table)]
+
+
+def test_the_wrap_is_gone_row_does_not_deny_a_capture_that_happened():
+    """The row asserted the empty reading unconditionally. `wrap_is_gone` does
+    not: with events it says what was counted "was captured before that", and
+    the receipt goes on to print the send offer underneath it."""
+    row = _marker_row("THE WRAP IS GONE")
+    assert "nothing has been passing through" not in row, (
+        f"the row states the empty reading as though it were the only one:\n{row}"
+    )
+    assert "before" in row.lower(), f"the row never says a capture may predate the clobber:\n{row}"
+
+
+def test_the_ending_splits_a_clobbered_capture_from_an_empty_one():
+    """They print different things and want different answers. Grouping them
+    sent a real capture to a checklist that row does not print, and dropped the
+    offer the receipt did print."""
+    ending = _doc_section("## Ending it", "## Removing it")
+    assert "Nothing at all, or the wrap is gone" not in ending, (
+        "two rows with different output are still handled as one branch"
+    )
+    gone = ending[ending.lower().index("wrap is gone") :]
+    assert "checklist" not in gone.split("**Nothing at all")[0], (
+        f"the wrap-gone branch routes to a checklist that row never prints:\n{gone}"
+    )
+
+

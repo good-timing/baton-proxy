@@ -78,8 +78,14 @@ appears, and stop — they do not combine.
   offer *Setting up* as though nothing had run, and do not say the trial is
   live — the person ended it themselves and knows they did.
 - **"THE WRAP IS GONE"** → the entry in the config is no longer the one setup
-  wrote, so the wrap is gone and nothing has been passing through the proxy.
-  Relay that and offer `uninstall` to clear the stale state.
+  wrote, so nothing is being captured now. Read the banner's next sentence
+  rather than assuming which case you are in: with an empty file nothing ever
+  came down the pipe, and with counts above it capture STOPPED — what was
+  counted was captured before the entry changed, and it is as real as any other
+  capture. In that second case the receipt still prints the send offer under the
+  banner, so go to *Ending it* and use it. Either way `uninstall` clears the
+  stale state so setup can run again, which is the remedy rather than the
+  headline.
 - **"No events have been captured yet"** → wrapped, still wrapped, nothing
   landed. The receipt prints a short checklist; walk the person through it in
   order. Where the entry is scoped to a project directory the checklist names
@@ -235,9 +241,16 @@ do not push:
 causes; take them in order. Do not offer the file — there is nothing in it worth
 sending yet, and the receipt withholds the offer here for the same reason.
 
-**Nothing at all, or the wrap is gone.** Those are the two rows above it in
-*Start by finding out where you are*. Walk the checklist the receipt printed;
-where the entry is scoped to a directory it names that directory.
+**The wrap is gone.** Capture stopped when the entry changed, but counts above
+that banner are real — they were captured before it changed, and the receipt
+prints the send offer underneath them. So the first branch above applies to
+them unchanged: report what was captured and hand over the decision. Say the
+wrap is no longer in place; the row for it in *Start by finding out where you
+are* carries the remedy.
+
+**Nothing at all.** No sessions and no counts. The receipt prints a checklist —
+that row, and only that row, does — so walk it in order; where the entry is
+scoped to a directory it names that directory.
 
 ## Removing it
 
