@@ -778,6 +778,13 @@ def read_events(path: Path) -> list[dict]:
     return events
 
 
+# Everything else the proxy records as a request reaching the upstream server
+# (`emitter.py`). Lists are counts-only traffic, but they are still traffic.
+_OTHER_START_KINDS = frozenset(
+    {"resource_read_start", "resource_list_start", "prompt_get_start", "prompt_list_start"}
+)
+
+
 def summarize(events: list[dict], size_bytes: int) -> dict:
     """The receipt's numbers. Counts only — no error counts, and no analysis.
 
@@ -790,6 +797,11 @@ def summarize(events: list[dict], size_bytes: int) -> dict:
     # every call from the first — and the second is the one that needs saying.
     # Keyed on first timestamp so the rows read in the order they happened.
     calls_by_session: Counter[str] = Counter()
+    # Tool calls are not the only way a session reaches the server. Counting
+    # only `tool_call_start` reported a session that read resources as dead, and
+    # then explained the zero by accusing another server of answering — for
+    # traffic this file proves the proxy captured.
+    other_by_session: Counter[str] = Counter()
     first_seen: dict[str, str] = {}
     with_intent: set[str] = set()
     tool_calls = 0
@@ -806,6 +818,8 @@ def summarize(events: list[dict], size_bytes: int) -> dict:
             if sid and (sid not in first_seen or e["captured_at"] < first_seen[sid]):
                 first_seen[sid] = e["captured_at"]
         payload = e.get("payload") or {}
+        if kind in _OTHER_START_KINDS and sid:
+            other_by_session[sid] += 1
         if kind == "tool_call_start":
             tool_calls += 1
             if sid:
@@ -828,12 +842,14 @@ def summarize(events: list[dict], size_bytes: int) -> dict:
             redactions[m.group(1)] += 1
 
     ordered = sorted(sessions - {None}, key=lambda s: (first_seen.get(str(s), ""), str(s)))
-    per_session = [(str(s), calls_by_session[str(s)]) for s in ordered]
+    per_session = [(str(s), calls_by_session[str(s)], other_by_session[str(s)]) for s in ordered]
 
     return {
         "sessions": len(sessions),
         "per_session": per_session,
-        "dead_sessions": sum(1 for _s, c in per_session if c == 0),
+        # Dead means nothing reached the server at all — not merely no TOOL call.
+        "dead_sessions": sum(1 for _s, c, o in per_session if c == 0 and o == 0),
+        "other_calls": sum(o for _s, _c, o in per_session),
         "sessions_with_intent": len(with_intent - {""}),
         "tool_calls": tool_calls,
         "tools": tools,
@@ -1446,13 +1462,14 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     # of two sessions captured nothing. Bounded at ten, and the count of what is
     # not shown is printed rather than dropped silently.
     shown = s["per_session"][-10:]
-    for sid, calls in shown:
-        print(f"                     {sid}  {calls} calls")
+    for sid, calls, other in shown:
+        extra = f", {other} resource/prompt calls" if other else ""
+        print(f"                     {sid}  {calls} calls{extra}")
     if len(s["per_session"]) > len(shown):
         hidden = s["per_session"][: -len(shown)]
         print(
             f"                     +{len(hidden)} earlier sessions "
-            f"({sum(1 for _s, c in hidden if c == 0)} with no calls)"
+            f"({sum(1 for _s, c, o in hidden if c == 0 and o == 0)} with nothing in them)"
         )
     print(f"tool calls           {s['tool_calls']}")
     print(f"intent captured      {s['sessions_with_intent']} of {s['sessions']} sessions")
@@ -1477,7 +1494,7 @@ def cmd_receipt(args: argparse.Namespace) -> int:
         assert state is not None
         print()
         print(wrap_is_gone(state, had_events=True), end="")
-    elif state and s["tool_calls"] == 0:
+    elif state and s["tool_calls"] == 0 and s["other_calls"] == 0:
         print()
         print(NOTHING_CALLED, end="")
     elif state and s["dead_sessions"]:

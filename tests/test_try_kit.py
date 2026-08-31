@@ -3334,3 +3334,70 @@ def test_a_project_path_with_a_space_is_handed_over_as_a_runnable_command(
     line = next(ln for ln in out.splitlines() if "&& claude" in ln)
     argv = shlex.split(line)
     assert argv[:2] == ["cd", key], f"the handed-over command cds elsewhere: {argv}"
+
+
+# --- Review finding: a call is not only a tool call -------------------------
+#
+# The proxy emits `resource_read_start`, `resource_list_start`,
+# `prompt_get_start` and `prompt_list_start` as well. A session that reached the
+# server that way had zero `tool_call_start` events, so it was reported as dead
+# — and the diagnosis sent the person to hunt a duplicate server for traffic the
+# proxy demonstrably captured. Rare, and a wrong answer rather than a missing
+# one, which is the kind this receipt is being rebuilt to stop giving.
+
+_OTHER_START = "resource_read_start"
+
+
+def _resource_session(sid: str, reads: int, hour: int = 12) -> list[dict]:
+    out = [
+        {
+            "event_type": "surface_snapshot",
+            "session_id": sid,
+            "captured_at": f"2026-08-30T{hour:02d}:00:00Z",
+            "payload": {"tools": [{"name": "search"}]},
+        }
+    ]
+    for i in range(reads):
+        out.append(
+            {
+                "event_type": _OTHER_START,
+                "session_id": sid,
+                "captured_at": f"2026-08-30T{hour:02d}:{i + 1:02d}:00Z",
+                "payload": {"uri": "file:///doc.md", "duration_ms": 4},
+            }
+        )
+    return out
+
+
+def _write_raw(kit_home, rows: list[dict]) -> None:
+    (kit_home / "events.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8"
+    )
+
+
+def test_a_session_that_only_read_resources_is_not_called_dead(tmp_path, kit_home, capsys):
+    _wrapped(tmp_path, kit_home, capsys)
+    _write_raw(kit_home, _resource_session("c0ffee01", 3))
+    out = _receipt_output(capsys)
+    assert _fired(out) == [], f"a session that reached the server was called dead:\n{out}"
+    # "run /mcp", not "/mcp": the header prints a config path ending mcp.json.
+    assert "run /mcp" not in out, "it was sent to hunt a duplicate for traffic we captured"
+    assert "3" in out, f"the reads it did make are not reported at all:\n{out}"
+
+
+def test_a_resource_only_session_beside_a_calling_one_raises_no_note(
+    tmp_path, kit_home, capsys
+):
+    """The note's own claim is that a row reading `0 calls` may mean another
+    server took them. A row with resource reads in it means the opposite."""
+    _wrapped(tmp_path, kit_home, capsys)
+    _write_raw(kit_home, _session_events("d1e2f3a4", 2) + _resource_session("c0ffee01", 1))
+    out = _receipt_output(capsys)
+    assert "run /mcp" not in out, f"a live session was diagnosed as a dead one:\n{out}"
+
+
+def test_a_session_with_nothing_in_it_at_all_is_still_diagnosed(tmp_path, kit_home, capsys):
+    """The control: widening what counts as activity must not switch the row off."""
+    _wrapped(tmp_path, kit_home, capsys)
+    _write_events(kit_home, ("bee5d1a2", 0))
+    assert _fired(_receipt_output(capsys)) == [NOTHING_CALLED_MARKER]
