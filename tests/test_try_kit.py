@@ -2340,6 +2340,29 @@ def test_receipt_branch_one_no_state(kit_home, capsys):
     assert quoted in _receipt_output(capsys)
 
 
+def test_receipt_with_no_state_is_not_served_the_has_state_checklist(kit_home, capsys):
+    """Finding 5. With no state AND no events, TWO branches fired at once.
+
+    After "No setup state found" came the four-step checklist written for someone
+    whose setup DID run: step 1 asks whether the client has been restarted since
+    a setup that never happened, and step 3 says to check the server name and
+    config path "printed above" — neither of which is printed when there is no
+    state — then sends them back to the command they just ran. `CLAUDE.md` routes
+    the agent past all of it on the first line. The person reading their own
+    terminal is routed nowhere.
+
+    So the assertion is not that a nicer message exists. It is that the checklist
+    for the other case does not appear in this one, and that the way forward is
+    named."""
+    out = _receipt_output(capsys)
+    assert "No setup state found" in out
+    assert "No events have been captured yet" not in out, (
+        "the has-state checklist is being served to someone with no state:\n" + out
+    )
+    assert "restarted since setup ran" not in out, "there was no setup to restart since"
+    assert "kit.py setup" in out, f"nothing tells the person where to go next:\n{out}"
+
+
 def test_receipt_branch_two_the_wrap_is_gone(tmp_path, kit_home, capsys):
     """State, but the entry in the config is not the one setup wrote — the
     client rewrites this file continuously, and a hand-restore is common.
@@ -2403,6 +2426,24 @@ def test_receipt_branch_four_counts(tmp_path, kit_home, capsys):
     assert "No events have been captured yet" not in out
 
 
+def _fired(out: str) -> list[str]:
+    return [
+        m
+        for m in ("No setup state found", "THE WRAP IS GONE", "No events have been captured yet")
+        if m in out
+    ]
+
+
+def test_the_no_state_branch_fires_alone_too(kit_home, capsys):
+    """The exclusivity property, on the case that had two markers in one output.
+
+    The test below it only ever ran the state-and-no-events case, so the doc's
+    table looked like a table while its first row and its third both matched a
+    fresh folder. That is the branch an agent meets most often — a `try/` nobody
+    has set up yet."""
+    assert _fired(_receipt_output(capsys)) == ["No setup state found"]
+
+
 def test_the_four_receipt_branches_are_mutually_exclusive(tmp_path, kit_home, capsys):
     """The property that makes the doc's table a table. Two branches firing at
     once is how an agent on an already-wrapped machine falls through to
@@ -2411,12 +2452,7 @@ def test_the_four_receipt_branches_are_mutually_exclusive(tmp_path, kit_home, ca
     assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     out = _receipt_output(capsys)
-    fired = [
-        m
-        for m in ("No setup state found", "THE WRAP IS GONE", "No events have been captured yet")
-        if m in out
-    ]
-    assert fired == ["No events have been captured yet"], fired
+    assert _fired(out) == ["No events have been captured yet"], _fired(out)
 
 
 # --- TK-F-7: the kit will not wrap its own work ----------------------------

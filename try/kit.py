@@ -841,6 +841,21 @@ now rather than at the end of the trial. In order:
 """
 
 
+NOT_SET_UP = """\
+No events, and no setup state — this folder has no record of a wrap.
+
+The likely answer is that setup has not run here yet:
+
+  python3 kit.py setup
+
+If it DID run, then try/state.json is gone since: `uninstall` deletes it, and so
+does deleting it by hand. This command reads only try/events.jsonl and
+try/state.json, so it cannot tell you whether your MCP config still holds a
+wrapped entry — that one you have to open and look at. Nothing here changed
+anything.
+"""
+
+
 def launch_check(state: dict | None) -> str:
     """The command that reproduces the wrapped entry's own launch.
 
@@ -1199,7 +1214,12 @@ def cmd_receipt(args: argparse.Namespace) -> int:
                 "    setup again if you still want the trial.\n"
             )
             return 0
-        print(NOT_CAPTURING)
+        # NOT_CAPTURING is written for someone whose setup DID run: its first
+        # step asks about the restart since setup, and its third points at a
+        # server name and config path printed above — neither of which exists
+        # without state. Serving it here fired two of the doc's branches at once
+        # and sent the reader back to the command they had just run.
+        print(NOT_CAPTURING if state else NOT_SET_UP)
         return 0
 
     s = summarize(events, events_path.stat().st_size)
