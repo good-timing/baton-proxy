@@ -712,15 +712,25 @@ def test_the_receipt_hands_over_a_command_that_cannot_destroy_the_file(
     assert f"gzip {events}" not in out, "the bare form deletes the source"
 
 
-def test_the_receipt_names_no_destination(tmp_path, monkeypatch, capsys):
-    """The kit sells one sentence — nothing leaves your machine — and an upload
-    endpoint would cost it to save one step at the very end. The file travels by
-    whatever channel the person's own company already permits, so the receipt
-    must not name, offer, or imply a place to send it."""
+def test_the_receipt_names_an_address_but_never_a_place_to_upload_to(tmp_path, monkeypatch, capsys):
+    """This test used to assert the opposite, and the reversal is the point.
+
+    It read: the receipt "must not name, offer, or imply a place to send it",
+    on the reasoning that a destination costs the one sentence the kit sells.
+    That reasoning holds against an UPLOAD and not against an address, and the
+    difference is who does the sending. `kit.py` still has no network call, so
+    "nothing here sends it" stays literally true and §9.1's grep stays at its
+    six adjudicated matches; what changes is that the person is no longer left
+    to guess where a file they have decided to release should go.
+
+    So the pin moves rather than lifting: an address, yes; a URL, an endpoint,
+    or anything the kit itself would talk to, no."""
     _events, out = _run_receipt(tmp_path, monkeypatch, capsys, [_ev(payload={"tool_name": "s"})])
-    for scheme in ("http://", "https://", "@"):
-        assert scheme not in out, f"the receipt offered a destination ({scheme})"
-    assert "goodtiming" not in out and "baton.ai" not in out
+    assert kit.TEAM_EMAIL in out, f"the receipt still ends with nowhere to send it:\n{out}"
+    for scheme in ("http://", "https://"):
+        assert scheme not in out, f"the receipt offered an endpoint ({scheme})"
+    assert "nothing here sends it" in out, "the sentence the kit sells is gone"
+    assert "no upload endpoint in this kit" in out, "the promise that replaced it is gone"
 
 
 def test_receipt_reports_no_error_counts():
@@ -3432,3 +3442,143 @@ def test_uninstall_does_not_promise_a_restore_it_could_not_verify(
     assert "WARNING" in out
     assert "original server again" not in out, f"it promised what it could not check:\n{out}"
     assert (kit_home / "state.json").exists(), "the unverified branch still keeps the record"
+
+
+# ---------------------------------------------------------------------------
+# The email ending (plan of record 2026-08-31).
+#
+# Upload is deferred; email is the route, and it costs nothing from the security
+# posture because THEY send the file. `CLAUDE.md`'s "Never send the file
+# anywhere" holds verbatim, the receipt's "there is no upload endpoint in this
+# kit" stays true, and §9.1's grep contract is untouched — no network call is
+# added anywhere.
+#
+# What changes is that the trial stops ending at a file on a stranger's laptop
+# with no named next move. Two halves, and the second is the one the run showed
+# we get wrong: the receipt has to name the address, and SETUP has to say the
+# ending too — because once they walk away from that window no agent anywhere
+# knows this kit exists, and the setup output is the last thing that speaks.
+# ---------------------------------------------------------------------------
+
+
+def test_the_offer_is_withheld_from_a_capture_with_no_calls_in_it(tmp_path, kit_home, capsys):
+    """Dave: the "captured" line prints only after the file has been read and
+    found to contain calls — never optimistically.
+
+    A handshake-only file is not empty (the surface snapshot is in it), so the
+    offer's gate cannot be "are there events". Asking someone to gzip and mail a
+    file with nothing in it wastes the one send they will make, and it argues
+    with the banner printed just above, which said nothing came down the pipe."""
+    _wrapped(tmp_path, kit_home, capsys)
+    _write_events(kit_home, ("bee5d1a2", 0))
+    out = _receipt_output(capsys)
+    assert _fired(out) == [NOTHING_CALLED_MARKER], f"the diagnosis stopped firing:\n{out}"
+    assert kit.TEAM_EMAIL not in out, f"offered to send a capture with nothing in it:\n{out}"
+    assert "gzip -c" not in out, f"offered to compress a capture with nothing in it:\n{out}"
+
+
+def test_a_resource_only_capture_is_still_worth_sending(tmp_path, kit_home, capsys):
+    """The gate has to count what `summarize` counts. A session that only read
+    resources reached the server and produced real data; gating the offer on
+    `tool_calls` alone would withhold it from a capture worth having — the same
+    defect as calling that session dead, one branch further on."""
+    _wrapped(tmp_path, kit_home, capsys)
+    _write_raw(kit_home, _resource_session("c0ffee01", 3))
+    out = _receipt_output(capsys)
+    assert kit.TEAM_EMAIL in out, f"a real capture was given no way out:\n{out}"
+
+
+def test_the_offer_survives_a_wrap_that_was_clobbered_after_capturing(tmp_path, kit_home, capsys):
+    """Capture STOPPED, but what was captured before it stopped is real and is
+    the whole reason to send anything. The banner says the wrap is gone; the
+    closing block still has to hand over the file."""
+    key = "/Users/someone/work/app"
+    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key)
+    _write_events(kit_home, ("d1e2f3a4", 2))
+    path.write_text(
+        canonical(
+            {
+                "mcpServers": {},
+                "projects": {
+                    key: {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = _receipt_output(capsys)
+    assert _fired(out) == ["THE WRAP IS GONE"], _fired(out)
+    assert kit.TEAM_EMAIL in out, f"a real capture lost its ending to the banner:\n{out}"
+
+
+def test_setup_hands_over_the_ending_before_the_window_goes_quiet(tmp_path, kit_home, capsys):
+    """The structural half. Once they walk away from this window there is no
+    agent left that knows the kit is here and nothing in their new session
+    mentions Baton, so the ending is given to them here or not at all."""
+    path = _project_config(tmp_path, "/Users/someone/work/app")
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    out, _err = capsys.readouterr()
+    assert "kit.py receipt" in out, f"setup never says how to come back:\n{out}"
+    assert kit.TEAM_EMAIL in out, f"setup never says how the trial ends:\n{out}"
+
+
+def test_the_ending_setup_hands_over_does_not_claim_a_file_exists_yet(tmp_path, kit_home, capsys):
+    """At setup time nothing has been captured and nothing may ever be. The line
+    is a conditional about what they will find, not a promise that there is
+    something to send — the same optimism the receipt's gate exists to stop, one
+    step earlier and harder to notice."""
+    path = _project_config(tmp_path, "/Users/someone/work/app")
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    out, _err = capsys.readouterr()
+    tail = out[out.index("kit.py receipt") :]
+    assert "if there is something in it" in tail.lower(), (
+        f"setup's ending reads as though a capture already exists:\n{tail}"
+    )
+
+
+def test_the_already_wrapped_path_hands_over_the_ending_too(tmp_path, kit_home, capsys):
+    """Cold re-entry is the normal case on a multi-day trial, and it is exactly
+    the person who has lost the window that carried the ending the first time."""
+    path = _project_config(tmp_path, "/Users/someone/work/app")
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    out, _err = capsys.readouterr()
+    assert "Already wrapped" in out
+    assert kit.TEAM_EMAIL in out, f"the re-entry hands over no ending:\n{out}"
+
+
+def test_the_doc_and_the_kit_name_the_same_address():
+    """Same shape as §4's injected-param pin, and the same failure it caught: a
+    document naming a different address than the code prints is wrong in the one
+    place a person acts on it, and every test stays green."""
+    doc = _claude_md()
+    assert kit.TEAM_EMAIL in doc, f"CLAUDE.md never names {kit.TEAM_EMAIL}"
+    others = set(re.findall(r"[\w.+-]+@[\w-]+\.[\w.]+", doc)) - {kit.TEAM_EMAIL}
+    assert others <= {"security@goodtiming.ai"}, f"CLAUDE.md names another address: {others}"
+
+
+def test_uninstall_is_no_longer_the_close():
+    """`Ending it` used to finish "Offer `uninstall` and leave it there" — which
+    switches off our own sensor at the moment it first produced something worth
+    seeing, and reads to the person as though declining to send ended the trial.
+    Uninstall is the exit: always available, offered on request, never suggested
+    after a good capture.
+
+    Pinned on the section rather than the file, because the doc must still say
+    how to remove the kit — one section down, where it belongs."""
+    doc = _claude_md()
+    ending = doc[doc.index("## Ending it") : doc.index("## Removing it")]
+    assert "uninstall" not in ending, f"`Ending it` still closes on uninstall:\n{ending}"
+    assert "leave it there" not in ending
+
+
+def test_the_doc_says_the_trial_can_be_ended_more_than_once():
+    """ "I'm done" is a statement about the DATA, not the machine. Nothing is torn
+    down when they say it, the wrap is a permanent edit until `uninstall`, and
+    saying it again on a longer trial is ordinary rather than a mistake. The doc
+    has to say so: an agent reading the old text has no reason to think the loop
+    is available."""
+    doc = _claude_md()
+    ending = doc[doc.index("## Ending it") : doc.index("## Removing it")]
+    assert "again" in ending.lower(), f"`Ending it` never says it can be said twice:\n{ending}"

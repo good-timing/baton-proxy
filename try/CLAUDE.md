@@ -171,36 +171,81 @@ so a path you compose yourself produces an empty file for a reason the person
 cannot see. This `try/` folder is where the three commands run. It is not where
 their client starts, unless setup said it was.
 
+**Setup also prints the ending. Relay that too.** Its last block says what
+`receipt` will show, names the address the file can be emailed to, and says that
+telling us they are done switches nothing off. That block is the only part of
+this trial that survives the handoff: once they are working in the other
+terminal no agent there knows this kit exists, and nothing in that session
+mentions Baton. Summarise it away and the trial ends at a file nobody knows what
+to do with.
+
 Then stop. Do not try to verify capture before they have used the server in that
 new session — there is nothing to verify yet, and saying otherwise would be
 wrong.
 
 ## While it runs
 
-There is nothing to do. The person uses their server normally, for days if that
-is what it takes. If they check in, run `receipt` and report it. Suggest running
-it **early** — the first day, not the last — because an empty file on day one is
-a five-minute fix and an empty file on day five is a wasted trial.
+There is nothing to do, and nothing is waiting on you. The person uses their
+server normally, for days if that is what it takes.
+
+**The wrap is a permanent edit, not a session.** It has no expiry and no scope
+beyond the entry it replaced. The original is kept verbatim in `state.json` and
+the wrapped entry stays live until `uninstall` — or until their client rewrites
+the config underneath it, which is what the *THE WRAP IS GONE* row exists to
+catch. Nothing decays if they leave it alone for a week.
+
+**Coming back cold is the normal case, not a fallback.** A multi-day trial is
+what the kit asks for, and windows get closed, laptops sleep, context gets
+compacted. A fresh session started in this folder loads this file and finds its
+place from *Start by finding out where you are*. That is the whole re-entry
+path, and it is the same one whether they were gone ten minutes or ten days.
+
+If they check in, run `receipt` and report it. Suggest running it **early** —
+the first day, not the last — because an empty file on day one is a five-minute
+fix and an empty file on day five is a wasted trial.
 
 ## Ending it
 
-Run `receipt` and give them the numbers. Then hand over the decision cleanly, and
+**"I'm done" is about the data, not the machine.** It means they have used the
+server enough that there should be something worth looking at. Nothing is torn
+down when they say it and nothing is switched off, so they can say it again next
+week having used the server more — the counts only grow, and the file is only
+ever added to.
+
+Run `receipt`, read what it printed, and let it decide which of these three you
+are in. Not what you expected to be in:
+
+**Calls landed.** Say what was captured — the numbers, and the file path as an
+aside rather than as a step. Say "captured" because you read the receipt and
+there were calls in it, never optimistically. Then hand over the decision, and
 do not push:
 
-- The file is at the path the receipt printed. It has not left the machine.
-- Suggest they read it before deciding — it is one JSON object per line, and it
-  contains real results from their tools.
-- If they want to send it, that is theirs to arrange with whoever they are
-  talking to at Baton. You do not send it. If size is the obstacle, the receipt
-  prints a `gzip` command — the file compresses around tenfold — and it travels
-  by whatever channel their company already permits. Do not offer, invent, or
-  look for a place to upload it; there deliberately is not one.
-- If they would rather not, that is a complete answer. Offer `uninstall` and
-  leave it there.
+- Suggest they read the file first. It is one JSON object per line and it holds
+  real results from their tools.
+- The receipt prints a `gzip` command and the address: `team@goodtiming.ai`,
+  which loads it and sends back a link to their own sessions. If they want it
+  sent, they send it. You do not, and there is no upload endpoint to look for.
+- Sending is repeatable — a second send of the whole file adds only the new
+  events. So this is not a now-or-never decision, and someone who wants another
+  week of data first can have it.
+- If they would rather not send anything, that is a complete answer and the
+  trial was still worth running. Say so and stop there.
+
+**Connected, but nothing called it.** The receipt prints that line and its two
+causes; take them in order. Do not offer the file — there is nothing in it worth
+sending yet, and the receipt withholds the offer here for the same reason.
+
+**Nothing at all, or the wrap is gone.** Those are the two rows above it in
+*Start by finding out where you are*. Walk the checklist the receipt printed;
+where the entry is scoped to a directory it names that directory.
 
 ## Removing it
 
-`python3 kit.py uninstall` restores the original entry and prints it. Then:
+`python3 kit.py uninstall` restores the original entry and prints it. **It is the
+exit, not the close.** Offer it when they ask for it, and do not propose it after
+a good capture: ending the data-gathering and removing the wrap are separate
+decisions, and the moment the kit has just produced something worth reading is
+the worst moment to suggest switching it off. Then:
 
 - New sessions get the original server back. One that is already running keeps
   the wrapped one it launched, so it stays in the path until that session ends.

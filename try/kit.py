@@ -84,6 +84,47 @@ _PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
 # gets redacted: an http entry hides its header values and shortens its url to
 # scheme and host, and a pointer that mentioned only env would leave someone
 # staring at a truncated URL with no idea it was deliberate.
+# The one address this kit names, and the only one it ever will. Pinned as a
+# constant because CLAUDE.md says it too, and a document that names a different
+# address than the code prints is wrong in the single place a person acts on it
+# — the failure shape §4's injected-param pins were written for.
+#
+# Naming it costs nothing from the security posture, because THEY send the file.
+# "Never send the file anywhere" holds verbatim, "nothing here sends it" stays
+# literally true, and §9.1's egress grep is untouched: no network call is added
+# anywhere by knowing where a file may go.
+TEAM_EMAIL = "team@goodtiming.ai"
+
+# Setup is the last thing that speaks before the kit goes quiet. Once they walk
+# away from that window there is no agent anywhere that knows this kit exists,
+# and nothing in the session they open next mentions Baton — so the ending is
+# handed over here or it is never handed over at all.
+#
+# Future-conditional throughout. Nothing has been captured at setup time and
+# nothing may ever be, so this says what they will find, never that there is
+# something to send.
+COME_BACK = (
+    "Use the server the way you normally would, then come back and run\n"
+    "  python3 kit.py receipt\n"
+    # On its own line: this path is interpolated and can be long, and a sentence
+    # continuing after it wraps past 80 columns on an ordinary checkout.
+    f"from {TRY_DIR}\n\n"
+    "Run it early — the first day, not the last. An empty file on day one is a\n"
+    "five-minute fix; on day five it is a wasted trial."
+)
+
+ENDING_NOTE = (
+    "How the trial ends, while you still have this window:\n\n"
+    "  `receipt` prints what landed. If there is something in it and you decide\n"
+    "  it may go, compress the event file and email it to\n"
+    f"    {TEAM_EMAIL}\n"
+    "  and we load it and send you back a link to your own sessions. You send it.\n"
+    "  Nothing in this kit sends anything, and there is nothing to sign up for.\n\n"
+    "Telling us you are done is about the data, not the machine — nothing is\n"
+    "switched off, and you can do it again later. The wrap stays in place until\n"
+    "you run `python3 kit.py uninstall`."
+)
+
 STATE_POINTER = (
     "\n\n  What is hidden above is hidden, not lost — env and header values shown\n"
     "  as `<literal …>`, and any URL shortened to scheme and host. The entry\n"
@@ -1254,6 +1295,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
         # days later has usually lost the window that carried it — a multi-day
         # trial is what the kit asks for, so cold re-entry is the normal case.
         print(f"\n{start_where(state['scope'], state['config_path'])}")
+        print(f"\n{COME_BACK}")
+        print(f"\n{ENDING_NOTE}")
         return 0
 
     found = discover(args.config_file)
@@ -1391,12 +1434,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
     # exist, and after the handoff no agent anywhere else knows the kit is here.
     print("\nLeave this window open — it holds the security detail and the diff above.")
     print(f"\n{start_where(scope, path)}")
-    print(
-        "\nUse the server the way you normally would. Then come back to this window\n"
-        "and run\n"
-        "  python3 kit.py receipt\n"
-        f"from {TRY_DIR} — early is better than late."
-    )
+    print(f"\n{COME_BACK}")
+    print(f"\n{ENDING_NOTE}")
     return 0
 
 
@@ -1517,11 +1556,24 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     print("Read it before you decide whether it may: it contains the full arguments")
     print("and full results of every tool call, which the scrubber does not redact")
     print("(see SECURITY.md §6).")
-    # The kit deliberately offers no destination — an upload endpoint would cost
-    # the sentence directly above, which is the one a reviewer approved. What it
-    # can do is remove the excuse that the file is too big to move: this format
-    # is mostly repeated keys and compresses about tenfold, so a file that will
-    # not attach to anything usually will once gzipped.
+
+    # Gated on whether anything actually reached the server, and gated on the
+    # same count the diagnosis above uses — a resource read is a call, so a
+    # session that only read resources produced a capture worth sending.
+    #
+    # Asking someone to gzip and mail a handshake-only file wastes the one send
+    # most people will make, and it argues with the banner printed a few lines
+    # up, which just told them nothing came down the pipe.
+    if not (s["tool_calls"] or s["other_calls"]):
+        return 0
+
+    # An address, not an endpoint. The kit still has no network call in it: the
+    # person sends the file, which is what keeps "nothing here sends it" true
+    # one line above, keeps CLAUDE.md's "never send the file anywhere" rule
+    # verbatim, and leaves §9.1's egress grep at its six adjudicated matches.
+    # What it removes is the older ending, which read "arrange it with whoever
+    # you are talking to at Baton" — an instruction with no address in it,
+    # handed to someone who by construction may not be talking to anyone.
     print()
     print("If you decide it may go, compress it first — this format is mostly")
     print("repeated keys, so it usually shrinks by around 10x:")
@@ -1530,8 +1582,19 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     # pastes without reading is not the place to find that out. `-k` would also
     # do it, but it is missing from older gzip builds.
     print(f"  gzip -c {events_path} > {events_path}.gz")
-    print("Then send the .gz however your company already allows. There is no")
-    print("upload endpoint in this kit and you do not need to create one.")
+    print(f"Then email the .gz to {TEAM_EMAIL}, by whatever channel your company")
+    print("already allows, and we will load it and send back a link to your own")
+    print("sessions. There is no upload endpoint in this kit and you do not need to")
+    print("create one.")
+    # Said here because it is what makes a multi-day trial work without either
+    # side tracking what was already sent: console ingest keys on `event_id` and
+    # ignores one it has seen, so the whole file can go again and only the new
+    # events land. Someone who does not know that either sends once and stops,
+    # or hand-splits the file, which is where the real mistakes live.
+    print()
+    print("Sending it again later is safe — we key on the event ids already in the")
+    print("file, so a second send adds only what is new. Use the server for another")
+    print("week and send the whole file again if you like.")
     return 0
 
 
