@@ -1820,6 +1820,12 @@ def test_the_bridge_session_completed_and_the_process_exited(bridge_run):
     other test passing."""
     replies = _replies(bridge_run["stdout"])
     assert {1, 2, 3} <= {r.get("id") for r in replies}, bridge_run["stderr"]
+    # Ids alone do not mean the session worked: a JSON-RPC *error* reply carries
+    # the id of the request it refused, so a run whose every upstream POST was
+    # rejected 401 satisfies the check above. That is the exact state this guard
+    # exists to catch, so read the echo reply itself, as the stdio sibling does.
+    echo = next(r for r in replies if r.get("id") == 3)
+    assert "error" not in echo, echo
     assert bridge_run["returncode"] == 0, bridge_run["stderr"]
 
 
@@ -2042,7 +2048,18 @@ def test_a_var_reference_is_still_described_as_one(tmp_path, kit_home, capsys):
     reference never needs printing — but nothing may claim it is a literal
     either. This pins that the two remote entries are told apart at all."""
     err = _setup_listing(tmp_path, capsys)
-    assert "charlie" in err
+    # Split the refusal into the half that OFFERS and the half that REFUSES.
+    # Asserting `"charlie" in err` alone proves nothing: a `charlie` demoted to
+    # unwrappable is still printed, just under the other header, and its
+    # reference is absent either way because a reason never quotes a header
+    # value. Only the section a name lands in distinguishes the two classes.
+    assert "Already baton-proxy" in err and "Not wrappable" in err, err
+    offered = err.split("\n\n  Already baton-proxy")[0]
+    refused = err.split("\n\n  Not wrappable")[1]
+    assert "charlie" in offered, f"the ${{VAR}}-bearer remote is not offered:\n{err}"
+    for name in ("delta", "echo_srv"):
+        assert name not in offered, f"`{name}` is refusable and was offered:\n{err}"
+        assert name in refused, f"`{name}` is missing from the refused list:\n{err}"
     assert "${CHARLIE_TOKEN}" not in err
 
 
@@ -2062,7 +2079,10 @@ def home_with_a_real_config(tmp_path, monkeypatch):
         canonical({"mcpServers": {"the-real-one": {"command": "npx", "args": ["-y", "real"]}}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(kit.Path, "home", staticmethod(lambda: fake_home))
+    # Via the environment, not `kit.Path.home`: kit does `from pathlib import
+    # Path`, so `kit.Path is pathlib.Path` and patching the attribute would
+    # replace `Path.home` for every caller in the process, not just the kit's.
+    monkeypatch.setenv("HOME", str(fake_home))
     return fake_home
 
 
