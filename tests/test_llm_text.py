@@ -27,6 +27,8 @@ so the two modules stay coherent. Load-bearing properties:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from baton_proxy._llm_text import (
@@ -226,3 +228,40 @@ def test_the_wording_keeps_the_clause_that_makes_it_groupable() -> None:
     mechanism: without it 80% of adjacent same-task calls reword and every task
     shatters, whichever granularity wording is chosen."""
     assert "REPEAT the exact same string" in build_overall_task_param_description()
+
+
+# The retired agent-facing names. All three remain WIRE keys, so they appear
+# legitimately across the codebase — but never in text an agent reads, where
+# they would name a param the schema no longer accepts.
+RETIRED_AGENT_FACING_NAMES = ("intent", "expected_outcome", "workflow")
+
+
+def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
+    """Presence tests are not enough, and the sibling SDK proved it.
+
+    Its lead line still told agents to populate "intent + expected_outcome +
+    workflow" long after those params were renamed, with every field-reference
+    test green — because each only asked whether the CURRENT names appear
+    somewhere, never whether a retired one still does. An agent that follows
+    such a line sends params the handler drops: the call succeeds, the
+    annotation emits, and the goal text is simply absent.
+
+    Matched only where a param is REFERENCED — `name:`, `name (REQUIRED`, or
+    inside the `a + b + c` populate list. A bare word-boundary search
+    over-detects and would fail on "you satisfied the user's intent via a
+    workaround", which is prose and correct.
+    """
+    surfaces = {
+        "instructions suffix": build_instructions_suffix("baton_annotate"),
+        "annotation tool description": build_annotation_tool_description(),
+    }
+    for where, text in surfaces.items():
+        for retired in RETIRED_AGENT_FACING_NAMES:
+            referenced = (
+                rf"\b{retired}(?=:)|\b{retired} \(REQUIRED"
+                rf"|(?<=\+ ){retired}\b|\b{retired}(?= \+)"
+            )
+            assert not re.search(referenced, text), (
+                f"{where} still names the retired param {retired!r}; an agent will send "
+                f"it and the value will be dropped"
+            )
