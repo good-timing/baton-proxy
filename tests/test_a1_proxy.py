@@ -8,12 +8,15 @@ Covers:
 
 from __future__ import annotations
 
+import subprocess
 import sys
+import threading
 from collections import OrderedDict
 from typing import Any
 
 import pytest
 
+from baton_proxy import proxy as proxy_mod
 from baton_proxy.proxy import (
     EVICTED_ERROR_TYPE,
     _ClientAction,
@@ -22,6 +25,7 @@ from baton_proxy.proxy import (
     _evict_overflow,
     _PendingCall,
     _pump_client_to_server,
+    run_proxy,
 )
 
 
@@ -411,3 +415,179 @@ def test_the_upstreams_stdin_is_closed_even_when_the_pump_dies(monkeypatch, exc)
         _pump_client_to_server(child_stdin, processor)
 
     assert child_stdin.closed, "the upstream was left holding an open stdin"
+
+
+# ---------------------------------------------------------------------------
+# Shutdown, one hop down: the wait on the upstream is bounded once the client
+# is gone. a613b35 made the client's EOF reach the upstream; this covers the
+# upstream that receives it and does not care.
+# ---------------------------------------------------------------------------
+
+
+class _FakeChild:
+    """A `Popen` stand-in whose exit is under the test's control.
+
+    `stdout` is an exhausted iterator so `_pump_server_to_client` returns at
+    once; the thing under test is the main thread's wait, not the pumps.
+    """
+
+    def __init__(self, *, exits_after: float | None) -> None:
+        """`exits_after=None` never exits; a float is seconds until it does.
+
+        The delay is load-bearing, not padding. A child that is already dead on
+        the first poll means the wait returns before any of the grace logic is
+        reached, so the test cannot see whether the clock was gated on the
+        client's disconnect — measured: with an immediate exit, deleting the
+        `is_alive` guard entirely left both tests green.
+        """
+        self.stdin = _RecordingStdin()
+        self.stdout: Any = iter(())
+        self.terminated = False
+        self.killed = False
+        self.returncode = 0
+        self._exit = threading.Event()
+        if exits_after is not None:
+            if exits_after <= 0:
+                self._exit.set()
+            else:
+                timer = threading.Timer(exits_after, self._exit.set)
+                timer.daemon = True
+                timer.start()
+
+    def wait(self, timeout: float | None = None) -> int:
+        # Faithful to `Popen.wait`: with no timeout it BLOCKS until the process
+        # dies, it does not raise. Getting this wrong would turn the unfixed
+        # code's hang into a raised TimeoutExpired, i.e. a test that goes red
+        # for a reason the field never produces.
+        if self._exit.wait(timeout):
+            return 0
+        raise subprocess.TimeoutExpired(cmd="upstream", timeout=timeout or 0)
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._exit.set()
+
+    def kill(self) -> None:
+        self.killed = True
+        self._exit.set()
+
+
+class _Worker(threading.Thread):
+    """Runs `run_proxy` off the main thread so a hang fails instead of hanging.
+
+    Without this the RED case is not a failing test, it is a stuck suite: the
+    defect under test IS an unbounded wait. Daemon, so a genuine hang cannot
+    outlive the run.
+
+    It also keeps whatever `run_proxy` raised. A crash on the way in — a
+    missing env var, say — otherwise leaves the thread dead and the fake child
+    untouched, which is indistinguishable from a clean healthy-path exit and
+    would pass `test_a_healthy_session_is_never_bounded` while never reaching
+    the wait at all.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(daemon=True, name="run-proxy-under-test")
+        self.error: BaseException | None = None
+        self.rc: int | None = None
+
+    def run(self) -> None:
+        try:
+            self.rc = run_proxy(["unused"])
+        except BaseException as e:  # noqa: BLE001 - re-raised by the caller
+            self.error = e
+
+
+def _run_proxy_in_a_worker(timeout: float = 2.0) -> _Worker:
+    worker = _Worker()
+    worker.start()
+    worker.join(timeout)
+    if worker.error is not None:
+        raise AssertionError(f"run_proxy raised before it could reach the wait: {worker.error!r}")
+    return worker
+
+
+def _shutdown_env(monkeypatch) -> None:
+    """The minimum `Config.from_env` accepts, pointed somewhere harmless."""
+    monkeypatch.setenv("BATON_EVENT_SINK", "stderr:")
+    monkeypatch.setenv("BATON_VENDOR_ID", "toybox")
+
+
+def test_a_stubborn_upstream_does_not_hang_the_shutdown(monkeypatch):
+    """An upstream that ignores its own stdin EOF re-creates a613b35's hang.
+
+    That fix closed the upstream's stdin so a *healthy* server would see EOF
+    and exit. An upstream that reads stdin and keeps serving anyway — or one
+    wedged in a request it will never finish — never exits, so `child.wait()`
+    never returns and everything hanging off it is skipped again:
+    `drain_pending`, which gives each in-flight `*_start` a matching end, and
+    `emitter.stop()`, which flushes the queue. Identical damage to the bug
+    already fixed, one hop down: the client's SIGTERM lands with the last
+    events still unwritten.
+    """
+    _shutdown_env(monkeypatch)
+    child = _FakeChild(exits_after=None)
+    monkeypatch.setattr(proxy_mod.subprocess, "Popen", lambda *a, **k: child)
+    # The client has already gone: stdin is at EOF, so `t_in` returns at once
+    # and the grace clock is allowed to start.
+    monkeypatch.setattr(sys, "stdin", iter(()))
+    monkeypatch.setattr(proxy_mod, "_UPSTREAM_EXIT_GRACE", 0.05)
+    monkeypatch.setattr(proxy_mod, "_UPSTREAM_KILL_GRACE", 0.05)
+    monkeypatch.setattr(proxy_mod, "_UPSTREAM_POLL", 0.01)
+
+    worker = _run_proxy_in_a_worker()
+
+    assert not worker.is_alive(), (
+        "run_proxy never returned: the wait on the upstream is still unbounded, "
+        "so drain_pending and emitter.stop() are unreachable"
+    )
+    assert child.terminated, "the stubborn upstream was never asked to stop"
+
+
+def test_a_healthy_session_is_never_bounded(monkeypatch):
+    """The guard, not just the escalation — and this is the branch that runs on
+    every real session.
+
+    The bound must start only once the CLIENT has gone. A grace clock running
+    from startup would SIGTERM a perfectly healthy upstream seconds into a
+    session that is meant to last hours. It also must not be written as
+    `t_in.join()` then a bounded wait: the upstream can die while the client is
+    still attached (a crash), and that rc has to come back at once.
+
+    So: client still attached (stdin blocks forever), upstream exits on its
+    own. `run_proxy` must return promptly and must not have touched it.
+    """
+    _shutdown_env(monkeypatch)
+    # Alive across many polls while the client is attached — a session, not a
+    # corpse. Comfortably longer than the grace below, so a clock that is not
+    # gated on the disconnect fires first and is caught.
+    child = _FakeChild(exits_after=0.3)
+    spawned: list[Any] = []
+    monkeypatch.setattr(
+        proxy_mod.subprocess, "Popen", lambda *a, **k: (spawned.append(a), child)[1]
+    )
+
+    class _NeverEofStdin:
+        """The client is still there; iterating blocks, as a real pipe does."""
+
+        def __iter__(self) -> Any:
+            return self
+
+        def __next__(self) -> str:
+            threading.Event().wait()
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr(sys, "stdin", _NeverEofStdin())
+    monkeypatch.setattr(proxy_mod, "_UPSTREAM_EXIT_GRACE", 0.05)
+    monkeypatch.setattr(proxy_mod, "_UPSTREAM_KILL_GRACE", 0.05)
+    monkeypatch.setattr(proxy_mod, "_UPSTREAM_POLL", 0.01)
+
+    worker = _run_proxy_in_a_worker()
+
+    assert spawned, "run_proxy never spawned the upstream, so it never reached the wait"
+    assert not worker.is_alive(), "run_proxy did not return on a clean upstream exit"
+    assert not child.terminated, (
+        "a healthy upstream was SIGTERMed: the grace clock is running from "
+        "startup instead of from the client's disconnect"
+    )
+    assert not child.killed

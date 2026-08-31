@@ -36,6 +36,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -1298,6 +1299,64 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     return config, injection, emitter, processor
 
 
+# How long the upstream gets to exit after the CLIENT has disconnected, before
+# we escalate. `_pump_client_to_server` closes its stdin on the client's EOF and
+# a well-behaved stdio server exits on that; one that ignores stdin EOF, or is
+# wedged in a call it will never finish, does not.
+#
+# The budget is deliberately small. Everything after the wait — t_out's drain,
+# `drain_pending`, `emitter.stop()` — has to finish before the CLIENT's own
+# SIGTERM lands, and a client escalates seconds after it closes our stdin. A
+# generous grace here would rebuild the very unwritten-events bug it exists to
+# prevent, just further along.
+_UPSTREAM_EXIT_GRACE = 1.0
+_UPSTREAM_KILL_GRACE = 1.0
+# Coarse enough to be free over a session lasting hours, fine enough that an
+# upstream CRASH still surfaces promptly.
+_UPSTREAM_POLL = 0.2
+
+
+def _wait_for_upstream(child: Any, client_pump: threading.Thread) -> int:
+    """Wait for the upstream, bounding the wait only once the client is gone.
+
+    Unbounded while the client is attached, which is the ordinary case: a
+    session lasts as long as the client wants it to, and an upstream that dies
+    mid-session must have its returncode come straight back.
+
+    Deliberately NOT written as `client_pump.join()` followed by a bounded
+    `wait` — that reads simpler and is wrong. It would make an upstream crash
+    wait on the client's disconnect, when the whole point of the fast path is
+    that the two are independent.
+    """
+    deadline: float | None = None
+    while True:
+        try:
+            return child.wait(timeout=_UPSTREAM_POLL)
+        except subprocess.TimeoutExpired:
+            pass
+        if client_pump.is_alive():
+            # Client still attached. No clock runs, however long this takes.
+            deadline = None
+            continue
+        if deadline is None:
+            deadline = time.monotonic() + _UPSTREAM_EXIT_GRACE
+        elif time.monotonic() >= deadline:
+            break
+
+    logger.warning(
+        "baton-proxy: the upstream is still running %.1fs after its stdin was "
+        "closed; terminating it so the event queue can be flushed",
+        _UPSTREAM_EXIT_GRACE,
+    )
+    child.terminate()
+    try:
+        return child.wait(timeout=_UPSTREAM_KILL_GRACE)
+    except subprocess.TimeoutExpired:
+        logger.warning("baton-proxy: the upstream ignored SIGTERM; killing it")
+        child.kill()
+        return child.wait()
+
+
 def run_proxy(argv: list[str]) -> int:
     """Spawn the upstream stdio MCP server and pump bidirectionally.
 
@@ -1344,7 +1403,7 @@ def run_proxy(argv: list[str]) -> int:
     t_in.start()
     t_out.start()
 
-    rc = child.wait()
+    rc = _wait_for_upstream(child, t_in)
     # t_out terminates naturally once child's stdout closes (which happens
     # on child exit). Give it a moment to drain final responses + their
     # tool_call_end events before we stop the emitter. t_in is blocked on
