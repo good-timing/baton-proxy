@@ -229,18 +229,19 @@ your server.
   configured — which the try setup does — so expect to see it
   (`report.py`, `should_inject_report_tool`).
 
-**Two optional parameters grafted onto every upstream tool's schema** —
-`user_goal` and `expected_result` (`proxy.py`, `_inject_goal_params`). They are
-popped from the arguments before the call is forwarded, so **your server receives
-exactly the arguments it would have received unwrapped**. Set
-`BATON_INTENT_PARAM=off` to disable the injection entirely.
+**Three optional parameters grafted onto every upstream tool's schema** —
+`user_goal`, `expected_result` and `overall_task` (`proxy.py`,
+`_inject_goal_params`). They are popped from the arguments before the call is
+forwarded, so **your server receives exactly the arguments it would have
+received unwrapped**. Set `BATON_INTENT_PARAM=off` to disable the injection
+entirely.
 
 The one exception, stated because it is a real edge: if a call arrives before the
 proxy has seen a `tools/list` in that process, it has no record of whether the
-tool declares `user_goal` natively, and it strips the parameter anyway rather
-than forward it (`proxy.py`, `_extract_one_goal_param` — it logs a warning when
-it does). This matters only for a server that genuinely declares a parameter of
-its own named `user_goal` or `expected_result`. On the normal path, where the
+tool declares one of those names natively, and it strips the parameter anyway
+rather than forward it (`proxy.py`, `_extract_one_goal_param` — it logs a
+warning when it does). This matters only for a server that genuinely declares a
+parameter of its own named `user_goal`, `expected_result` or `overall_task`. On the normal path, where the
 client lists tools before calling them, a natively-declared parameter is
 recognised and forwarded untouched.
 
@@ -349,8 +350,9 @@ Recorded in full:
 - **Tool definitions** — a `surface_snapshot` event carrying your server's full
   tool list, server info, capabilities and instructions, recorded once per
   distinct surface.
-- **Intent** — whatever the agent wrote into `user_goal` / `expected_result` and
-  into `baton_annotate`. This is free text the model composed.
+- **Intent** — whatever the agent wrote into `user_goal` / `expected_result` /
+  `overall_task` and into `baton_annotate`. This is free text the model
+  composed.
 
 Recorded in part:
 

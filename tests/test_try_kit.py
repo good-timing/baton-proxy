@@ -21,8 +21,11 @@ import sys
 import threading
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import Any
 
 import pytest
+
+from baton_proxy.proxy import _inject_goal_params
 
 KIT_PATH = Path(__file__).resolve().parent.parent / "try" / "kit.py"
 
@@ -2566,3 +2569,64 @@ def test_setup_refuses_its_own_bridge_entry_without_telling_anyone_to_delete_it(
     assert "IS baton-proxy" in err
     assert "unwrap it by hand" not in err
     assert json.loads(path.read_text(encoding="utf-8")) == bridged
+
+
+# ---------------------------------------------------------------------------
+# SECURITY.md §4's injected-parameter disclosure.
+#
+# The document tells a prospect exactly what the proxy grafts onto their tools'
+# schemas, by count AND by name. That is a disclosure, not prose: a reader
+# decides whether to run the kit on it. It went stale the moment a third param
+# was injected, and every test stayed green — the same failure shape §9's
+# greps were written for, one section up.
+# ---------------------------------------------------------------------------
+
+_COUNT_WORDS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five"}
+
+
+def _injected_param_names() -> list[str]:
+    """The names the proxy actually grafts, straight from the injector."""
+    tool: dict[str, Any] = {"name": "t", "inputSchema": {"type": "object", "properties": {}}}
+    _inject_goal_params(tool, "optional")
+    return sorted(tool["inputSchema"]["properties"])
+
+
+def _injection_disclosure() -> str:
+    """§4's injection paragraph alone.
+
+    Scoped deliberately: these names appear elsewhere in the document (§8 lists
+    them again as recorded content), so asserting against the whole file passes
+    while the disclosure itself is missing one.
+    """
+    doc = (KIT_PATH.parent / "SECURITY.md").read_text()
+    start = doc.index("optional parameters grafted onto every upstream tool's schema")
+    return doc[start : doc.index("\n\n", start)]
+
+
+def test_security_md_discloses_every_injected_param_by_name():
+    """§4's injection paragraph must name each grafted param.
+
+    A reviewer greps for the name they saw in their own tool schema; a name the
+    disclosure omits reads as one the proxy adds without saying so, which is the
+    single worst thing this document can do.
+    """
+    disclosure = _injection_disclosure()
+    for name in _injected_param_names():
+        assert f"`{name}`" in disclosure, (
+            f"SECURITY.md §4's disclosure never names the injected param {name!r}"
+        )
+
+
+def test_security_md_injected_param_count_matches_the_code():
+    """§4 states the count in words; the injector decides it.
+
+    Pinned separately from the names because the two drift apart differently: a
+    fourth param added and documented still leaves the sentence saying "Three".
+    """
+    doc = (KIT_PATH.parent / "SECURITY.md").read_text()
+    expected = _COUNT_WORDS[len(_injected_param_names())]
+    claim = f"**{expected} optional parameters grafted onto every upstream tool's schema**"
+    assert claim in doc, (
+        f"SECURITY.md §4 does not say {expected!r} optional parameters; the proxy injects "
+        f"{_injected_param_names()}"
+    )
