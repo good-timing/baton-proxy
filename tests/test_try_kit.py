@@ -2063,6 +2063,53 @@ def test_a_var_reference_is_still_described_as_one(tmp_path, kit_home, capsys):
     assert "${CHARLIE_TOKEN}" not in err
 
 
+def _offered_rows(err: str) -> dict[str, str]:
+    """The offered half of the candidate list, as {server name: its row}."""
+    offered = err.split("\n\n  Already baton-proxy")[0]
+    return {
+        name: line
+        for line in offered.splitlines()
+        for name in FIVE_ENTRIES["mcpServers"]
+        if name in line
+    }
+
+
+def test_each_offered_row_says_whether_the_server_is_remote(tmp_path, kit_home, capsys):
+    """Finding 4. The refused list names every class precisely; the offered one
+    named none, so a stdio entry and an http+bearer entry rendered identically.
+
+    That difference is not cosmetic: `CLAUDE.md` gates two extra warnings on it —
+    that a process of ours will hold their bearer token, and that `${VAR}`
+    expansion inside `env` is measured behaviour rather than a guarantee. Before
+    this, the doc could only tell the agent to go back into the config and infer
+    the kind from the presence of a `url`. An inference the agent can skip is a
+    warning the person may never hear.
+
+    The two words are read off the module, so the doc's vocabulary and the code's
+    cannot drift apart while both stay green."""
+    rows = _offered_rows(_setup_listing(tmp_path, capsys))
+    assert set(rows) == {"alpha", "charlie"}, f"the offered half changed shape: {rows}"
+    assert kit.KIND_STDIO in rows["alpha"], f"alpha is a stdio server: {rows['alpha']!r}"
+    assert kit.KIND_REMOTE in rows["charlie"], f"charlie is remote: {rows['charlie']!r}"
+    # And each row carries ONE kind. A row reading "stdio" that also contains
+    # "remote" somewhere would pass both assertions above and tell the reader
+    # nothing, which is the state this finding started from.
+    assert kit.KIND_REMOTE not in rows["alpha"], f"alpha is not remote: {rows['alpha']!r}"
+    assert kit.KIND_STDIO not in rows["charlie"], f"charlie is not stdio: {rows['charlie']!r}"
+
+
+def test_the_offered_rows_share_one_indent(tmp_path, kit_home, capsys):
+    """Finding 6. `"\n\n  " + "\n".join(lines)` where every element already
+    carried its own two spaces, so the first row sat at 4 and the rest at 2.
+
+    Pinned as "all rows agree" rather than as a literal width: the width is a
+    layout choice and finding 4 rewrites the row anyway; a first row that does
+    not line up with its own list is the defect."""
+    rows = _offered_rows(_setup_listing(tmp_path, capsys))
+    indents = {name: len(row) - len(row.lstrip(" ")) for name, row in rows.items()}
+    assert len(set(indents.values())) == 1, f"the offered rows do not line up: {indents}"
+
+
 # --- TK-F-4: --config-file is answered, never quietly abandoned -------------
 
 

@@ -247,6 +247,16 @@ def http_bridge(entry: dict) -> tuple[str, str] | None:
     return url.strip(), token
 
 
+# The two words the candidate list marks each offered row with. CLAUDE.md uses
+# the same two, and gates two extra warnings on the second — a remote wrap puts
+# a process of ours on the machine holding their bearer token, which someone who
+# approved the stdio story has not yet approved. Leaving the rows unmarked left
+# the agent to infer the kind by going back into the config, and an inference it
+# can skip is a warning the person may never hear.
+KIND_STDIO = "stdio"
+KIND_REMOTE = "remote"
+
+
 def is_wrappable(entry: dict) -> bool:
     """Can setup replace this entry with a baton-proxy one?
 
@@ -255,6 +265,14 @@ def is_wrappable(entry: dict) -> bool:
     which we bridge. Everything else gets a reason from ``not_wrappable_reason``
     rather than silence."""
     return is_stdio(entry) or http_bridge(entry) is not None
+
+
+def wrappable_kind(entry: dict) -> str:
+    """Which of the two wrappable classes an offered entry is.
+
+    Only meaningful for an entry ``is_wrappable`` accepted: the two classes are
+    disjoint there, so "not stdio" is exactly "the bridged remote one"."""
+    return KIND_STDIO if is_stdio(entry) else KIND_REMOTE
 
 
 def not_wrappable_reason(entry: dict) -> str:
@@ -1005,15 +1023,24 @@ def cmd_setup(args: argparse.Namespace) -> int:
         )
 
     if not args.server:
-        wrappable = [(p, s, n) for p, _t, s, n, e in found if is_wrappable(e) and not is_wrapped(e)]
+        wrappable = [
+            (p, s, n, wrappable_kind(e))
+            for p, _t, s, n, e in found
+            if is_wrappable(e) and not is_wrapped(e)
+        ]
         # Already-wrapped entries get their own line rather than falling out of
         # both lists — otherwise a machine whose only server is already wrapped
         # is told "there is nothing here to wrap", which is false, and the name
         # it hides is the one needed to reach the real refusal below.
         already = [(p, s, n) for p, _t, s, n, e in found if is_wrappable(e) and is_wrapped(e)]
         remote = [(n, not_wrappable_reason(e)) for _p, _t, _s, n, e in found if not is_wrappable(e)]
-        lines = [f"  {n:<24} {describe(p, s)}" for p, s, n in wrappable] or ["  (none)"]
-        msg = "which server should the trial wrap? Pass its name.\n\n  " + "\n".join(lines)
+        # Four spaces on EVERY row, matching the two sections below. The old
+        # form put the indent in the join prefix as well as in the elements, so
+        # the first row sat at four and every other at two.
+        lines = [f"    {n:<24} {k:<6} {describe(p, s)}" for p, s, n, k in wrappable] or [
+            "    (none)"
+        ]
+        msg = "which server should the trial wrap? Pass its name.\n\n" + "\n".join(lines)
         if already:
             msg += "\n\n  Already baton-proxy, so not offered:\n  " + "\n  ".join(
                 f"  {n:<24} {describe(p, s)}" for p, s, n in already

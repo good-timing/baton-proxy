@@ -94,9 +94,9 @@ say in step 2.** A **stdio** server is one their client launches locally; the
 wrap replaces the launch command. A **remote** server is one their client reaches
 over HTTPS; the wrap is only offered when its single `Authorization: Bearer`
 header holds a token written in the config, and it turns the entry into a local
-process that bridges to the same endpoint. `setup`'s list does not label which is
-which — the entry does. If the one they picked has a `url` and `headers` rather
-than a `command`, it is the remote kind.
+process that bridges to the same endpoint. Each offered row in `setup`'s list is
+marked `stdio` or `remote` — read the kind off the row they picked rather than
+going back into the config for it.
 
 Do not argue an entry past a refusal. Every remote refusal — `sse`, extra
 headers, no credential in the config — exists because the wrap would look like it
