@@ -154,6 +154,22 @@ RESTART_NOTE = (
     "launched, and nothing is captured through it."
 )
 
+# Printed under the redaction line whenever `cc` is non-zero. It is not a
+# caveat about the scrubber — the scrubber did exactly what it says — it is the
+# kit declining to let a number be read as a fact it cannot support. The
+# redaction is irreversible by design, so nobody, including us, can go back and
+# say whether any of them was a card.
+CC_IS_A_CHECKSUM = (
+    "                     `cc` counts 13-19 digit strings that pass the Luhn\n"
+    "                     checksum. Real card numbers pass it, and so does about\n"
+    "                     1 in 10 long numeric ids — order numbers, timestamps,\n"
+    "                     record ids. The scrubber redacted them all and kept no\n"
+    "                     copy, so this is a count of card-SHAPED numbers. It is\n"
+    "                     not evidence that any card number was in the file, and\n"
+    "                     nothing here can tell you which it was."
+)
+
+
 # Uninstall's version, and deliberately not the constant above. Nothing is
 # pending here and nothing is inert: the config already says what it said before
 # setup, so the only thing left to say is what the next session will do.
@@ -1551,6 +1567,17 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     if s["redactions"]:
         detail = ", ".join(f"{k}×{v}" for k, v in sorted(s["redactions"].items()))
         print(f"secrets redacted     {sum(s['redactions'].values())} ({detail})")
+        # `cc` is the one category whose count reads as a finding and is not
+        # one. The rule is a checksum over any 13-19 digit string, and about
+        # one in ten long numeric ids satisfies it by chance — measured, not
+        # estimated: 9.9-10.4% across every length in the range, and the same
+        # rate for epoch millis, order numbers and snowflake ids. In the first
+        # human-led run the kit reported 9 of these and the agent explained
+        # them as the person's searches "returning payment-shaped content",
+        # which is a cause nothing here can see. So the count is printed and
+        # the meaning is not asserted.
+        if s["redactions"].get("cc"):
+            print(CC_IS_A_CHECKSUM)
     else:
         print("secrets redacted     0 — no credential or PII patterns matched")
     # Both of these need state: on a trial that has already ended the header

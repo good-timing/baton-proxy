@@ -129,7 +129,9 @@ turn it off.
 
 Redacted by pattern: JWTs, `Bearer` header values, `sk-…` API keys, `AKIA…` AWS
 access key ids, email addresses, North-American-format phone numbers, and 13–19
-digit card numbers that pass a Luhn check. Redacted by field name regardless of
+digit strings that pass a Luhn check — which catches card numbers and, by
+design, about 1 in 10 other long digit strings, so the `cc` count means
+card-shaped, not card. Redacted by field name regardless of
 value: `email`, `phone`, `ssn`, `api_key`, `token`, `secret`, `password`,
 `user_name`.
 

@@ -428,7 +428,15 @@ off in the try kit.
 
 **Redacted by pattern:** JWTs, `Bearer` header values, `sk-…` API keys, `AKIA…`
 AWS access key ids, email addresses, North-American-format phone numbers, and
-13–19 digit card numbers that pass a Luhn check.
+13–19 digit strings that pass the Luhn checksum.
+
+That last one is deliberately loose and you should read its count that way. Card
+numbers pass Luhn; so does roughly **1 in 10** of every other long digit string —
+order numbers, epoch timestamps, record ids — and we redact those too rather than
+risk missing a card. `receipt` reports them as `cc`, and the count is a count of
+card-*shaped* numbers, not a finding that card numbers were present. The
+redaction keeps no copy of what it replaced, so the question cannot be reopened
+afterwards by us or by you.
 
 **Redacted by field name**, regardless of value: `email`, `phone`, `ssn`,
 `api_key`, `token`, `secret`, `password`, `user_name`.

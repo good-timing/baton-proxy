@@ -2441,6 +2441,72 @@ def test_receipt_branch_four_counts(tmp_path, kit_home, capsys):
     assert "No events have been captured yet" not in out
 
 
+def _receipt_with_redactions(tmp_path, kit_home, capsys, marker_text: str) -> str:
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    (kit_home / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "tool_call_end",
+                "session_id": "s1",
+                "captured_at": "2026-08-30T10:00:01Z",
+                "payload": {"tool_name": "echo", "result": marker_text, "duration_ms": 3},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return _receipt_output(capsys)
+
+
+def test_a_cc_count_is_printed_with_what_it_cannot_mean(tmp_path, kit_home, capsys):
+    """The count is a Luhn checksum over long digit strings, and about 1 in 10
+    non-card ids passes it. The first human-led run printed 9 of these and the
+    agent explained them as the person's searches returning payment-shaped
+    content — a cause nothing in the kit can see. So the number stays and the
+    meaning is stated by the kit rather than invented downstream."""
+    out = _receipt_with_redactions(
+        tmp_path, kit_home, capsys, "order [REDACTED:cc] and [REDACTED:cc]"
+    )
+    assert "cc×2" in out
+    assert "1 in 10 long numeric ids" in out, f"the false-positive rate is not stated:\n{out}"
+    assert "not evidence that any card number was in the file" in out
+    # The evidence is destroyed at redaction time, so the kit must not offer a
+    # way to look: no "check the file" advice can answer this one.
+    assert "kept no\n" in out or "kept no copy" in out
+
+
+def test_the_cc_note_is_not_printed_when_no_cc_matched(tmp_path, kit_home, capsys):
+    """It is gated on the category, not on redactions in general. Printing a
+    paragraph about card-shaped numbers under a line reporting two emails
+    answers a question nobody asked and reads as a hedge on the whole count."""
+    out = _receipt_with_redactions(
+        tmp_path, kit_home, capsys, "mail [REDACTED:email] and [REDACTED:email]"
+    )
+    assert "email×2" in out
+    assert "Luhn" not in out, f"the cc note fired without a cc match:\n{out}"
+
+
+def test_the_luhn_false_positive_rate_the_receipt_quotes_is_the_real_one():
+    """`1 in 10` is a measured claim printed to a prospect, so it is pinned to
+    the scrubber it describes rather than to a comment. Seeded, so a drift in
+    `_luhn_valid` or the candidate regex fails here instead of quietly making
+    the receipt's sentence false."""
+    import random
+
+    from baton_proxy.scrub import _CC_CANDIDATE, _luhn_valid
+
+    rng = random.Random(20260901)
+    # Shaped like the things that actually appear in tool results, not like
+    # cards: epoch millis, and 16-digit record ids.
+    candidates = [str(rng.randrange(1_700_000_000_000, 1_800_000_000_000)) for _ in range(5000)]
+    candidates += [str(rng.randrange(10**15, 10**16)) for _ in range(5000)]
+    assert all(_CC_CANDIDATE.fullmatch(c) for c in candidates), "not all are cc candidates"
+    hits = sum(1 for c in candidates if _luhn_valid(c))
+    assert 0.08 <= hits / len(candidates) <= 0.12, f"Luhn passes {hits / len(candidates):.2%}"
+
+
 # The phrase `CLAUDE.md` routes the post-uninstall case on. Tied to the module
 # below rather than retyped, because a reworded constant with an untouched doc
 # is the drift this whole branch exists to stop.
