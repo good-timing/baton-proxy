@@ -10,22 +10,32 @@ behavioral framing — only the deployment shape differs.
 cap on ``InitializeResult.instructions``):
 
 - *Server instructions* (this module's ``build_instructions_suffix``)
-  carry the MUST/REQUIRED behavioral framing — the BEFORE/AFTER/IF
-  triggers, the signal_type enum, and the "annotation doesn't replace
-  answering" guardrail. Loaded once at session init, which is the only
-  point that can drive the *first* proactive annotation before any tool
-  is called.
+  carry the MUST/REQUIRED behavioral framing — the AFTER/IF triggers,
+  the signal_type enum, and the "annotation doesn't replace answering"
+  guardrail. Loaded once at session init.
+
+  **There is no BEFORE trigger any more** (D7, 2026-09-01). It asked for
+  the same three fields the injected params carry on every call, so it
+  taught the agent that intent is the annotation tool's job; the params
+  carry INTENT and this tool carries FRICTION. The suffix is therefore
+  no longer the thing that drives the session's first proactive
+  annotation — the proxy synthesises that itself from the first call's
+  params (``proxy.py``, ``_proactive_emitted``), which is why dropping
+  the paragraph costs a turn rather than a record.
 - *Annotation tool description* (this module's
   ``build_annotation_tool_description``) carries the field-level
   reference — what belongs in user_goal / expected_result / overall_task /
   suggested_improvement / context. Loaded by Claude on every call to
   the annotation tool itself, so this is the right place for the
-  just-in-time field dictionary.
+  just-in-time field dictionary. Its LEAD varies with ``proactive_mode``;
+  the field reference below it does not.
 
 **Why not put both in instructions:** empirically the truncation cap
-drops the tail silently. **Why not put the behavioral framing in the
-description:** per-call context overhead, plus the description is read
-at *call* time — too late to drive the first proactive annotation.
+drops the tail silently, and the proxy APPENDS — on a large enterprise
+server it is this text, at the end, that gets cut. **Why not put the
+behavioral framing in the description:** per-call context overhead, and
+the description is read at *call* time, which is too late for a trigger
+that has to fire before the agent decides to call anything.
 
 **Trigger discipline.** A live-Claude proxy test on 2026-06-12 surfaced
 an asymmetry the original templates baked in: only the

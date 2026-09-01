@@ -10,10 +10,13 @@ so the two modules stay coherent. Load-bearing properties:
 - ``build_instructions_suffix`` MUST raise if rendered output would
   exceed the cap, rather than silently returning a string Claude Code
   will truncate mid-sentence.
-- The BEFORE/AFTER/IF MUST/REQUIRED behavioral framing is load-bearing
-  — milder framing under-populates fields, and the IF clause is the
+- The AFTER/IF MUST/REQUIRED behavioral framing is load-bearing —
+  milder framing under-populates fields, and the IF clause is the
   feature_gap mechanical trigger surfaced by the 2026-06-12 live-Claude
-  proxy test on Notion MCP.
+  proxy test on Notion MCP. The BEFORE trigger was DROPPED 2026-09-01
+  (D7) and its absence is now itself pinned, below: intent rides the
+  injected params, and the suffix asking for it again taught the agent
+  otherwise.
 - All 8 canonical signal_type enum values must appear in the rendered
   text; downstream taxonomies (priority mapping in the report
   synthesizer, the Console channel adapter) key off these strings.
