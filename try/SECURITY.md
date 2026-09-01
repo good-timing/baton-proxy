@@ -15,6 +15,12 @@ Baton is an MCP proxy. It sits between your agent client (Claude Code, Claude
 Desktop) and one MCP server you already run, forwarding JSON-RPC in both
 directions and recording what passed through.
 
+**The try kit, specifically, is written for Claude Code** — it finds and
+rewrites `~/.claude.json`, which no other client uses. The proxy itself is not
+so limited; the kit's config surgery is. Read the rest of this document with
+that in mind: where it says "your MCP client" it means the one whose config
+lives in that file.
+
 The try kit is this repository's `try/` folder: a configuration recipe plus a
 receipt command. It installs nothing. The proxy is the source you are reading —
 there is no package fetch, no vendored copy, and no build step, so **the code you

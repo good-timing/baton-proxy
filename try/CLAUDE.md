@@ -5,6 +5,14 @@ this directory before you do anything else: a security reviewer may have
 approved this trial on the strength of that document, and everything below is
 downstream of keeping it true.
 
+**This kit is written for Claude Code.** It finds and rewrites `~/.claude.json`,
+which no other client uses, and the handoff below assumes a `claude` they can
+start in a second terminal. Say that at the start if there is any doubt about
+what they are running — finding out at the server list, after they have read the
+security document and approved the clone, is the same trial ending later and
+worse. `--config-file` points `setup` at another path, but nothing else about
+the flow is adjusted for another client.
+
 Three commands do the work. **Run them from this `try/` directory** — that is
 where the person already is:
 

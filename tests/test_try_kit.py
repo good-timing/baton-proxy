@@ -3999,3 +3999,42 @@ def test_claude_md_tells_the_agent_to_say_it_before_setup_runs():
         "the agent is not told this is undetectable, so it will infer and be wrong"
     )
     assert "may happen" in para, "an agent told to predict this will overstate it"
+
+
+# ---------------------------------------------------------------------------
+# TK-D-7 — the kit is Claude Code only, and it says so before the cost is paid
+# (Dave's spec §7, second half).
+#
+# `~/.claude.json` is Claude Code's file and nothing else's, so the kit is
+# single-client by construction. That is fine; discovering it at the server
+# listing step is not, because by then they have read the security document and
+# approved a clone. SECURITY.md §1 named Claude Desktop in its first sentence —
+# true of the proxy, and read by someone deciding whether the KIT is for them.
+#
+# The site the spec names is the pasted prompt, which lives in no repository —
+# so this covers the two shipping surfaces that exist, and the prompt stays
+# unserved rather than being quietly counted as done.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("rel", ["try/CLAUDE.md", "try/SECURITY.md"])
+def test_the_single_client_assumption_is_stated_before_it_bites(rel):
+    text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+    paras = list(_unwrapped(text))
+    hit = [(n, p) for n, p in paras if "written for Claude Code" in p]
+    assert hit, f"{rel} never says which client the kit is for"
+    n, para = hit[0]
+    assert "~/.claude.json" in para, "the reason is what makes it checkable, not the claim"
+    # Before the reader has spent anything: the config-file search is where the
+    # single-client assumption first shows, so the disclosure has to precede it.
+    # A missing marker must FAIL, not default to the end of the document — with
+    # a fallback of len(paras) the assertion is true however late the
+    # disclosure sits, and a reworded marker would retire the guard silently
+    # ([[feedback_control_condition_must_be_able_to_fail]]).
+    costs = [i for i, (_ln, p) in enumerate(paras) if "servers it can wrap" in p or "Before:" in p]
+    assert costs, (
+        f"{rel}: the paragraph this ordering is measured against is gone or reworded — "
+        "re-point the marker rather than deleting the check"
+    )
+    said_at = next(i for i, (ln, _p) in enumerate(paras) if ln == n)
+    assert said_at < costs[0], f"{rel} discloses the client assumption too late"
