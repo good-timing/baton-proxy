@@ -2710,7 +2710,7 @@ _QUIT_BELIEF = re.compile(
 # comment explaining which phrasing was retired is not a thing anyone is asked
 # to do. That scope is the assertion's honest limit, so it is stated rather
 # than left to the reader of a passing test.
-_RESTART_SINKS = ("try/CLAUDE.md", "try/SECURITY.md", "README.md")
+_RESTART_SINKS = ("try/CLAUDE.md", "try/SECURITY.md", "README.md", "try/PROMPT.md")
 
 
 def _kit_strings() -> list[tuple[int, str]]:
@@ -3745,7 +3745,7 @@ def _sentences(para: str) -> list[str]:
 # CLAUDE.md is what tells the agent to ask; kit.py's strings are what the person
 # reads. SECURITY.md is swept too — it describes the entry the wrap writes, and
 # an example there is a claim about what setup does.
-_TENANT_SINKS = ("try/CLAUDE.md", "try/SECURITY.md")
+_TENANT_SINKS = ("try/CLAUDE.md", "try/SECURITY.md", "try/PROMPT.md")
 
 
 def _unwrapped(text: str):
@@ -4004,9 +4004,11 @@ def test_claude_md_tells_the_agent_to_say_it_before_setup_runs():
 # approved a clone. SECURITY.md §1 named Claude Desktop in its first sentence —
 # true of the proxy, and read by someone deciding whether the KIT is for them.
 #
-# The site the spec names is the pasted prompt, which lives in no repository —
-# so this covers the two shipping surfaces that exist, and the prompt stays
-# unserved rather than being quietly counted as done.
+# The site the spec names is the pasted prompt, and it now HAS a file
+# (`try/PROMPT.md`), so all three shipping surfaces are covered. The prompt is
+# checked separately below rather than added to the parametrize: this test
+# measures the disclosure against a paragraph only the two long documents have,
+# and a file without it would pass on a marker that never matched.
 # ---------------------------------------------------------------------------
 
 
@@ -4200,3 +4202,84 @@ def test_the_report_tool_step_2_promises_is_one_the_kit_actually_gets(tmp_path):
         "step 2 tells the person their agent will see baton_session_report, and "
         "the kit's own sink no longer causes it to be injected"
     )
+
+
+# ---------------------------------------------------------------------------
+# TK-P-1 — the prompt has a file (Dave's spec §7 / polish pass, last open item).
+#
+# It was quoted in one internal findings doc and shipped from nobody's
+# repository, so the one surface a prospect meets FIRST was the one surface no
+# guard could see. `try/PROMPT.md` is that file. What it must keep is small and
+# each piece is a defect the run actually produced.
+# ---------------------------------------------------------------------------
+
+
+PROMPT_MD = "try/PROMPT.md"
+
+
+def _prompt_text() -> str:
+    return (REPO_ROOT / PROMPT_MD).read_text(encoding="utf-8")
+
+
+def test_the_prompt_does_not_send_them_hunting_for_a_checkout():
+    """Finding 3, the worst of Dave's run: "if it's already on this machine"
+    cost four approvals, the fourth of them an agent reading `~/Downloads`,
+    before the person knew anything about the product. The clause can only ever
+    cost approvals — no first-time user already has the repo — so the fix was to
+    clone into the current directory and forbid the search outright.
+
+    This is the one step whose tested wording is recorded verbatim
+    (`trykit-findings-2026-08-28.md`), so it is pinned rather than paraphrased.
+    """
+    text = _prompt_text()
+    assert "into the current directory" in text, "the prompt stopped naming where to clone"
+    assert "Do not search my machine" in text, (
+        "the prompt no longer forbids the filesystem hunt that cost Dave's run four approvals"
+    )
+    for retired in ("if it's already on this machine", "Ask me where to put it"):
+        assert retired.lower() not in text.lower(), (
+            f"the prompt re-added the clause finding 3 removed: {retired!r}"
+        )
+
+
+def test_the_prompt_says_which_client_before_it_asks_for_anything():
+    """Spec §7's second half names the paste as the site for this, and the paste
+    is the only surface that is read before a clone is approved. The reason has
+    to travel with the claim — `~/.claude.json` is what makes it checkable
+    rather than a thing we assert about ourselves."""
+    paras = list(_unwrapped(_prompt_text()))
+    said = [i for i, (_n, p) in enumerate(paras) if "written for Claude Code" in p]
+    assert said, "the prompt never says which client the kit is for"
+    assert "~/.claude.json" in paras[said[0]][1], (
+        "the reason is what makes the claim checkable, not the claim"
+    )
+    # The clone is the first thing it costs them. A missing marker FAILS rather
+    # than defaulting to the end of the file, so a reworded step 1 cannot retire
+    # this ordering silently ([[feedback_control_condition_must_be_able_to_fail]]).
+    costs = [i for i, (_n, p) in enumerate(paras) if "Clone https://" in p]
+    assert costs, "the paragraph this ordering is measured against is gone — re-point it"
+    assert said[0] < costs[0], "the prompt discloses the client assumption after the clone"
+
+
+def test_the_prompt_hands_off_to_the_shipped_docs_rather_than_restating_them():
+    """The paste runs in a session started OUTSIDE `try/`, so `try/CLAUDE.md`
+    is not loaded for it the way it is for a session started inside. The prompt
+    therefore has to name both documents; if it stops, the agent driving setup
+    is working from 25 lines instead of from the kit's own instructions, and
+    every rule that only exists in `CLAUDE.md` silently stops applying."""
+    text = _prompt_text()
+    for doc in ("SECURITY.md", "CLAUDE.md"):
+        assert doc in text, f"the prompt no longer points the agent at {doc}"
+
+
+def test_the_prompt_leaves_the_ending_to_the_kit():
+    """`TEAM_EMAIL` is pinned across kit.py, CLAUDE.md and SECURITY.md §4, and
+    the send offer is gated on there being something to send. The prompt runs
+    before any capture exists, so naming the address here would make the offer
+    at the one moment it cannot be true — and would add a fourth site to a
+    three-site pin by accident rather than by decision."""
+    text = _prompt_text()
+    assert kit.TEAM_EMAIL not in text, (
+        "the prompt offers the ending before there is anything to send"
+    )
+    assert not re.findall(r"[\w.+-]+@[\w-]+\.[\w.]+", text), "the prompt names an address"
