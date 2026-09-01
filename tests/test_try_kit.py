@@ -4248,10 +4248,17 @@ def test_the_competing_first_check_would_notice_the_lead_it_was_written_for():
 
 
 def _step_two(text: str) -> str:
-    paras = list(_unwrapped(text))
-    hit = [p for _n, p in paras if "Say what will happen" in p]
-    assert hit, "step 2 is gone or reworded — re-point the marker, do not delete the check"
-    return hit[0]
+    """Step 2 as a SPAN, from its own heading to step 3's, not as the one
+    paragraph that carries the heading. It was a single paragraph until the
+    2026-09-01 bound turned it into four labelled lines; scoping to the
+    paragraph then passed the facts to a bullet the check could not see, which
+    is a marker going stale rather than a rule being broken."""
+    flat = " ".join(text.split())
+    start = flat.find("**2. Say what will happen")
+    assert start != -1, "step 2 is gone or reworded — re-point the marker, do not delete the check"
+    end = flat.find("**3. Run it.**", start)
+    assert end != -1, "step 3's marker is gone — the span check cannot bound itself"
+    return flat[start:end]
 
 
 def test_step_2_names_the_addition_the_person_will_actually_see():
@@ -4384,6 +4391,93 @@ def test_the_prompt_hands_off_to_the_shipped_docs_rather_than_restating_them():
     text = _prompt_text()
     for doc in ("SECURITY.md", "CLAUDE.md"):
         assert doc in text, f"the prompt no longer points the agent at {doc}"
+
+
+# The four labels are the contract between the two files. The first human-led
+# run found them disagreeing — CLAUDE.md said explain "briefly" and point at
+# SECURITY.md, PROMPT.md asked for what changes / what is captured / what leaves
+# — and the paste won, because the paste is in the person's message and the doc
+# is prose the agent read many turns earlier. So the fix is literal agreement,
+# and a set is what makes it checkable: three of four matching is the same
+# silent drift with a smaller radius.
+def _flat(text: str) -> str:
+    """Hard-wrapped markdown with the newlines collapsed. Every phrase worth
+    pinning in these two files is longer than the distance to the next line
+    break, so a literal `in` check against the raw text passes or fails on
+    where the wrap happens to fall — which is not a property of the doc."""
+    return " ".join(text.split())
+
+
+STEP_TWO_LABELS = (
+    "what changes",
+    "what your agent sees",
+    "what is captured",
+    "what leaves",
+)
+
+
+def test_the_paste_and_the_doc_ask_for_the_same_four_things():
+    """`briefly` is an adjective and it lost to "be thorough about security":
+    the run produced ~900 words in four sections with the ask on the last line.
+    An adjective cannot be graded and cannot be followed precisely, so the bound
+    is a shape — four named lines — and both files have to name the same four
+    or the paste silently redefines the doc."""
+    prompt, doc = _flat(_prompt_text()).lower(), _flat(_claude_md()).lower()
+    missing_doc = [lbl for lbl in STEP_TWO_LABELS if lbl not in doc]
+    missing_paste = [lbl for lbl in STEP_TWO_LABELS if lbl not in prompt]
+    assert not missing_doc, f"try/CLAUDE.md lost step 2 labels: {missing_doc}"
+    assert not missing_paste, f"try/PROMPT.md lost step 2 labels: {missing_paste}"
+
+
+def test_both_files_bound_the_summary_by_shape_rather_than_by_adjective():
+    """The specific regression this replaces. "Briefly, in your own words" is
+    the wording that produced the 900 words, so its return is the failure — and
+    the bound it was replaced with ("one line each") has to be present in the
+    file that actually wins, which is the paste."""
+    prompt, doc = _flat(_prompt_text()), _flat(_claude_md())
+    assert "one line each" in prompt.lower(), (
+        "the paste stopped bounding the summary; whatever CLAUDE.md says, this is the "
+        "instruction the person hands over"
+    )
+    assert "one line each" in doc.lower(), "try/CLAUDE.md stopped bounding step 2"
+    assert "briefly, in your own words" not in doc.lower(), (
+        'the adjective that lost to "be thorough about security" is back in step 2'
+    )
+
+
+def test_the_bound_does_not_licence_dropping_the_worst_fact():
+    """The failure mode a length bound introduces, named in both files so that
+    shortening never wins over honesty. `What is captured` is the line where it
+    bites: full arguments and full results, and business data is not redacted."""
+    doc = _flat(_claude_md())
+    assert "Business data is not redacted" in doc, "step 2 stopped naming the worst fact"
+    assert "the worst of it rather than the shortest" in _flat(_prompt_text()), (
+        "the paste asks for one line without saying which half to keep"
+    )
+
+
+def test_the_ask_is_the_last_line_in_both_files():
+    """The run put a ~900-word explanation above an ask on the last line, which
+    is the right ordering and was the one thing about it that held. Pinned so
+    the rewrite that bounds the length does not lose it: an ask buried above a
+    paragraph is how someone approves a summary they were still reading."""
+    assert "alone on the last line" in _flat(_claude_md())
+    assert "on the last line and nothing after it" in _flat(_prompt_text())
+
+
+def test_the_remote_addendum_is_bounded_separately_rather_than_squeezed():
+    """One line per section and the remote disclosure are in direct conflict:
+    it is three facts, one of them a consent the stdio summary did not cover.
+    Compressing it to fit would recreate, inside the fix, exactly the failure
+    the fix is for — so it is its own labelled section with its own bound."""
+    doc = _flat(_claude_md())
+    assert "If your server is remote" in doc, "the remote disclosure lost its own label"
+    assert "three lines rather than one" in doc, (
+        "the remote section is being held to the one-line bound it cannot meet"
+    )
+    # The three facts themselves, unchanged by the reshaping.
+    for fact in ("bearer token in its environment", "${VAR}", "`receipt` on the first day"):
+        assert fact in doc, f"the remote section lost a fact while being reshaped: {fact!r}"
 
 
 def test_the_prompt_leaves_the_ending_to_the_kit():

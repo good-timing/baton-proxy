@@ -141,31 +141,48 @@ indistinguishable from OAuth, where the client holds the token and never writes
 it down. If they want that server covered, the answer is to say so to us, not to
 work around it.
 
-**2. Say what will happen, before it does.** Briefly, in your own words: one
-entry in their MCP config is replaced so their server runs behind a local proxy;
-their agent will see two tools it did not have — `baton_annotate` and
-`baton_session_report`, both answered by the proxy and never by their server —
-plus three optional parameters grafted onto their existing tools' schemas, which
-the proxy strips back out before it forwards each call; their credentials are
-untouched; everything captured is written to a file in this folder and nothing is
-sent anywhere; it is reversible with one command. Point at `SECURITY.md` — §3
-lists every addition — for anyone who wants the detail. Then ask them to confirm.
+**2. Say what will happen, before it does — four labelled lines, then the ask.**
+The shape is the instruction and not a suggestion, because the previous version
+of this paragraph said "briefly" and got ~900 words in four sections: "briefly"
+is an adjective, and it loses to "be thorough about security" every time. Use
+these four labels, in this order, one line each:
 
-**If it is a remote server, two more sentences belong in that summary, and you
-should not skip them.** First: before the wrap no process of ours runs on their
-machine at all, and after it one does, holding their bearer token in its
-environment — that is a real change and someone who approved the stdio story has
-not yet approved this one. It sends that token to the endpoint their config
-already named, and nowhere else. Second: the kit copies the token between two
-config slots without resolving it, so a `${VAR}` reference stays a reference —
-but that relies on their client expanding `${VAR}` inside `env`, which is
-measured behaviour on one client version rather than a guarantee. Tell them to
-run `receipt` on the first day: an empty file is how a wrap that cannot
-authenticate gets found in an hour instead of at the end of the trial.
-`SECURITY.md` §2 carries all of this if they want it in writing.
+- **What changes** — one entry in their MCP config is replaced so their server
+  runs behind a local proxy; their credentials are untouched; it is reversible
+  with one command and stays in place until they run it.
+- **What your agent sees** — two tools it did not have, `baton_annotate` and
+  `baton_session_report`, both answered by the proxy and never by their server,
+  plus three optional parameters grafted onto their existing tools' schemas,
+  which the proxy strips back out before it forwards each call.
+- **What is captured** — every call through that server, with its full arguments
+  and full results, written to a file in this folder. **Business data is not
+  redacted.** That clause is the worst fact in the summary and the one a reviewer
+  is listening for: state it in full even though the line is otherwise short.
+  Shortening a line is not what the bound is for.
+- **What leaves** — nothing. No network call, no upload endpoint, no account. The
+  file moves only if they decide to email it at the end.
+
+Then two more lines and nothing else: `SECURITY.md` §3 lists every addition, so
+offer it explicitly rather than merely citing it; and the ask, alone on the last
+line. Nothing may follow the question — an ask buried above a paragraph is how a
+person ends up approving a summary they were still reading.
+
+**If it is a remote server, add a fifth label — `If your server is remote` — and
+that one gets three lines rather than one.** It is a separate consent and it does
+not compress: someone who approved the stdio story has not yet approved this one.
+First: before the wrap no process of ours runs on their machine at all, and after
+it one does, holding their bearer token in its environment. It sends that token
+to the endpoint their config already named, and nowhere else. Second: the kit
+copies the token between two config slots without resolving it, so a `${VAR}`
+reference stays a reference — but that relies on their client expanding `${VAR}`
+inside `env`, which is measured behaviour on one client version rather than a
+guarantee. Third: tell them to run `receipt` on the first day — an empty file is
+how a wrap that cannot authenticate gets found in an hour instead of at the end
+of the trial. `SECURITY.md` §2 carries all of this if they want it in writing.
 
 **If their server signs them in to something — Notion, Google, a ticketing
-system — say so before you run setup, not after.** A server that holds its own
+system — say so before you run setup, not after.** One line, under the same
+rule as the four above, and only where it applies. A server that holds its own
 sign-in session may treat its first wrapped start as a new one and open a
 browser tab asking them to authorize it again, and the consent screen will name
 a `localhost` port. That port is their own server's, not ours, and the access

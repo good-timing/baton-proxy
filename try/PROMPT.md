@@ -18,10 +18,14 @@ rather than after I have approved things.
    Do not search my machine for an existing copy — if I already had one, I would
    have told you.
 
-2. Read `baton-proxy/try/SECURITY.md` and `baton-proxy/try/CLAUDE.md`, and tell
-   me in your own words what gets changed on my machine, what is captured, and
-   what leaves. Do not touch my config until you have. If I say I do not need
-   the detail, skip ahead — it is my call, not yours.
+2. Read `baton-proxy/try/SECURITY.md` and `baton-proxy/try/CLAUDE.md`, then tell
+   me in your own words, one line each and in this order: what changes, what
+   your agent sees, what is captured, what leaves. One line each, not a section
+   each — and where the honest answer will not fit in a line, give me the worst
+   of it rather than the shortest of it. Then offer me the detail and ask me to
+   confirm, with the question on the last line and nothing after it. Do not
+   touch my config until you have. If I say I do not need the detail, skip
+   ahead — it is my call, not yours.
 
 3. List the MCP servers you could wrap and let me choose one. Do not choose for
    me, and do not wrap anything before I have said which.
