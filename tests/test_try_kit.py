@@ -4031,3 +4031,83 @@ def test_the_single_client_assumption_is_stated_before_it_bites(rel):
     )
     said_at = next(i for i, (ln, _p) in enumerate(paras) if ln == n)
     assert said_at < costs[0], f"{rel} discloses the client assumption too late"
+
+
+# ---------------------------------------------------------------------------
+# TK-FL-1 — one answer for what comes first (followability run
+# `follow-20260831-163630`, finding 1).
+#
+# The opening says read `SECURITY.md` "before you do anything else". Two
+# sections later, *Start by finding out where you are* said "begin with
+# `python3 kit.py receipt`". Both were "first", and the model resolved it
+# differently across samples of the same run — `a2` ran `receipt` before
+# `SECURITY.md` in one and after it in the other. Nothing broke either way, but
+# an instruction two runs of one model order differently is not an instruction,
+# it is a coin flip, and the next reader may resolve it somewhere worse.
+#
+# The order is now total and stated at the site that created the collision: the
+# lead into `receipt` defers to `SECURITY.md` rather than competing with it. So
+# the check is structural — the paragraph ABOVE the receipt command, whatever it
+# is reworded to — rather than a marker my own sentence supplies, which a
+# rewrite would retire silently.
+# ---------------------------------------------------------------------------
+
+# The receipt command as `_unwrapped` sees it: a fenced block with no blank
+# lines is one paragraph, joined on spaces. Not the cheat-sheet block at the top
+# of the file, which carries all three commands and their `#` comments.
+_THE_RECEIPT_BLOCK = "``` python3 kit.py receipt ```"
+
+
+def _first_run_lead(text: str) -> tuple[int, str]:
+    """The paragraph immediately above the receipt command — the sentence that
+    tells the agent where to start."""
+    paras = list(_unwrapped(text))
+    at = [i for i, (_n, p) in enumerate(paras) if p == _THE_RECEIPT_BLOCK]
+    assert at, (
+        "the receipt command this ordering is measured against is gone or "
+        "reformatted — re-point the marker rather than deleting the check"
+    )
+    return paras[at[0] - 1]
+
+
+def _competing_first_offenders(text: str) -> list[str]:
+    n, lead = _first_run_lead(text)
+    if "SECURITY.md" not in lead:
+        return [f"try/CLAUDE.md:{n}: {lead[:120]}"]
+    return []
+
+
+def test_claude_md_gives_one_answer_for_what_comes_first():
+    md = _claude_md()
+    paras = list(_unwrapped(md))
+    opening = [i for i, (_n, p) in enumerate(paras) if "before you do anything else" in p]
+    assert opening, (
+        "the opening no longer claims an absolute first — if that claim moved, "
+        "re-point this check; if it went away, the deferral below is now dangling"
+    )
+    assert "SECURITY.md" in paras[opening[0]][1], "the absolute first names no document"
+
+    lead_at = next(i for i, (_n, p) in enumerate(paras) if p == _THE_RECEIPT_BLOCK)
+    assert opening[0] < lead_at, "the document tells the agent to run before it tells it to read"
+    assert not _competing_first_offenders(md), (
+        "two sections claim to be first and neither yields:\n"
+        + "\n".join(_competing_first_offenders(md))
+    )
+
+
+# Verbatim as it sat in CLAUDE.md at `cccc383`, wrapped exactly as it was — so
+# the check is graded on the shape it actually has to catch
+# ([[feedback_control_condition_must_be_able_to_fail]]).
+_THE_LEAD_AS_IT_WAS_WRITTEN = """The person may be at any point in the trial — the session that set this up is
+probably long gone. So begin with:
+
+```
+python3 kit.py receipt
+```
+"""
+
+
+def test_the_competing_first_check_would_notice_the_lead_it_was_written_for():
+    assert _competing_first_offenders(_THE_LEAD_AS_IT_WAS_WRITTEN), (
+        "the check would have passed on the prose it exists to catch"
+    )

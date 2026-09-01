@@ -70,7 +70,9 @@ not a problem to solve.
 ## Start by finding out where you are
 
 The person may be at any point in the trial — the session that set this up is
-probably long gone. So begin with:
+probably long gone. `SECURITY.md` is still the first thing to read, as the top
+of this file says; this is the first thing to run, and nothing else you do with
+the person comes before it:
 
 ```
 python3 kit.py receipt
