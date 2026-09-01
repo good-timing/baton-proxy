@@ -152,8 +152,11 @@ these four labels, in this order, one line each:
   with one command and stays in place until they run it.
 - **What your agent sees** — two tools it did not have, `baton_annotate` and
   `baton_session_report`, both answered by the proxy and never by their server,
-  plus three optional parameters grafted onto their existing tools' schemas,
-  which the proxy strips back out before it forwards each call.
+  plus three parameters grafted onto their existing tools' schemas, which the
+  proxy strips back out before it forwards each call. One of the three,
+  `user_goal`, is **marked required in the schema and never enforced** — say
+  both halves: nothing validates it, a call that omits it is forwarded exactly
+  as it would have been, and their server never sees any of the three.
 - **What is captured** — every call through that server, with its full arguments
   and full results, written to a file in this folder. **Business data is not
   redacted.** That clause is the worst fact in the summary and the one a reviewer

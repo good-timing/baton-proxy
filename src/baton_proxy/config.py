@@ -42,14 +42,29 @@ DEFAULT_TENANT_TYPE = "vendor"
 _TENANT_TYPES: frozenset[str] = frozenset({"vendor", "customer"})
 
 # Valid values for BATON_INTENT_PARAM — the per-tool goal-param injection
-# mode. ``optional`` (default) injects `user_goal`/`expected_result` as
-# optional params on every upstream tool; ``required`` additionally marks
-# `user_goal` required in the schema (`expected_result` stays optional even
-# then); ``off`` disables injection entirely. Clients fill the params even
-# when optional (Desktop, verified 2026-07-07), while ignoring
-# initialize-instructions — so param injection is the reliable intent
-# channel and instructions remain a best-effort extra.
-DEFAULT_INTENT_PARAM_MODE = "optional"
+# mode. ``optional`` injects `user_goal`/`expected_result` as optional params
+# on every upstream tool; ``required`` (default since 2026-09-01) additionally
+# marks `user_goal` required in the schema (`expected_result` and
+# ``overall_task`` stay optional even then); ``off`` disables injection
+# entirely. Clients fill the params even when optional (Desktop, verified
+# 2026-07-07), while ignoring initialize-instructions — so param injection is
+# the reliable intent channel and instructions remain a best-effort extra.
+#
+# WHAT ``required`` MEANS HERE, because the word is doing unusual work
+# (D7, 2026-09-01): **advertised as required, never enforced.** It appends
+# `user_goal` to the schema's advertised `required` list and validates
+# nothing; the param is stripped before the call is forwarded, so no call can
+# fail for omitting it and the wrapped server never learns the difference.
+# That is the only meaning compatible with what a wrapper promises — refusing
+# a customer's call to collect a telemetry string would change how the wrapped
+# server behaves, which is the one thing we say we do not do. baton-ts built a
+# non-optional zod field on the vendor's real schema and DID refuse; it drops
+# that to match.
+#
+# Which is why flipping the default is safe: an advertisement cannot break a
+# call. The number it should move is 89% — 1,465 of 1,644 real customer calls
+# carried `user_goal` under ``optional`` (workfront, proxy 0.5.2, Aug 11-14).
+DEFAULT_INTENT_PARAM_MODE = "required"
 _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
 
 # Valid values for BATON_PROACTIVE — whether the agent may FILE its own

@@ -2695,7 +2695,7 @@ def _injection_disclosure() -> str:
     while the disclosure itself is missing one.
     """
     doc = (KIT_PATH.parent / "SECURITY.md").read_text()
-    start = doc.index("optional parameters grafted onto every upstream tool's schema")
+    start = doc.index("parameters grafted onto every upstream tool's schema")
     return doc[start : doc.index("\n\n", start)]
 
 
@@ -2721,11 +2721,33 @@ def test_security_md_injected_param_count_matches_the_code():
     """
     doc = (KIT_PATH.parent / "SECURITY.md").read_text()
     expected = _COUNT_WORDS[len(_injected_param_names())]
-    claim = f"**{expected} optional parameters grafted onto every upstream tool's schema**"
+    claim = f"**{expected} parameters grafted onto every upstream tool's schema**"
     assert claim in doc, (
-        f"SECURITY.md §4 does not say {expected!r} optional parameters; the proxy injects "
+        f"SECURITY.md §4 does not say {expected!r} parameters; the proxy injects "
         f"{_injected_param_names()}"
     )
+
+
+def test_security_md_says_required_is_advertised_and_not_enforced():
+    """The word "optional" left this sentence on 2026-09-01, when the default
+    became `required` — a reviewer now sees `user_goal` in their own tools'
+    `required` arrays, and a document that did not mention it would be caught
+    omitting the one addition they can see with their own eyes.
+
+    Both halves or neither. "Required" alone tells them the wrap can refuse
+    their server's traffic, which is false and is the scariest possible false
+    claim to make here; silence leaves the retired optional story standing."""
+    doc = (KIT_PATH.parent / "SECURITY.md").read_text()
+    assert "Nothing enforces it" in doc, (
+        "SECURITY.md never says the advertised requirement is not enforced"
+    )
+    assert "forwarded to your server exactly as it would have been" in doc, (
+        "the consequence a reviewer actually cares about — their own call still "
+        "goes through — is not stated"
+    )
+    # The escape hatch, because a reviewer who does not want the word in their
+    # schemas at all should not have to ask us for it.
+    assert "BATON_INTENT_PARAM=optional" in doc
 
 
 # ---------------------------------------------------------------------------
@@ -4267,7 +4289,17 @@ def test_step_2_names_the_addition_the_person_will_actually_see():
     para = _step_two(_claude_md())
     for name in (ANNOTATE_TOOL_NAME, REPORT_TOOL_NAME):
         assert f"`{name}`" in para, f"the pre-consent summary never names {name}"
-    assert "three optional parameters" in para, "the grafted parameters are still unmentioned"
+    assert "three parameters" in para, "the grafted parameters are still unmentioned"
+    # 2026-09-01: the default became `required`, so "three optional parameters"
+    # went false in the one summary a person approves the wrap from. The
+    # summary now has to carry BOTH halves — advertised required, never
+    # enforced — because either half alone misleads: "required" alone reads as
+    # a gate on their traffic, and silence reads as the old optional story.
+    assert "required" in para, "the summary hides that user_goal is advertised as required"
+    assert "never enforced" in para, (
+        "saying `required` without saying it is never enforced tells a reviewer "
+        "the wrap can refuse their own server's calls"
+    )
     assert "strips" in para, (
         "naming the parameters without saying they are removed before the call "
         "is forwarded leaves the summary worse than silence"

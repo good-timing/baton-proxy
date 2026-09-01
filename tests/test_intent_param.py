@@ -377,10 +377,40 @@ def test_blank_param_value_strips_but_captures_nothing() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_config_defaults_to_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_config_defaults_to_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flipped 2026-09-01 (D7). Safe because `required` here is an
+    ADVERTISEMENT: nothing validates it and the param is stripped before the
+    call is forwarded, so a call that omits `user_goal` is served exactly as
+    it was. See `test_required_is_advertised_and_never_enforced` below."""
     monkeypatch.setenv("BATON_VENDOR_ID", "v")
     monkeypatch.delenv("BATON_INTENT_PARAM", raising=False)
-    assert Config.from_env().intent_param_mode == "optional"
+    assert Config.from_env().intent_param_mode == "required"
+
+
+def test_required_is_advertised_and_never_enforced() -> None:
+    """The claim the default flip rests on, and the one that made the flip
+    correct rather than reckless. `required` appends `user_goal` to the
+    schema's advertised list and validates NOTHING — a wrapper that refused a
+    customer's call to collect a telemetry string would be changing how the
+    wrapped server behaves, which is the one thing it promises not to do.
+
+    Both halves asserted: the schema says required, AND the omitting call is
+    served and forwarded untouched."""
+    proc, emitter = _processor("required")
+    tool = _tool("alpha")
+    proc.handle_server_message(_tools_list_response([tool]))
+    assert USER_GOAL_PARAM_NAME in tool["inputSchema"]["required"]
+    # ...and only that one. Promoting the other two would make the
+    # advertisement a lie about three fields instead of a claim about one.
+    assert tool["inputSchema"]["required"] == [USER_GOAL_PARAM_NAME]
+
+    action = proc.handle_client_message(_call("alpha", {"text": "hi"}))
+    assert action.respond is None, "an omitting call must not be answered by us"
+    assert action.forward is not None, "an omitting call must reach the vendor's server"
+    assert action.forward["params"]["arguments"] == {"text": "hi"}
+    kinds = [kind for kind, _ in emitter.calls]
+    assert kinds == ["tool_call_start"], kinds
+    assert emitter.calls[0][1]["call_intent"] is None
 
 
 @pytest.mark.parametrize("mode", ["optional", "required", "off"])
@@ -435,6 +465,16 @@ E2E_REQUESTS: list[dict[str, Any]] = [
             "name": "echo",
             "arguments": {"text": "hi", USER_GOAL_PARAM_NAME: "second call goal"},
         },
+    },
+    # Added 2026-09-01 with the `required` default: a call that OMITS
+    # `user_goal` entirely, against the real proxy over the real transport.
+    # This is the assertion the flip rests on — `required` is an
+    # advertisement, so this call must be served, not refused.
+    {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {"name": "argkeys", "arguments": {"text": "no goal here"}},
     },
 ]
 
@@ -526,8 +566,20 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     for name in ("echo", "boom", "argkeys"):
         assert USER_GOAL_PARAM_NAME in tools[name]["inputSchema"]["properties"], name
         assert EXPECTED_RESULT_PARAM_NAME in tools[name]["inputSchema"]["properties"], name
-        # optional mode: required untouched
-        assert USER_GOAL_PARAM_NAME not in (tools[name]["inputSchema"].get("required") or [])
+        # Default flipped to `required` 2026-09-01: the ADVERTISED list gains
+        # `user_goal`, and only `user_goal`. The vendor's own required entries
+        # are left alone — `argkeys` declares `text`, and appending to that
+        # list must not rewrite it.
+        advertised = tools[name]["inputSchema"].get("required") or []
+        assert USER_GOAL_PARAM_NAME in advertised, name
+        assert EXPECTED_RESULT_PARAM_NAME not in advertised, name
+        assert OVERALL_TASK_PARAM_NAME not in advertised, name
+    # `echo` is the fixture tool that declares a required field of its own
+    # (`argkeys` ships `required: []`), so it is the one that can catch a
+    # replace-instead-of-append.
+    assert "text" in (tools["echo"]["inputSchema"].get("required") or []), (
+        "appending to the advertised list clobbered the vendor's own required field"
+    )
     # The annotate tool DECLARES these names itself now, so absence no longer
     # proves injection skipped it — see test_registry_skips_proxy_own_tools,
     # which asserts that structurally. What is still checkable here is that
@@ -537,6 +589,12 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
 
     # Strip exactness: the upstream reports exactly which keys it received.
     assert by_id[3]["result"]["content"][0]["text"] == "keys: text"
+    # ...and the omitting call. Advertised required, and SERVED anyway — no
+    # error, no refusal, the vendor's own argument arriving alone. This is the
+    # whole meaning of `required` in this producer, checked end to end rather
+    # than at the injection function.
+    assert "error" not in by_id[5], f"an omitting call was refused: {by_id[5]}"
+    assert by_id[5]["result"]["content"][0]["text"] == "keys: text"
     assert "Echo: hi" in by_id[4]["result"]["content"][0]["text"]
 
     # Events: one synthesised proactive (first call only), before its start,
@@ -551,8 +609,16 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     assert "signal_type" not in ann  # proactive
 
     starts = [e for e in events if e["event_type"] == "tool_call_start"]
-    assert [s["payload"]["tool_name"] for s in starts] == ["argkeys", "echo"]
-    assert [s["payload"]["call_intent"] for s in starts] == [INTENT_TEXT, "second call goal"]
+    # Three calls now: the third omits `user_goal` under a `required` default
+    # and is served anyway, so it produces a start event like any other — with
+    # no intent on it. A capture that simply lost the call would be the far
+    # worse outcome and would look identical in the fill-rate number.
+    assert [s["payload"]["tool_name"] for s in starts] == ["argkeys", "echo", "argkeys"]
+    assert [s["payload"].get("call_intent") for s in starts] == [
+        INTENT_TEXT,
+        "second call goal",
+        None,
+    ]
     # The expectation rides the start event, per call. Call 2 sends only the
     # goal, so its key is ABSENT rather than null — "stated no expectation" and
     # "stated an empty one" must stay distinguishable downstream.
