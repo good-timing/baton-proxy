@@ -3741,6 +3741,7 @@ def _sentences(para: str) -> list[str]:
     too, and its scope is invisible the moment it passes)."""
     return [x for x in re.split(r"(?<=[.!?])[*_`)\]]*\s+", para) if x.strip()]
 
+
 # CLAUDE.md is what tells the agent to ask; kit.py's strings are what the person
 # reads. SECURITY.md is swept too — it describes the entry the wrap writes, and
 # an example there is a claim about what setup does.
@@ -3819,9 +3820,7 @@ def test_the_tenant_sweep_would_notice_the_phrasings_it_was_written_for(line):
     # Through `_unwrapped` and `_sentences`, because that is how the sweep sees
     # the page: wrapped lines rejoined, then split at sentence boundaries.
     para = next(text for _n, text in _unwrapped(line))
-    caught = [
-        x for x in _sentences(para) if _TENANT_ASK.search(x) and not _A_PROHIBITION.search(x)
-    ]
+    caught = [x for x in _sentences(para) if _TENANT_ASK.search(x) and not _A_PROHIBITION.search(x)]
     assert caught, f"the sweep would have missed {line!r}"
 
 
@@ -3843,17 +3842,13 @@ def test_the_prohibition_exempts_its_own_sentence_and_not_its_paragraph():
         "with the server's own name. If they would rather, offer a label of "
         "their own."
     )
-    caught = [
-        x for x in _sentences(para) if _TENANT_ASK.search(x) and not _A_PROHIBITION.search(x)
-    ]
+    caught = [x for x in _sentences(para) if _TENANT_ASK.search(x) and not _A_PROHIBITION.search(x)]
     assert len(caught) == 1, f"expected only the re-added ask, got {caught}"
     assert "offer a label" in caught[0]
 
     # And the fix sentence alone stays exempt, or the sweep bans its own remedy.
     only_the_rule = _sentences("**Do not ask them to name a tenant or a label.**")
-    assert not [
-        x for x in only_the_rule if _TENANT_ASK.search(x) and not _A_PROHIBITION.search(x)
-    ]
+    assert not [x for x in only_the_rule if _TENANT_ASK.search(x) and not _A_PROHIBITION.search(x)]
 
 
 def test_no_documented_command_passes_the_tenant_flag():
@@ -3953,8 +3948,8 @@ def test_nothing_of_ours_opens_a_listening_port():
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if m := _A_LISTENER.search(line):
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{n}: …{m.group(0)}…")
-    assert not offenders, (
-        "SECURITY.md §2 says we open no listening port; this does:\n" + "\n".join(offenders)
+    assert not offenders, "SECURITY.md §2 says we open no listening port; this does:\n" + "\n".join(
+        offenders
     )
 
 
@@ -3991,9 +3986,7 @@ def test_claude_md_tells_the_agent_to_say_it_before_setup_runs():
     only exists in a document nobody opened does not stop the surprise — and by
     the time the tab is open there is no good moment to explain it."""
     md = _claude_md()
-    para = next(
-        text for _n, text in _unwrapped(md) if "signs them in to something" in text
-    )
+    para = next(text for _n, text in _unwrapped(md) if "signs them in to something" in text)
     assert "before you run setup" in para, "the warning is not tied to a moment"
     assert "cannot tell from the config" in para, (
         "the agent is not told this is undetectable, so it will infer and be wrong"
