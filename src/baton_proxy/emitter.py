@@ -44,7 +44,47 @@ _QUEUE_MAXSIZE = 1000
 
 # Product/version token, single-sourced in baton_proxy.__init__ (imported above
 # as _SDK_VERSION) so it can't drift from the HTTP bridge's User-Agent.
+
+# Fallback for agent_runtime, not the answer: it names the TRANSPORT, which is
+# all we can honestly say when nothing observed the client. Every event used to
+# carry it unconditionally, so a console reading the field back learned that
+# Baton was in the path and nothing about the app the person was working in.
 _AGENT_RUNTIME = "mcp-proxy"
+
+
+def detect_agent_runtime(meta: Mapping[str, Any] | None) -> str | None:
+    """The agent runtime one event's MCP ``_meta`` betrays, or None.
+
+    Rules copied from the SDK's
+    ``baton/integrations/fastmcp/runtime_adapter.detect_agent_runtime``.
+    baton-proxy is zero-dep and cannot import it, so this is a copy across
+    repos that no test can pin; what makes the copy worth having is that both
+    sensors must store the SAME token for the same client, or every query that
+    groups by ``agent_runtime`` splits one client into two. Donor's precedence:
+
+    1. explicit ``_meta.baton.agent_runtime`` — a documented client override
+    2. a ``claudecode/*`` key prefix -> ``claude-code``
+    3. None, and the caller falls back
+
+    Takes a plain mapping rather than the donor's ``Any``: both proxy call
+    sites already ``isinstance``-check ``_meta`` to a dict before it reaches
+    the emitter, so the donor's ``meta_to_dict`` normalisation has nothing to
+    do here.
+    """
+    if not meta:
+        return None
+
+    baton_meta = meta.get("baton")
+    if isinstance(baton_meta, dict):
+        runtime = baton_meta.get("agent_runtime")
+        if isinstance(runtime, str) and runtime:
+            return runtime
+
+    for key in meta:
+        if isinstance(key, str) and key.startswith("claudecode/"):
+            return "claude-code"
+
+    return None
 
 
 @dataclass(frozen=True)
@@ -125,6 +165,10 @@ class Emitter:
         # re-parsing the JSONL. Applied BEFORE the queue, so file sink
         # and HTTP sink both see scrubbed values.
         self._scrubber = Scrubber()
+        # The client the handshake named, latched by set_agent_runtime. A plain
+        # attribute: one str assignment, written once on the transport's reader
+        # thread before the first event exists, read on every enqueue after.
+        self._agent_runtime: str | None = None
 
     def start(self) -> None:
         if not self._config.emission_enabled:
@@ -136,6 +180,33 @@ class Emitter:
         self._sink = make_sink(self._config.event_sink, api_key=self._config.api_key)
         self._thread = threading.Thread(target=self._drain, name="baton-proxy-emitter", daemon=True)
         self._thread.start()
+
+    def set_agent_runtime(self, name: str) -> None:
+        """Latch the client the MCP handshake named itself.
+
+        ``clientInfo.name`` arrives on ``initialize``, which precedes every
+        event this process emits — including ``surface_snapshot``, which is
+        sequence 1 and carries no ``_meta`` at all. That matters because the
+        consumers that ask a session what it ran in read its FIRST event
+        (baton-console's ``channels.pylon`` and ``worker.correlate``), so the
+        per-event ``_meta`` heuristic alone can never reach them: by the time
+        any ``_meta`` exists, event 1 is already written.
+
+        Stored as sent, case-folded. Claude Code sends ``claude-code``, which
+        is already the token ``detect_agent_runtime`` produces, so the two
+        signals agree without a mapping table. An unrecognised client passes
+        through rather than being mapped to a guess — the name is something we
+        OBSERVED, and inventing one for a client we did not recognise is the
+        fabrication this whole field is being fixed to stop.
+
+        Process-wide, which is what the stdio proxy is: one process per client
+        session. A hosted adapter multiplexing many sessions through one
+        process would need this keyed per session — that is why the per-event
+        signal outranks this latch rather than the other way round.
+        """
+        folded = name.strip().lower()
+        if folded:
+            self._agent_runtime = folded
 
     def _guard_remote_consent(self) -> None:
         """Refuse to ship events to a remote sink while the consent token is
@@ -561,6 +632,13 @@ class Emitter:
             seq = self._seq
             self._seq += 1
 
+        # Which app the person is working in. The event's own ``_meta`` first,
+        # so a process serving several clients still attributes each event to
+        # the one that sent it; then the handshake latch, which is the only
+        # signal that exists before event 1; then the transport's name, which
+        # is the honest answer when nothing named a client.
+        agent_runtime = detect_agent_runtime(runtime_meta) or self._agent_runtime or _AGENT_RUNTIME
+
         event = _Event(
             event_id=str(uuid.uuid4()),
             event_type=event_type,
@@ -571,7 +649,7 @@ class Emitter:
             vendor_id=self._config.vendor_id,
             consent_token=self._config.consent_token,  # type: ignore[arg-type]
             sdk_version=_SDK_VERSION,
-            agent_runtime=_AGENT_RUNTIME,
+            agent_runtime=agent_runtime,
             payload=payload,
             runtime_meta=runtime_meta,
             user_id=user_id,

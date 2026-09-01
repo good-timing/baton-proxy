@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from baton_proxy.config import Config
-from baton_proxy.emitter import Emitter
+from baton_proxy.emitter import Emitter, detect_agent_runtime
 
 
 class _StubReceiver(BaseHTTPRequestHandler):
@@ -392,3 +392,109 @@ def test_stop_drains_when_queue_was_full() -> None:
         assert e._thread is None  # noqa: SLF001
     finally:
         server.shutdown()
+
+
+# --------------------------------------------------------------------------- #
+# agent_runtime — which APP the person was working in, not which transport we  #
+# are. "mcp-proxy" is the fallback; the handshake and per-event _meta are the  #
+# two signals that can replace it.                                             #
+# --------------------------------------------------------------------------- #
+
+
+def test_detect_agent_runtime_reads_the_claudecode_prefix() -> None:
+    """Claude Code betrays itself with namespaced _meta keys. The token is the
+    SDK's `claude-code`, hyphenated — a copy that returned `claude_code` or
+    `Claude Code` would split one client into two in every grouped query."""
+    assert detect_agent_runtime({"claudecode/toolUseId": "tu_1"}) == "claude-code"
+    assert detect_agent_runtime({"progressToken": 3, "claudecode/sessionId": "s"}) == "claude-code"
+
+
+def test_detect_agent_runtime_honours_the_explicit_override() -> None:
+    """`_meta.baton.agent_runtime` is a documented client override in the SDK
+    donor, and it outranks the prefix heuristic — a client that asserts its own
+    identity is a better source than our guess about its key names."""
+    meta = {"claudecode/toolUseId": "tu_1", "baton": {"agent_runtime": "some-plugin"}}
+    assert detect_agent_runtime(meta) == "some-plugin"
+
+
+def test_detect_agent_runtime_is_none_without_a_signal() -> None:
+    """No signal returns None rather than a default, so the caller decides what
+    to fall back to. Malformed shapes are signals too — an empty override
+    string and a non-dict `baton` key must not become the answer."""
+    assert detect_agent_runtime(None) is None
+    assert detect_agent_runtime({}) is None
+    assert detect_agent_runtime({"progressToken": 3}) is None
+    assert detect_agent_runtime({"baton": {"agent_runtime": ""}}) is None
+    assert detect_agent_runtime({"baton": "not-a-dict"}) is None
+
+
+def test_the_handshake_latch_reaches_the_sessions_first_event(tmp_path: Path) -> None:
+    """The load-bearing case. `surface_snapshot` is sequence 1 and carries no
+    `_meta` at all, and the console consumers that ask a session what it ran in
+    read its FIRST event — so a per-event heuristic alone can never reach them.
+    Only the handshake latch exists before event 1 does."""
+    sink_path = tmp_path / "events.jsonl"
+    e = Emitter(_config_file(str(sink_path)))
+    e.start()
+    e.enqueue_surface_snapshot(
+        surface_hash="h",
+        server_info=None,
+        capabilities=None,
+        instructions=None,
+        tools=[],
+        seam_augmentations={},
+    )
+    e.set_agent_runtime("claude-code")
+    e.enqueue_surface_snapshot(
+        surface_hash="h2",
+        server_info=None,
+        capabilities=None,
+        instructions=None,
+        tools=[],
+        seam_augmentations={},
+    )
+    e.stop(timeout=5.0)
+
+    events = [json.loads(line) for line in sink_path.read_text().splitlines() if line.strip()]
+    assert len(events) == 2
+    # Before the latch there is nothing to say but the transport's own name.
+    assert events[0]["agent_runtime"] == "mcp-proxy"
+    # After it, a metadata event with no `_meta` still names the client.
+    assert events[1]["agent_runtime"] == "claude-code"
+
+
+def test_per_event_meta_outranks_the_handshake_latch(tmp_path: Path) -> None:
+    """Precedence, and the reason for it: the latch is process-wide and the
+    stdio proxy is one process per session, but a hosted adapter multiplexing
+    several clients through one process must still attribute each event to the
+    client that sent it. Per-event wins so that degrades correctly."""
+    sink_path = tmp_path / "events.jsonl"
+    e = Emitter(_config_file(str(sink_path)))
+    e.start()
+    e.set_agent_runtime("cursor")
+    e.enqueue_tool_call_start(
+        tool_name="echo", params={}, runtime_meta={"claudecode/toolUseId": "tu_1"}
+    )
+    e.enqueue_tool_call_start(tool_name="echo", params={})
+    e.stop(timeout=5.0)
+
+    events = [json.loads(line) for line in sink_path.read_text().splitlines() if line.strip()]
+    assert [ev["agent_runtime"] for ev in events] == ["claude-code", "cursor"]
+
+
+def test_set_agent_runtime_case_folds_and_ignores_empty(tmp_path: Path) -> None:
+    """`clientInfo.name` is client-supplied free text. Case-fold so one client
+    spelling itself two ways stays one client; refuse blanks, because an empty
+    latch would read as "we observed a client with no name" rather than
+    falling back to the transport."""
+    sink_path = tmp_path / "events.jsonl"
+    e = Emitter(_config_file(str(sink_path)))
+    e.start()
+    e.set_agent_runtime("  Claude-Code  ")
+    e.enqueue_tool_call_start(tool_name="echo", params={})
+    e.set_agent_runtime("   ")
+    e.enqueue_tool_call_start(tool_name="echo", params={})
+    e.stop(timeout=5.0)
+
+    events = [json.loads(line) for line in sink_path.read_text().splitlines() if line.strip()]
+    assert [ev["agent_runtime"] for ev in events] == ["claude-code", "claude-code"]

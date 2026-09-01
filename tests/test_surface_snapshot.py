@@ -329,3 +329,71 @@ def test_e2e_snapshot_on_stderr_sink() -> None:
     # Envelope fields present like any other event.
     assert snaps[0]["vendor_id"] == "fixture"
     assert "sequence_number" in snaps[0]
+
+
+# --------------------------------------------------------------------------- #
+# The handshake names the client, and that is the only signal that exists      #
+# before the snapshot above (sequence 1, no `_meta`) is written.               #
+# --------------------------------------------------------------------------- #
+
+
+class _LatchingEmitter(_FakeEmitter):
+    """_FakeEmitter plus the one method the initialize branch calls."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.runtimes: list[str] = []
+
+    def set_agent_runtime(self, name: str) -> None:
+        self.runtimes.append(name)
+
+
+def _latching_processor() -> tuple[MessageProcessor, _LatchingEmitter]:
+    emitter = _LatchingEmitter()
+    injection = _Injection.create(None, intent_param_mode="optional")
+    return MessageProcessor(emitter, injection, "test-session"), emitter  # type: ignore[arg-type]
+
+
+def _initialize(params: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params}
+
+
+def test_initialize_latches_clientinfo_name_and_forwards_unchanged() -> None:
+    """We only READ the handshake. Rewriting it would change what the upstream
+    server is told about its own client, which is not ours to do."""
+    proc, emitter = _latching_processor()
+    req = _initialize(
+        {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "claude-code", "title": "Claude Code", "version": "2.1.223"},
+        }
+    )
+    action = proc.handle_client_message(req)
+
+    assert emitter.runtimes == ["claude-code"]
+    assert action.forward == req
+    assert action.respond is None
+    # Reading the handshake must not emit anything of its own.
+    assert emitter.calls == []
+
+
+def test_a_handshake_without_a_usable_clientinfo_latches_nothing() -> None:
+    """Fail-open, and specifically fail-QUIET: a client that names itself
+    strangely still gets a working session, and the field falls back to the
+    transport rather than to a guess. `clientInfo` is optional in practice and
+    every shape here has been seen or is one bad client away."""
+    for params in (
+        None,
+        {},
+        "not-a-dict",
+        {"clientInfo": None},
+        {"clientInfo": "not-a-dict"},
+        {"clientInfo": {}},
+        {"clientInfo": {"name": 3}},
+    ):
+        proc, emitter = _latching_processor()
+        req = _initialize(params)
+        action = proc.handle_client_message(req)
+        assert emitter.runtimes == [], params
+        assert action.forward == req, params

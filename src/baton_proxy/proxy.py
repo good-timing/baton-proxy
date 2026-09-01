@@ -649,6 +649,23 @@ class MessageProcessor:
         """Intercept/emit for a client->server message; return the transport's action."""
         method = req.get("method")
 
+        if method == "initialize":
+            # The handshake is the ONE place the client names itself, and it
+            # precedes every event this process emits — including the
+            # surface_snapshot that is sequence 1 and carries no ``_meta``.
+            # Latch it so a session's first event says which app the person was
+            # in rather than which transport we are. Forwarded unchanged (we
+            # only read it); fail-open on any shape surprise, same as below.
+            try:
+                params = req.get("params") or {}
+                client_info = params.get("clientInfo") if isinstance(params, dict) else None
+                name = client_info.get("name") if isinstance(client_info, dict) else None
+                if isinstance(name, str):
+                    self._emitter.set_agent_runtime(name)
+            except Exception:
+                logger.exception("baton-proxy: clientInfo capture failed")
+            return _ClientAction(forward=req)
+
         if method == "tools/list":
             # Remember first-page requests (no cursor) so the server path can
             # tell a snapshot candidate from a pagination fragment. Forwarded
