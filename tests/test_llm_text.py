@@ -72,14 +72,53 @@ def test_instructions_raises_when_tool_name_exceeds_cap() -> None:
 
 
 def test_instructions_carry_must_required_framing() -> None:
-    """The BEFORE/AFTER MUST/REQUIRED framing drives annotation
-    population — milder phrasing empirically under-populates fields.
-    Don't drop it accidentally."""
+    """The AFTER/IF MUST/REQUIRED framing drives annotation population —
+    milder phrasing empirically under-populates fields. Don't drop it
+    accidentally.
+
+    BEFORE is deliberately absent; see the test below."""
     rendered = build_instructions_suffix(annotation_tool_name="baton_annotate")
-    assert "BEFORE" in rendered
     assert "AFTER" in rendered
     assert "MUST" in rendered
     assert "REQUIRED" in rendered
+
+
+def test_the_instructions_no_longer_ask_for_a_pre_call_annotation() -> None:
+    """D7, 2026-09-01. The BEFORE paragraph asked for user_goal /
+    expected_result / overall_task — the same three fields the injected params
+    already carry on EVERY call — and by naming them here it taught the agent
+    that intent is the annotation tool's job. Measured on 2026-09-01: three
+    real sessions, four annotations, every one BEFORE-style with no
+    signal_type, and zero friction signals filed. The tool spent itself
+    restating what the params had already recorded.
+
+    Params carry INTENT; this tool carries FRICTION. Not gated on
+    ``proactive_mode`` — the drop is unconditional, which is the one place the
+    proxy deliberately diverges from the SDK, whose ``on`` still renders it.
+    """
+    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate")
+    assert "BEFORE" not in rendered
+    # Named individually: a suffix that still asks for the three fields under
+    # some other heading is the same defect with different spelling.
+    assert "expected_result" not in rendered
+    assert "overall_task" not in rendered
+    # ...and the half that had to survive it. AFTER and IF are the friction
+    # signal, which is the product and has no other carrier.
+    assert "AFTER any tool" in rendered
+    assert "IF a tool response" in rendered
+
+
+def test_dropping_the_pre_call_paragraph_bought_real_headroom() -> None:
+    """The reason this is urgent rather than tidy. The proxy APPENDS its suffix
+    to the upstream server's own instructions, and Claude Code truncates the
+    field at ~2,087 chars — workfront's rendered value measured 4,408 on
+    2026-09-01, so on the servers we most want it is OUR framing, at the end,
+    that is silently cut. The paragraph was 260 of 1,236 chars."""
+    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate")
+    assert len(rendered) < 1000, (
+        f"the suffix grew back to {len(rendered)} chars; it was 1,236 before the "
+        "2026-09-01 drop and the whole point was headroom under the ~2,087 cap"
+    )
 
 
 def test_instructions_carry_full_signal_type_enum() -> None:

@@ -108,10 +108,10 @@ def _surface_hash(surface: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _build_injected_tool(tool_name: str) -> dict[str, Any]:
+def _build_injected_tool(tool_name: str, proactive_mode: str = "on") -> dict[str, Any]:
     return {
         "name": tool_name,
-        "description": build_annotation_tool_description(),
+        "description": build_annotation_tool_description(proactive_mode),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -177,6 +177,12 @@ class _Injection:
     # Intent-param injection mode: "optional" | "required" | "off". Defaulted
     # so tests that build _Injection directly keep their existing shape.
     intent_param_mode: str = "optional"
+    # Whether the agent may file its OWN pre-call annotation: "on" | "off".
+    # Defaulted to today's behaviour, like the field above, so tests that build
+    # _Injection directly keep their existing shape. Never governs the proxy's
+    # synthesised param proactive — that one is ours, and it fires in both
+    # modes.
+    proactive_mode: str = "on"
 
     @property
     def names(self) -> set[str]:
@@ -189,10 +195,11 @@ class _Injection:
         *,
         tenant_type: str = "vendor",
         intent_param_mode: str = "optional",
+        proactive_mode: str = "on",
     ) -> _Injection:
         from baton_proxy.report import find_file_sink_path, should_inject_report_tool
 
-        tools = [_build_injected_tool(ANNOTATE_TOOL_NAME)]
+        tools = [_build_injected_tool(ANNOTATE_TOOL_NAME, proactive_mode)]
         sink_path: str | None = None
         if should_inject_report_tool(event_sink_url, tenant_type=tenant_type):
             tools.append(_build_report_tool())
@@ -202,6 +209,7 @@ class _Injection:
             instructions_suffix=build_instructions_suffix(ANNOTATE_TOOL_NAME),
             sink_path=sink_path,
             intent_param_mode=intent_param_mode,
+            proactive_mode=proactive_mode,
         )
 
 
@@ -450,6 +458,37 @@ def _build_degraded_response(req: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _refuse_proactive(req: dict[str, Any]) -> dict[str, Any]:
+    """The response to an agent-filed pre-call annotation under
+    ``proactive_mode="off"``.
+
+    Wording ported from baton-sdk so an agent that meets both producers reads
+    one rule. It is a normal result rather than a JSON-RPC error: an error
+    reads as the server being broken and invites a retry loop, while this tells
+    the model what to do instead and why it is not needed.
+    """
+    return {
+        "jsonrpc": "2.0",
+        "id": req.get("id"),
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"{ANNOTATE_TOOL_NAME} is reactive-only on this server. Call it "
+                        "only AFTER a tool call returns an unhelpful, empty, failed or "
+                        "contradictory result, or when no tool covers what the user asked "
+                        "for — and set signal_type. What the user is trying to do is "
+                        "already recorded on each tool call, so no pre-call annotation is "
+                        "needed."
+                    ),
+                }
+            ],
+            "isError": True,
+        },
+    }
+
+
 def _handle_injected_call(
     req: dict[str, Any],
     *,
@@ -693,6 +732,26 @@ class MessageProcessor:
                 # response; that's the whole point of intercepting it.
                 if tool_name == ANNOTATE_TOOL_NAME:
                     args = params.get("arguments", {}) or {}
+                    # proactive_mode="off": refuse the agent's OWN pre-call
+                    # annotation structurally, not by instruction text alone.
+                    # Ported from baton-sdk (`integrations/mcp/annotation.py`),
+                    # including the reason it refuses HERE rather than making
+                    # signal_type schema-required: a required signal_type makes
+                    # the agent invent `other` to get the call through, and
+                    # that corrupts the friction counts, which are the one
+                    # thing worth protecting.
+                    #
+                    # Before the enqueue on purpose. A refused proactive must
+                    # leave NO annotation event — one stray umbrella
+                    # `overall_task` from it is enough to merge two distinct
+                    # tasks in a consumer that groups on the annotation label.
+                    #
+                    # The proxy's own synthesised proactive is untouched by
+                    # this: it is built below from the first call's injected
+                    # params, it is ours rather than the agent's, and it keeps
+                    # one turn-opener per session in both modes.
+                    if self._injection.proactive_mode == "off" and args.get("signal_type") is None:
+                        return _ClientAction(respond=_refuse_proactive(req))
                     ann_meta = (
                         params.get("_meta") if isinstance(params.get("_meta"), dict) else None
                     )
@@ -1325,6 +1384,7 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
         config.event_sink,
         tenant_type=config.tenant_type,
         intent_param_mode=config.intent_param_mode,
+        proactive_mode=config.proactive_mode,
     )
     emitter = Emitter(config)
     emitter.start()
@@ -1468,11 +1528,13 @@ def run_proxy(argv: list[str]) -> int:
     """
     config, injection, emitter, processor = _bootstrap()
     logger.info(
-        "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, upstream=%s)",
+        "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, "
+        "proactive=%s, upstream=%s)",
         config.session_id,
         "on" if config.emission_enabled else "off",
         sorted(injection.names),
         injection.intent_param_mode,
+        injection.proactive_mode,
         " ".join(argv),
     )
 
@@ -1559,11 +1621,13 @@ def run_http_proxy(url: str) -> int:
     config, injection, emitter, processor = _bootstrap()
     auth_token = os.environ.get("BATON_UPSTREAM_AUTH_TOKEN")
     logger.info(
-        "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, upstream=%s, transport=http, auth=%s)",
+        "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, "
+        "proactive=%s, upstream=%s, transport=http, auth=%s)",
         config.session_id,
         "on" if config.emission_enabled else "off",
         sorted(injection.names),
         injection.intent_param_mode,
+        injection.proactive_mode,
         url,
         "bearer" if auth_token else "none",
     )

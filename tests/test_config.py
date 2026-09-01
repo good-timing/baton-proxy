@@ -165,3 +165,61 @@ def test_from_env_tenant_type_rejects_unknown_values(
     monkeypatch.setenv("BATON_TENANT_TYPE", "customers")
     with pytest.raises(ValueError, match="BATON_TENANT_TYPE"):
         Config.from_env()
+
+
+def test_from_env_proactive_defaults_to_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ported at TODAY's behaviour, deliberately. The SDK defaults its own
+    `proactive_mode` to `off`, but the SDK wraps a server its vendor owns —
+    the proxy fronts servers its operator does not, so a default that changed
+    capture on the next restart would make upgrading a decision."""
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    assert Config.from_env().proactive_mode == "on"
+
+
+def test_from_env_proactive_off_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("BATON_PROACTIVE", "off")
+    assert Config.from_env().proactive_mode == "off"
+
+
+def test_from_env_proactive_rejects_unknown_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same reason as BATON_TENANT_TYPE: silently reading `BATON_PROACTIVE=false`
+    as `on` leaves an operator believing they turned something off."""
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("BATON_PROACTIVE", "false")
+    with pytest.raises(ValueError, match="BATON_PROACTIVE"):
+        Config.from_env()
+
+
+def test_both_intent_channels_off_is_refused_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ported from baton-sdk's `_config.py` guard. The injected params are the
+    intent channel and the annotation tool is the friction channel; with both
+    off the proxy is a passthrough emitting tool calls with no reason attached.
+    That is capture switched off, not a quiet configuration, so it fails at
+    startup rather than running empty for a week."""
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("BATON_INTENT_PARAM", "off")
+    monkeypatch.setenv("BATON_PROACTIVE", "off")
+    with pytest.raises(ValueError, match="captures no intent at all"):
+        Config.from_env()
+
+
+def test_either_channel_alone_is_a_valid_install(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The control for the guard above — it must refuse BOTH being off, not
+    either. `intent_param=off` with proactive on is the pre-injection shape and
+    still a real deployment; the reverse is the one D7 is steering toward."""
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("BATON_INTENT_PARAM", "off")
+    monkeypatch.setenv("BATON_PROACTIVE", "on")
+    assert Config.from_env().intent_param_mode == "off"
+
+    monkeypatch.setenv("BATON_INTENT_PARAM", "required")
+    monkeypatch.setenv("BATON_PROACTIVE", "off")
+    assert Config.from_env().proactive_mode == "off"

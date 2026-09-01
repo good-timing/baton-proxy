@@ -842,3 +842,124 @@ def test_a_real_proactive_still_claims_the_sessions_turn_opener() -> None:
     assert len(annotations) == 1, "the injected-param path opened a second proactive"
     assert annotations[0][1]["intent"] == "the goal"
     assert annotations[0][1].get("intent_source") is None, "the survivor is the synthesised one"
+
+
+# --------------------------------------------------------------------------- #
+# proactive_mode — the knob ported from the SDK (SPEC §13 2026-08-10b, §14      #
+# "proactive_mode parity"), shipped 2026-09-01 at today's behaviour.           #
+#                                                                              #
+# It governs TWO legs and not a third. On/off changes the annotation tool's    #
+# description lead and whether the handler accepts an agent-filed pre-call     #
+# annotation. It does NOT govern the instructions' BEFORE paragraph, which D7  #
+# drops in both modes — the proxy's `on` therefore differs from the SDK's `on` #
+# on purpose, and that divergence is what these tests hold still.              #
+# --------------------------------------------------------------------------- #
+
+
+def _proactive_processor(mode: str) -> tuple[MessageProcessor, _FakeEmitter]:
+    emitter = _FakeEmitter()
+    injection = _Injection.create(None, proactive_mode=mode)
+    return MessageProcessor(emitter, injection, "test-session"), emitter  # type: ignore[arg-type]
+
+
+def _annotate(arguments: dict[str, Any], msg_id: int = 20) -> dict[str, Any]:
+    return _call("baton_annotate", arguments, msg_id=msg_id)
+
+
+def test_proactive_off_refuses_an_agent_filed_pre_call_annotation() -> None:
+    """The SDK refuses at the handler rather than by instruction text alone,
+    because text is only a request. Ported with its reason: refusing here
+    instead of making signal_type schema-required keeps the agent from
+    inventing `other` to get the call through, which would corrupt the
+    friction counts — the one signal worth protecting."""
+    proc, emitter = _proactive_processor("off")
+    action = proc.handle_client_message(_annotate({"user_goal": INTENT_TEXT}))
+
+    assert action.respond is not None, "a refused proactive must still be answered"
+    assert action.forward is None, "the annotation tool is never forwarded upstream"
+    text = action.respond["result"]["content"][0]["text"]
+    assert "reactive-only" in text
+    assert "signal_type" in text, "the refusal has to say what would make it valid"
+    # NO annotation event. A refused proactive that still emits is the merge
+    # hazard the mode exists to remove: one stray umbrella `overall_task` label
+    # is enough to fuse two distinct tasks in a consumer that groups on it.
+    assert emitter.calls == []
+
+
+def test_proactive_off_still_takes_the_friction_report() -> None:
+    """The control, and the whole point of refusing at the handler rather than
+    suppressing the tool: `off` costs the agent's pre-call narration and
+    nothing else. Reactive annotation is the product signal."""
+    proc, emitter = _proactive_processor("off")
+    action = proc.handle_client_message(
+        _annotate({"user_goal": INTENT_TEXT, "signal_type": "feature_gap"})
+    )
+
+    assert action.respond is not None
+    assert "reactive-only" not in action.respond["result"]["content"][0]["text"]
+    assert [kind for kind, _ in emitter.calls] == ["annotation"]
+    assert emitter.calls[0][1]["signal_type"] == "feature_gap"
+
+
+def test_proactive_on_is_todays_behaviour_and_is_the_default() -> None:
+    """Shipped at today's behaviour on purpose: the proxy fronts servers its
+    operator does not own, so a default that changed live capture on the next
+    restart would be a decision taken by upgrading."""
+    from baton_proxy.config import DEFAULT_PROACTIVE_MODE
+
+    assert DEFAULT_PROACTIVE_MODE == "on"
+    proc, emitter = _proactive_processor("on")
+    action = proc.handle_client_message(_annotate({"user_goal": INTENT_TEXT}))
+    assert action.respond is not None
+    assert "reactive-only" not in action.respond["result"]["content"][0]["text"]
+    assert [kind for kind, _ in emitter.calls] == ["annotation"]
+
+
+def test_the_knob_never_touches_the_proxys_own_synthesised_proactive() -> None:
+    """The distinction the mode rests on. `off` removes the AGENT's pre-call
+    annotation; the one the proxy synthesises from the first call's injected
+    params is ours, not the agent's, and it is what keeps a turn-opener per
+    session in both modes. If the knob silenced it too, `off` would cost every
+    turn boundary rather than the agent's narration."""
+    proc, emitter = _proactive_processor("off")
+    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
+    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}))
+
+    kinds = [kind for kind, _ in emitter.calls]
+    assert kinds == ["annotation", "tool_call_start"], kinds
+    assert emitter.calls[0][1]["intent"] == INTENT_TEXT
+    assert emitter.calls[0][1]["signal_type"] is None
+
+
+def test_the_tool_description_changes_with_the_mode_but_the_fields_do_not() -> None:
+    """The other leg. `off` reframes the tool as reactive-only; the field
+    reference under the lead is identical in both, because the fields
+    themselves do not change — only whether the agent may open with them."""
+    from baton_proxy.proxy import _build_injected_tool
+
+    on = _build_injected_tool("baton_annotate", "on")["description"]
+    off = _build_injected_tool("baton_annotate", "off")["description"]
+
+    assert "Populate proactively" in on
+    assert "Do NOT call it before a tool call" in off
+    assert "Populate proactively" not in off
+    for field in ("user_goal", "expected_result", "overall_task", "signal_type"):
+        assert field in on and field in off
+    # `user_goal` stays required in BOTH: a friction report still has to say
+    # what was being attempted.
+    assert _build_injected_tool("baton_annotate", "off")["inputSchema"]["required"] == ["user_goal"]
+
+
+def test_neither_mode_asks_for_a_pre_call_annotation_in_the_instructions() -> None:
+    """The deliberate divergence from the SDK, pinned where someone porting
+    the next knob will trip over it. D7 drops the BEFORE paragraph
+    unconditionally; the SDK's `proactive_mode="on"` still renders one. So
+    proxy-`on` is NOT SDK-`on`, and the two producers agree on the spelling
+    while differing on one leg of the meaning."""
+    from baton_proxy._llm_text import build_instructions_suffix
+
+    rendered = build_instructions_suffix("baton_annotate")
+    assert "BEFORE" not in rendered
+    # The suffix is not a function of the mode at all — that is the claim.
+    assert _Injection.create(None, proactive_mode="on").instructions_suffix == rendered
+    assert _Injection.create(None, proactive_mode="off").instructions_suffix == rendered

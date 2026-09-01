@@ -52,6 +52,36 @@ _TENANT_TYPES: frozenset[str] = frozenset({"vendor", "customer"})
 DEFAULT_INTENT_PARAM_MODE = "optional"
 _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
 
+# Valid values for BATON_PROACTIVE — whether the agent may FILE its own
+# pre-call annotation. Ported from baton-sdk's ``VendorConfig.proactive_mode``
+# (SPEC §13, 2026-08-10b) and §14's "proactive_mode parity across producers",
+# whose ordering constraint — do not disable proactive before the
+# ``overall_task`` port lands — cleared with `96f31db`.
+#
+# ONE DELIBERATE DIVERGENCE FROM THE SDK, and it is the whole reason to read
+# this comment. The SDK's ``on`` renders a BEFORE clause into the instructions
+# asking for that pre-call annotation. The proxy's ``on`` does NOT: D7
+# (2026-09-01) drops the BEFORE paragraph in BOTH modes, because the injected
+# params already carry the same three fields on every call and the paragraph
+# taught the agent that intent was the tool's job. So here the knob governs
+# only the two remaining legs:
+#
+#   on  (default, today's behaviour) — the annotation tool is described as
+#       proactive-and-reactive, and the handler accepts an annotation with no
+#       signal_type.
+#   off — the tool is described as reactive-only, and the handler REFUSES an
+#       annotation with no signal_type, the way the SDK does. Refusing here
+#       rather than requiring signal_type in the schema keeps the agent from
+#       fabricating a `failure` to get the call through, which would corrupt
+#       the one signal worth protecting.
+#
+# What the knob never touches: the tool itself (suppressing it also lost the
+# reactive `feature_gap`, the product signal), and the proxy's OWN synthesised
+# proactive built from the first call's injected params — that one is ours, not
+# the agent's, and it is what keeps one turn-opener per session in both modes.
+DEFAULT_PROACTIVE_MODE = "on"
+_PROACTIVE_MODES: frozenset[str] = frozenset({"on", "off"})
+
 
 @dataclass(frozen=True)
 class Config:
@@ -100,6 +130,10 @@ class Config:
     # See DEFAULT_INTENT_PARAM_MODE above.
     intent_param_mode: str = DEFAULT_INTENT_PARAM_MODE
 
+    # Whether the agent may file its own pre-call annotation: on | off.
+    # See DEFAULT_PROACTIVE_MODE above.
+    proactive_mode: str = DEFAULT_PROACTIVE_MODE
+
     # Per-tenant secret keying the end-user ``user_id`` HMAC (identity.py).
     # Raw identity is hashed at the edge with this key before an event reaches
     # any console-bound sink (residency contract). None → user_id capture is
@@ -143,6 +177,25 @@ class Config:
                 f"BATON_INTENT_PARAM must be one of {sorted(_INTENT_PARAM_MODES)}; "
                 f"got {intent_param_mode!r}."
             )
+        proactive_mode = _env("BATON_PROACTIVE") or DEFAULT_PROACTIVE_MODE
+        if proactive_mode not in _PROACTIVE_MODES:
+            raise ValueError(
+                f"BATON_PROACTIVE must be one of {sorted(_PROACTIVE_MODES)}; "
+                f"got {proactive_mode!r}."
+            )
+        # Ported from baton-sdk's ``_config.py`` guard. Both channels off is
+        # not a quiet configuration, it is capture switched off: the params are
+        # the intent channel and the annotation tool is the friction channel,
+        # and a proxy with neither is a passthrough that emits tool calls with
+        # no reason attached. Refuse at startup rather than run empty.
+        if intent_param_mode == "off" and proactive_mode == "off":
+            raise ValueError(
+                "BATON_INTENT_PARAM='off' with BATON_PROACTIVE='off' captures no "
+                "intent at all — the injected params are the intent channel and "
+                "the annotation tool is the friction channel. Set one of them: "
+                "BATON_INTENT_PARAM=optional|required (per-call intent, no extra "
+                "turn) or BATON_PROACTIVE=on (agent-filed pre-call annotations)."
+            )
         hmac_key = _env("BATON_USER_ID_HMAC_KEY")
         return cls(
             session_id=str(uuid.uuid4()),
@@ -153,6 +206,7 @@ class Config:
             vendor_id=vendor_id,
             tenant_type=tenant_type,
             intent_param_mode=intent_param_mode,
+            proactive_mode=proactive_mode,
             user_id_hmac_key=hmac_key.encode("utf-8") if hmac_key else None,
             log_file=_env("BATON_PROXY_LOG_FILE"),
         )

@@ -51,16 +51,31 @@ from __future__ import annotations
 #      (the proxy is opaque to the wrapped server's identity), so the
 #      template uses neutral "any tool on this server" phrasing instead
 #      of the SDK's "{vendor_display_name} tool".
+#
+# The BEFORE paragraph was DROPPED 2026-09-01 (D7 in baton-internal
+# `intent_param_injection.md`), in both proactive modes, and this is the one
+# place in the proxy where the two channels were conflated. It asked for
+# user_goal / expected_result / overall_task — the same three fields the
+# injected params already carry on every single call — and by naming them here
+# it taught the agent that intent is the annotation tool's job. Evidence: on
+# 2026-09-01 three real sessions filed four annotations, every one of them
+# BEFORE-style, carrying intent with no signal_type, and filed ZERO friction
+# signals. The tool spent itself restating what the params had already
+# recorded. Now the params carry INTENT and this tool carries FRICTION, which
+# is the artifact with no param analogue.
+#
+# It also bought headroom that is not optional on the servers we most want:
+# 260 chars off a 1,236-char suffix, against Claude Code's ~2,087-char cap on
+# `instructions` — and the proxy APPENDS, so on a large enterprise server
+# (workfront rendered 4,408 chars) it is this framing, at the end, that gets
+# silently cut.
+#
+# What did NOT change: AFTER and IF stay in both modes. They produce the
+# friction signal, they are the product, and they have no other carrier.
 _DEFAULT_SERVER_INSTRUCTIONS_SUFFIX_TEMPLATE = (
     " This server is wrapped in the Baton support-signal proxy. Use "
-    "`{annotation_tool_name}` to record what the user is trying to do "
-    "and how each tool call went. See that tool's description for "
-    "field-level detail.\n\n"
-    "BEFORE invoking any tool on this server, you MUST call "
-    "`{annotation_tool_name}` with user_goal (REQUIRED), expected_result "
-    "(REQUIRED), and overall_task (REQUIRED when the request fits a "
-    "recognizable broader task, e.g., 'morning meeting prep', "
-    "'pre-outreach research').\n\n"
+    "`{annotation_tool_name}` to record how each tool call went. See that "
+    "tool's description for field-level detail.\n\n"
     "AFTER any tool on this server errors, times out, returns an "
     "unhelpful or contradictory result, or the user shows signs of "
     "giving up, you MUST call `{annotation_tool_name}` again with "
@@ -78,12 +93,36 @@ _DEFAULT_SERVER_INSTRUCTIONS_SUFFIX_TEMPLATE = (
 )
 
 
-_DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
+# The two leads, selected by ``proactive_mode``. Ported from baton-sdk's
+# ``_ANNOTATION_LEAD_PROACTIVE`` / ``_ANNOTATION_LEAD_REACTIVE_ONLY``.
+#
+# `on` is today's behaviour and stays the proxy's default: the tool is for
+# intent AND outcomes. `off` reframes it as the friction channel alone, which
+# is what the handler enforces in that mode — text alone is only a request,
+# and one stray proactive carrying an umbrella `overall_task` label is enough
+# to merge two distinct tasks in any consumer that groups on it.
+#
+# `user_goal` stays required in BOTH leads: a friction report still has to say
+# what was being attempted, and by then the params have carried it once
+# already. That duplication is cheap; a signal with no subject is not.
+_ANNOTATION_LEAD_PROACTIVE = (
     "Record structured signal about a tool call on this server — what "
     "the user is trying to do, and how it went. Populate proactively "
     "before the call (user_goal + expected_result + overall_task) and "
     "reactively after if the result was unhelpful (signal_type + "
     "suggested_improvement).\n"
+)
+
+_ANNOTATION_LEAD_REACTIVE_ONLY = (
+    "Report a tool call on this server that went wrong — call this AFTER a "
+    "call returns an unhelpful, empty, failed or contradictory result, or "
+    "when no tool covers what the user asked for. Do NOT call it before a "
+    "tool call or to narrate normal successful work. What the user is trying "
+    "to do is already recorded on each tool call.\n"
+)
+
+_DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
+    "{lead}"
     "\n"
     "Fields:\n"
     "  - user_goal: one sentence on what the user is trying to "
@@ -157,13 +196,18 @@ def build_instructions_suffix(annotation_tool_name: str) -> str:
     return rendered
 
 
-def build_annotation_tool_description() -> str:
+def build_annotation_tool_description(proactive_mode: str = "on") -> str:
     """Build the annotation tool's ``description`` field.
 
-    No placeholders — the proxy is opaque to the wrapped server's
+    ``proactive_mode="off"`` swaps the lead for the reactive-only one; the
+    field reference below it is identical in both modes, because the fields
+    themselves do not change — only whether the agent may open with them.
+
+    No vendor placeholder — the proxy is opaque to the wrapped server's
     identity, so the field reference uses neutral "this server" phrasing.
     """
-    return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE
+    lead = _ANNOTATION_LEAD_PROACTIVE if proactive_mode == "on" else _ANNOTATION_LEAD_REACTIVE_ONLY
+    return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(lead=lead)
 
 
 # Per-tool injected params (`user_goal` / `expected_result`). Unlike
