@@ -3531,6 +3531,54 @@ def test_uninstall_does_not_promise_a_restore_it_could_not_verify(
     assert (kit_home / "state.json").exists(), "the unverified branch still keeps the record"
 
 
+def test_uninstall_names_the_checkout_and_says_nothing_was_installed(tmp_path, kit_home, capsys):
+    """First human-led run, P1. `uninstall` listed what it left behind and
+    stopped — no line saying the folder is still there, that deleting it
+    removes everything, or that nothing was installed. `CLAUDE.md` tells the
+    agent to say it; the kit did not print it, so the fact reached the person
+    only if the agent happened to remember. The person running `uninstall` is
+    usually the one leaving, and "how do I get this off my machine" is the
+    question in their head at that moment."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    assert kit.main(["uninstall"]) == 0
+    out, _err = capsys.readouterr()
+    assert "Nothing was installed" in out, f"uninstall never says it:\n{out}"
+    assert str(kit.CHECKOUT) in out, f"the folder is never named:\n{out}"
+    assert "deleting that folder removes all of it" in out
+
+
+def test_the_unverified_branch_does_not_tell_you_to_delete_the_record(
+    tmp_path, kit_home, capsys, monkeypatch
+):
+    """The same fact, and the opposite advice. On the unverified path
+    `state.json` is deliberately KEPT as the only record of the original entry,
+    so "delete the folder and you are done" would talk someone into destroying
+    their recovery record one line under a warning that the restore did not
+    match. Nothing-was-installed is still true and still said; what changes is
+    the instruction."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    monkeypatch.setattr(kit, "restored_matches_on_disk", lambda *_a, **_k: False)
+    assert kit.main(["uninstall"]) == 0
+    out, _err = capsys.readouterr()
+    assert "Nothing was installed" in out
+    assert str(kit.CHECKOUT) in out
+    assert "deleting that folder removes all of it" not in out, (
+        f"it invited deletion of the kept record:\n{out}"
+    )
+    assert "Not yet" in out
+    # Scoped to the note's OWN text. Asserting the path against the whole
+    # output passes on the WARNING line printed further up, which names
+    # `state.json` too — so a note that stopped interpolating it stayed green.
+    note = kit.checkout_note(verified=False)
+    assert note in out
+    assert str(kit.STATE_PATH) in note, f"the note does not name the record it protects:\n{note}"
+    assert (kit_home / "state.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # The email ending (plan of record 2026-08-31).
 #

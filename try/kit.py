@@ -1648,6 +1648,38 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     return 0
 
 
+def checkout_note(verified: bool) -> str:
+    """The last thing `uninstall` says, and the question the person running it
+    actually has: how do I get this off my machine.
+
+    Built here rather than as a module constant because it interpolates
+    ``STATE_PATH``, which the tests monkeypatch — a module-level f-string would
+    freeze the real path into both branches at import.
+
+    The two branches are not phrasings of one sentence. On the verified path the
+    checkout is disposable and saying so finishes the job. On the unverified one
+    ``state.json`` was deliberately KEPT as the only record of the original
+    entry, so "delete the folder and you are done" would talk someone into
+    destroying their own recovery record one line under a warning that the
+    restore did not match.
+    """
+    if verified:
+        return (
+            f"Nothing was installed. Everything this kit put on your machine is inside\n"
+            f"  {CHECKOUT}\n"
+            "and deleting that folder removes all of it, including the files listed above\n"
+            "and the kit itself. There is no package to uninstall, no service to stop and\n"
+            "no account to close."
+        )
+    return (
+        f"Nothing was installed — everything this kit put on your machine is inside\n"
+        f"  {CHECKOUT}\n"
+        "so removing it is deleting that folder. Not yet, though: the restore above did\n"
+        f"not verify, and {STATE_PATH} is the only record of what your entry\n"
+        "said before setup. Settle the config first, then delete the folder."
+    )
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
     if not STATE_PATH.exists():
         raise Refuse(
@@ -1697,6 +1729,8 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     if left:
         print("\nDeliberately left in place, for you to read or delete:")
         print("\n".join(left))
+    print()
+    print(checkout_note(verified))
     return 0
 
 
