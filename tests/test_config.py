@@ -167,14 +167,17 @@ def test_from_env_tenant_type_rejects_unknown_values(
         Config.from_env()
 
 
-def test_from_env_proactive_defaults_to_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ported at TODAY's behaviour, deliberately. The SDK defaults its own
-    `proactive_mode` to `off`, but the SDK wraps a server its vendor owns —
-    the proxy fronts servers its operator does not, so a default that changed
-    capture on the next restart would make upgrading a decision."""
+def test_from_env_proactive_defaults_to_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shipped `on` on 2026-09-01 and flipped to `off` the same day, on the
+    evidence of the D7 verification run — the pre-call request does not add
+    intent, it moves it out of the per-call record (`expected_result` went
+    3/3 to 0/5 when the paragraph rendered, while `user_goal` held at 8/8
+    because the schema advertises it). It also costs 277 chars against a cap
+    the proxy appends into, and an approval prompt inside the work window.
+    Now matches the SDK's default as well as its legs."""
     _scrub_baton_env(monkeypatch)
     _set_required_env(monkeypatch)
-    assert Config.from_env().proactive_mode == "on"
+    assert Config.from_env().proactive_mode == "off"
 
 
 def test_from_env_proactive_off_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -194,32 +197,39 @@ def test_from_env_proactive_rejects_unknown_values(monkeypatch: pytest.MonkeyPat
         Config.from_env()
 
 
-def test_both_intent_channels_off_is_refused_at_startup(
+def test_intent_param_off_is_ignored_with_a_warning_and_the_proxy_starts(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Ported from baton-sdk's `_config.py` guard. The injected params are the
-    intent channel and the annotation tool is the friction channel; with both
-    off the proxy is a passthrough emitting tool calls with no reason attached.
-    That is capture switched off, not a quiet configuration, so it fails at
-    startup rather than running empty for a week."""
+    """2026-09-01: the injected params always ride. They are the intent
+    channel, they are stripped before the call is forwarded, and the way to
+    stop them is to stop wrapping the server.
+
+    Ignored with a warning rather than rejected, and the reason is who sets it.
+    `try/SECURITY.md` documented `BATON_INTENT_PARAM=off` as the way to disable
+    injection, so the people most likely to have it set are security reviewers
+    following our own page. Raising would mean their MCP server stops starting
+    because they did exactly what we told them to — we would have bricked a
+    server we do not own, from our own security document."""
     _scrub_baton_env(monkeypatch)
     _set_required_env(monkeypatch)
     monkeypatch.setenv("BATON_INTENT_PARAM", "off")
-    monkeypatch.setenv("BATON_PROACTIVE", "off")
-    with pytest.raises(ValueError, match="captures no intent at all"):
+    with caplog.at_level("WARNING", logger="baton_proxy"):
+        cfg = Config.from_env()
+    assert cfg.intent_param_mode == "required"
+    # The warning has to say the thing a reviewer actually needs: their server
+    # is unaffected, and here is the real way to turn it off.
+    assert "no longer supported" in caplog.text
+    assert "stripped from every call" in caplog.text
+    assert "remove the proxy from the server's config entry" in caplog.text
+
+
+def test_a_value_that_was_never_valid_still_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The control for the coercion above. Softening `off` must not soften the
+    check — a typo has to keep failing loudly, or an operator who wrote
+    `requird` silently gets the default and never learns."""
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("BATON_INTENT_PARAM", "requird")
+    with pytest.raises(ValueError, match="BATON_INTENT_PARAM"):
         Config.from_env()
-
-
-def test_either_channel_alone_is_a_valid_install(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The control for the guard above — it must refuse BOTH being off, not
-    either. `intent_param=off` with proactive on is the pre-injection shape and
-    still a real deployment; the reverse is the one D7 is steering toward."""
-    _scrub_baton_env(monkeypatch)
-    _set_required_env(monkeypatch)
-    monkeypatch.setenv("BATON_INTENT_PARAM", "off")
-    monkeypatch.setenv("BATON_PROACTIVE", "on")
-    assert Config.from_env().intent_param_mode == "off"
-
-    monkeypatch.setenv("BATON_INTENT_PARAM", "required")
-    monkeypatch.setenv("BATON_PROACTIVE", "off")
-    assert Config.from_env().proactive_mode == "off"

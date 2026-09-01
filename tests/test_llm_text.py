@@ -142,14 +142,16 @@ def test_turning_proactive_off_is_what_buys_the_truncation_headroom() -> None:
     assert len(on) <= _INSTRUCTIONS_LENGTH_CAP
 
 
-def test_the_default_is_todays_behaviour() -> None:
-    """The proxy defaults `on` where the SDK defaults `off`, and the asymmetry
-    is the point: the SDK wraps a server its vendor owns, the proxy fronts
-    servers its operator does not, so a default that changed live capture on
-    the next restart would make upgrading a decision."""
+def test_the_default_renders_no_pre_call_request() -> None:
+    """Both producers now default `off`, so the proxy and the SDK agree on the
+    legs AND on the default. Flipped 2026-09-01 on the verification run: the
+    paragraph did not add intent, it moved `expected_result` out of the
+    per-call record (3/3 to 0/5) while `user_goal` held at 8/8 on the strength
+    of the schema advertisement alone."""
     from baton_proxy.config import DEFAULT_PROACTIVE_MODE
 
-    assert DEFAULT_PROACTIVE_MODE == "on"
+    assert DEFAULT_PROACTIVE_MODE == "off"
+    assert "BEFORE" not in build_instructions_suffix("baton_annotate")
     assert build_instructions_suffix("baton_annotate") == build_instructions_suffix(
         "baton_annotate", DEFAULT_PROACTIVE_MODE
     )
@@ -240,7 +242,12 @@ def test_description_does_not_duplicate_triggers() -> None:
     too late to drive 'should I call this at all'. Don't duplicate the
     behavioral framing; it's just per-call context overhead."""
     description = build_annotation_tool_description()
-    # The description shouldn't carry the BEFORE/AFTER/IF triggers.
+    # The description shouldn't carry the instructions' MUST framing. Checked
+    # against the PROACTIVE description: the reactive-only one (the default
+    # since 2026-09-01) says "call this AFTER a call returns…" in its own lead,
+    # which is the tool telling the agent when it applies rather than a
+    # duplicated trigger — so the bare-word check would fire on the fix.
+    description = build_annotation_tool_description("on")
     assert "BEFORE" not in description
     assert "AFTER" not in description
     # It also shouldn't restate the MUST-call conditions.

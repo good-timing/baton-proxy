@@ -205,7 +205,7 @@ SIGNAL_TYPES: tuple[str, ...] = (
 )
 
 
-def build_instructions_suffix(annotation_tool_name: str, proactive_mode: str = "on") -> str:
+def build_instructions_suffix(annotation_tool_name: str, proactive_mode: str = "off") -> str:
     """Build the proxy's instructions suffix.
 
     ``proactive_mode="off"`` reframes the head and drops the pre-call
@@ -236,7 +236,7 @@ def build_instructions_suffix(annotation_tool_name: str, proactive_mode: str = "
     return rendered
 
 
-def build_annotation_tool_description(proactive_mode: str = "on") -> str:
+def build_annotation_tool_description(proactive_mode: str = "off") -> str:
     """Build the annotation tool's ``description`` field.
 
     ``proactive_mode="off"`` swaps the lead for the reactive-only one; the

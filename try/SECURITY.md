@@ -254,19 +254,30 @@ your server.
 **Three parameters grafted onto every upstream tool's schema** — `user_goal`,
 `expected_result` and `overall_task` (`proxy.py`, `_inject_goal_params`). They
 are popped from the arguments before the call is forwarded, so **your server
-receives exactly the arguments it would have received unwrapped**. Set
-`BATON_INTENT_PARAM=off` to disable the injection entirely.
+receives exactly the arguments it would have received unwrapped**.
+
+**There is no switch that turns this off, and we would rather say so than
+pretend.** An earlier version of this page offered `BATON_INTENT_PARAM=off`;
+that value is now ignored, with a warning, because the parameters are the only
+reason the wrap exists — a proxy that records what happened with no record of
+why is a passthrough that costs you a process. What makes that acceptable to
+state plainly is the sentence above it: the parameters never reach your server.
+They are added to the schema your agent reads, filled in by your agent, and
+removed before the call is forwarded. **The off switch is the wrap itself** —
+`python3 kit.py uninstall` puts your original entry back, and §7 lists
+everything it leaves behind.
 
 `user_goal` is listed in each tool's `required` array, and you will see it
-there. **Nothing enforces it**, and the distinction is the point: the proxy
+there. (`BATON_INTENT_PARAM=optional` drops it from that array if you would
+rather it not appear — that is a change to how the parameter is *advertised*,
+not a way to stop it being injected.) **Nothing enforces it**, and the distinction is the point: the proxy
 appends the name to the advertised list and validates nothing, so a call that
 omits `user_goal` is forwarded to your server exactly as it would have been
 unwrapped — the parameter is stripped either way and your server never learns
 whether it was present. It is an advertisement to the model, not a gate on your
 traffic; a wrapper that refused your calls to collect a telemetry string would
 be changing how your server behaves, which is the thing this document promises
-it does not do. `BATON_INTENT_PARAM=optional` drops it from the advertised list
-if you would rather it not appear at all.
+it does not do.
 
 The one exception, stated because it is a real edge: if a call arrives before the
 proxy has seen a `tools/list` in that process, it has no record of whether the

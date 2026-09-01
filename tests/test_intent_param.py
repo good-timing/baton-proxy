@@ -32,7 +32,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 import fixture_http_server  # noqa: E402
 
-from baton_proxy.config import Config
+from baton_proxy.config import (
+    _INTENT_PARAM_MODES,
+    DEFAULT_INTENT_PARAM_MODE,
+    DEFAULT_PROACTIVE_MODE,
+    Config,
+)
 from baton_proxy.proxy import (
     EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
@@ -162,9 +167,15 @@ class _FakeEmitter:
         self.calls.append(("tool_call_start", kwargs))
 
 
-def _processor(mode: str = "optional") -> tuple[MessageProcessor, _FakeEmitter]:
+def _processor(
+    mode: str = "optional", proactive: str = DEFAULT_PROACTIVE_MODE
+) -> tuple[MessageProcessor, _FakeEmitter]:
+    """``proactive`` defaults to the shipped default so most tests exercise what
+    an operator actually runs. Tests that drive an AGENT-authored pre-call
+    annotation must ask for ``"on"`` — under ``off`` the handler refuses it,
+    which is the mode's whole point."""
     emitter = _FakeEmitter()
-    injection = _Injection.create(None, intent_param_mode=mode)
+    injection = _Injection.create(None, intent_param_mode=mode, proactive_mode=proactive)
     return MessageProcessor(emitter, injection, "test-session"), emitter  # type: ignore[arg-type]
 
 
@@ -302,7 +313,7 @@ def test_only_first_param_intent_becomes_annotation() -> None:
 
 
 def test_real_annotate_proactive_suppresses_param_annotation() -> None:
-    proc, emitter = _processor()
+    proc, emitter = _processor(proactive="on")
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
 
     # A real proactive via the injected annotate tool claims the slot...
@@ -413,7 +424,7 @@ def test_required_is_advertised_and_never_enforced() -> None:
     assert emitter.calls[0][1]["call_intent"] is None
 
 
-@pytest.mark.parametrize("mode", ["optional", "required", "off"])
+@pytest.mark.parametrize("mode", ["optional", "required"])
 def test_config_accepts_valid_modes(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
     monkeypatch.setenv("BATON_VENDOR_ID", "v")
     monkeypatch.setenv("BATON_INTENT_PARAM", mode)
@@ -659,15 +670,30 @@ def test_intent_param_e2e_required_mode() -> None:
     assert tools["baton_annotate"]["inputSchema"]["required"] == ["user_goal"]
 
 
-def test_intent_param_e2e_off_mode() -> None:
-    by_id, events = _run_stdio({"BATON_INTENT_PARAM": "off"})
-    tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
-    assert USER_GOAL_PARAM_NAME not in tools["echo"]["inputSchema"]["properties"]
-    assert EXPECTED_RESULT_PARAM_NAME not in tools["echo"]["inputSchema"]["properties"]
-    # Params forwarded untouched -> upstream reports them among its keys.
-    expected_keys = ",".join(sorted([EXPECTED_RESULT_PARAM_NAME, "text", USER_GOAL_PARAM_NAME]))
-    assert by_id[3]["result"]["content"][0]["text"] == f"keys: {expected_keys}"
-    assert not [e for e in events if e["event_type"] == "annotation"]
+def test_intent_param_off_is_retired_and_cannot_stop_the_injection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-01: the params ALWAYS ride. They are the intent channel, and they
+    are stripped before the call is forwarded, so the vendor's server cannot
+    tell either way — the way to stop the injection is to stop wrapping.
+
+    Coerced with a warning rather than refused, on purpose. `off` was
+    DOCUMENTED in `try/SECURITY.md` as the way to disable injection, so the
+    people most likely to set it are reviewers following an older copy of our
+    own security page; raising would stop their MCP server from starting
+    because they did what we told them to."""
+
+    monkeypatch.setenv("BATON_VENDOR_ID", "v")
+    monkeypatch.setenv("BATON_INTENT_PARAM", "off")
+    with pytest.raises(ValueError):
+        # The control: a value that was never valid still raises, so the
+        # coercion below is a retirement and not a general softening.
+        monkeypatch.setenv("BATON_INTENT_PARAM", "nope")
+        Config.from_env()
+    monkeypatch.setenv("BATON_INTENT_PARAM", "off")
+    cfg = Config.from_env()
+    assert cfg.intent_param_mode == DEFAULT_INTENT_PARAM_MODE
+    assert "off" not in _INTENT_PARAM_MODES
 
 
 def test_expectation_rides_every_start_not_just_the_first() -> None:
@@ -739,7 +765,7 @@ def test_the_agent_facing_task_label_lands_on_the_wire_key() -> None:
     quietly, because a missing task label reads downstream as "this agent never
     supplied one" rather than as an error.
     """
-    proc, emitter = _processor()
+    proc, emitter = _processor(proactive="on")
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
 
     proc.handle_client_message(
@@ -765,7 +791,7 @@ def test_the_retired_param_name_is_not_still_accepted() -> None:
     leave two spellings live with only one of them documented, which is how the
     next reader concludes the rename never happened.
     """
-    proc, emitter = _processor()
+    proc, emitter = _processor(proactive="on")
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
 
     proc.handle_client_message(
@@ -870,7 +896,7 @@ def test_the_annotation_goal_and_expectation_land_on_their_wire_keys() -> None:
     they share a seam — the three `args.get` calls sit on consecutive lines,
     and a careless edit takes them together.
     """
-    proc, emitter = _processor()
+    proc, emitter = _processor(proactive="on")
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
 
     proc.handle_client_message(
@@ -898,7 +924,7 @@ def test_a_real_proactive_still_claims_the_sessions_turn_opener() -> None:
     every consumer counting turn openers double-counts, and the proactive that
     is supposed to be the agent's own is joined by one Baton invented.
     """
-    proc, emitter = _processor()
+    proc, emitter = _processor(proactive="on")
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
 
     proc.handle_client_message(_call("baton_annotate", {"user_goal": "the goal"}, msg_id=9))
@@ -967,13 +993,14 @@ def test_proactive_off_still_takes_the_friction_report() -> None:
     assert emitter.calls[0][1]["signal_type"] == "feature_gap"
 
 
-def test_proactive_on_is_todays_behaviour_and_is_the_default() -> None:
-    """Shipped at today's behaviour on purpose: the proxy fronts servers its
-    operator does not own, so a default that changed live capture on the next
-    restart would be a decision taken by upgrading."""
+def test_proactive_on_accepts_the_agents_pre_call_annotation() -> None:
+    """`on` is no longer the default (flipped 2026-09-01 after the verification
+    run) but it is still a supported mode, and it is the one an operator picks
+    to keep proactive turn boundaries until the `call_workflow` correlator
+    lands."""
     from baton_proxy.config import DEFAULT_PROACTIVE_MODE
 
-    assert DEFAULT_PROACTIVE_MODE == "on"
+    assert DEFAULT_PROACTIVE_MODE == "off"
     proc, emitter = _proactive_processor("on")
     action = proc.handle_client_message(_annotate({"user_goal": INTENT_TEXT}))
     assert action.respond is not None

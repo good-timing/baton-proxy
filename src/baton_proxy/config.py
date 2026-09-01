@@ -20,6 +20,7 @@ placeholder-tagged events must never leak to a remote collector.
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from dataclasses import dataclass
@@ -45,8 +46,10 @@ _TENANT_TYPES: frozenset[str] = frozenset({"vendor", "customer"})
 # mode. ``optional`` injects `user_goal`/`expected_result` as optional params
 # on every upstream tool; ``required`` (default since 2026-09-01) additionally
 # marks `user_goal` required in the schema (`expected_result` and
-# ``overall_task`` stay optional even then); ``off`` disables injection
-# entirely. Clients fill the params even when optional (Desktop, verified
+# ``overall_task`` stay optional even then). **There is no ``off``** — the
+# params ALWAYS ride (2026-09-01): they are the intent channel, they are
+# stripped before the call is forwarded, and the way to stop them is to stop
+# wrapping the server. Clients fill the params even when optional (Desktop, verified
 # 2026-07-07), while ignoring initialize-instructions — so param injection is
 # the reliable intent channel and instructions remain a best-effort extra.
 #
@@ -65,7 +68,10 @@ _TENANT_TYPES: frozenset[str] = frozenset({"vendor", "customer"})
 # call. The number it should move is 89% — 1,465 of 1,644 real customer calls
 # carried `user_goal` under ``optional`` (workfront, proxy 0.5.2, Aug 11-14).
 DEFAULT_INTENT_PARAM_MODE = "required"
-_INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
+# ``off`` is NOT here. It was accepted until 2026-09-01 and is now coerced away
+# in ``from_env`` with a warning rather than rejected — see there for why the
+# retirement is not allowed to stop a wrapped server from starting.
+_INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required"})
 
 # Valid values for BATON_PROACTIVE — whether the agent may FILE its own
 # pre-call annotation. Ported from baton-sdk's ``VendorConfig.proactive_mode``
@@ -81,20 +87,52 @@ _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
 # taught the agent that intent was the tool's job. So here the knob governs
 # only the two remaining legs:
 #
-#   on  (default, today's behaviour) — the annotation tool is described as
-#       proactive-and-reactive, and the handler accepts an annotation with no
-#       signal_type.
-#   off — the tool is described as reactive-only, and the handler REFUSES an
-#       annotation with no signal_type, the way the SDK does. Refusing here
-#       rather than requiring signal_type in the schema keeps the agent from
-#       fabricating a `failure` to get the call through, which would corrupt
-#       the one signal worth protecting.
+#   on  — the instructions ask for a pre-call annotation, the tool is described
+#       as proactive-and-reactive, and the handler accepts an annotation with
+#       no signal_type.
+#   off (default since 2026-09-01) — no pre-call request, the tool is described
+#       as reactive-only, and the handler REFUSES an annotation with no
+#       signal_type, the way the SDK does. Refusing there rather than requiring
+#       signal_type in the schema keeps the agent from fabricating a `failure`
+#       to get the call through, which would corrupt the one signal worth
+#       protecting.
 #
-# What the knob never touches: the tool itself (suppressing it also lost the
-# reactive `feature_gap`, the product signal), and the proxy's OWN synthesised
+# REACTIVE IS UNCONDITIONAL. The AFTER/IF clauses are byte-identical in both
+# modes, the tool is always registered, and an annotation carrying a
+# signal_type is always accepted. `off` costs the agent's pre-call narration
+# and nothing else — suppressing the tool itself also lost the reactive
+# `feature_gap`, which is the product.
+#
+# What the knob never touches: the tool itself, and the proxy's OWN synthesised
 # proactive built from the first call's injected params — that one is ours, not
 # the agent's, and it is what keeps one turn-opener per session in both modes.
-DEFAULT_PROACTIVE_MODE = "on"
+#
+# WHY THE DEFAULT IS `off` (2026-09-01, after the D7 verification run — it
+# shipped `on` earlier the same day and flipped on evidence):
+#
+#   1. The pre-call request COSTS the optional params. Measured live: with the
+#      paragraph rendered the agent stated its expectation once in the
+#      annotation and then omitted `expected_result` from all 5 calls; without
+#      it, 3/3 calls carried it. `user_goal` held at 8/8 either way because the
+#      schema advertises it as required. So the paragraph does not add intent,
+#      it moves it out of the per-call record.
+#   2. It costs 277 of 1,236 chars against Claude Code's ~2,087 cap on a field
+#      the proxy APPENDS to — on a 100-tool enterprise server (workfront
+#      rendered 4,408) our framing is what gets silently cut.
+#   3. It costs an approval INSIDE the work window. The first human-led try-kit
+#      run hit a permission prompt for `baton_annotate` mid-task, in the one
+#      session where nothing mentions Baton; one denial and the whole intent
+#      layer looked empty. Under `off` the tool is only reached on friction.
+#   4. It did not buy friction: across three real sessions with the paragraph
+#      rendered, every annotation was pre-call and ZERO friction signals were
+#      filed.
+#
+# The cost, and it is real: agent-authored proactives supply ~54% of turn
+# boundaries (SPEC §11.5 tier 2), so sessions collapse toward one turn until a
+# correlator keys on `call_workflow` instead. That field is now present on
+# 8 of 8 real calls, so the replacement signal is flowing before the boundary
+# it replaces is removed.
+DEFAULT_PROACTIVE_MODE = "off"
 _PROACTIVE_MODES: frozenset[str] = frozenset({"on", "off"})
 
 
@@ -187,6 +225,30 @@ class Config:
                 f"BATON_TENANT_TYPE must be one of {sorted(_TENANT_TYPES)}; got {tenant_type!r}."
             )
         intent_param_mode = _env("BATON_INTENT_PARAM") or DEFAULT_INTENT_PARAM_MODE
+        if intent_param_mode == "off":
+            # RETIRED 2026-09-01. The injected params are the intent channel,
+            # they are the whole point of a wrap, and they are stripped before
+            # the call is forwarded — so a deployment that turns them off is a
+            # passthrough that records what happened with no record of why.
+            # There is no longer a way to switch them off from the environment;
+            # the way to stop the injection is to stop wrapping the server.
+            #
+            # Coerced rather than refused, deliberately, and for the same reason
+            # the both-channels case warns instead of raising: this value used to
+            # be documented in `try/SECURITY.md`, so the people most likely to
+            # set it are reviewers following an older copy of our own security
+            # page. Raising would mean their MCP server stops starting because
+            # they did what we told them to. Nothing is hidden — the params
+            # never reach their server either way, and the warning says so.
+            logging.getLogger("baton_proxy").warning(
+                "baton-proxy: BATON_INTENT_PARAM='off' is no longer supported and has "
+                "been ignored; the intent params are injected as %r. They are stripped "
+                "from every call before it is forwarded, so your server still receives "
+                "exactly the arguments it would receive unwrapped. To stop the "
+                "injection entirely, remove the proxy from the server's config entry.",
+                DEFAULT_INTENT_PARAM_MODE,
+            )
+            intent_param_mode = DEFAULT_INTENT_PARAM_MODE
         if intent_param_mode not in _INTENT_PARAM_MODES:
             raise ValueError(
                 f"BATON_INTENT_PARAM must be one of {sorted(_INTENT_PARAM_MODES)}; "
@@ -197,19 +259,6 @@ class Config:
             raise ValueError(
                 f"BATON_PROACTIVE must be one of {sorted(_PROACTIVE_MODES)}; "
                 f"got {proactive_mode!r}."
-            )
-        # Ported from baton-sdk's ``_config.py`` guard. Both channels off is
-        # not a quiet configuration, it is capture switched off: the params are
-        # the intent channel and the annotation tool is the friction channel,
-        # and a proxy with neither is a passthrough that emits tool calls with
-        # no reason attached. Refuse at startup rather than run empty.
-        if intent_param_mode == "off" and proactive_mode == "off":
-            raise ValueError(
-                "BATON_INTENT_PARAM='off' with BATON_PROACTIVE='off' captures no "
-                "intent at all — the injected params are the intent channel and "
-                "the annotation tool is the friction channel. Set one of them: "
-                "BATON_INTENT_PARAM=optional|required (per-call intent, no extra "
-                "turn) or BATON_PROACTIVE=on (agent-filed pre-call annotations)."
             )
         hmac_key = _env("BATON_USER_ID_HMAC_KEY")
         return cls(

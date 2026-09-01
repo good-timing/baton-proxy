@@ -61,6 +61,13 @@ REQUESTS: list[dict[str, Any]] = [
         "params": {
             "name": "baton_annotate",
             "arguments": {
+                # `signal_type` present on purpose: this request exists to prove
+                # the BRIDGE answers a proxy-owned tool without forwarding it,
+                # and under the 2026-09-01 default (`proactive_mode="off"`) a
+                # pre-call annotation is refused by the handler. A refusal is
+                # still a well-formed response, so the transport check would
+                # pass either way — but it would stop testing what it names.
+                "signal_type": "failure",
                 "intent": "Read a resource to verify the HTTP bridge captures resource lifecycle events",
                 "expected_outcome": "Resource content returned; proxy emits resource_read_start + resource_read_end",
                 "workflow": "HTTP bridge A1 validation",

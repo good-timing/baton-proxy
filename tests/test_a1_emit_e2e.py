@@ -158,6 +158,12 @@ def _collect_events() -> list[dict[str, Any]]:
             "PYTHONPATH": str(REPO / "src"),
             "BATON_VENDOR_ID": "github",
             "BATON_EVENT_SINK": "stderr:",
+            # This script drives PRE-CALL annotations (no signal_type), which
+            # the 2026-09-01 default (`off`) refuses at the handler. Set
+            # explicitly rather than tracking the default: the A1 suite exists
+            # to prove the annotation path works end to end over a real
+            # subprocess, and it should say which mode it is proving.
+            "BATON_PROACTIVE": "on",
         }
     )
     proc = subprocess.Popen(

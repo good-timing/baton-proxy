@@ -108,7 +108,7 @@ def _surface_hash(surface: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _build_injected_tool(tool_name: str, proactive_mode: str = "on") -> dict[str, Any]:
+def _build_injected_tool(tool_name: str, proactive_mode: str = "off") -> dict[str, Any]:
     return {
         "name": tool_name,
         "description": build_annotation_tool_description(proactive_mode),
@@ -182,7 +182,7 @@ class _Injection:
     # _Injection directly keep their existing shape. Never governs the proxy's
     # synthesised param proactive — that one is ours, and it fires in both
     # modes.
-    proactive_mode: str = "on"
+    proactive_mode: str = "off"
 
     @property
     def names(self) -> set[str]:
@@ -195,7 +195,7 @@ class _Injection:
         *,
         tenant_type: str = "vendor",
         intent_param_mode: str = "optional",
-        proactive_mode: str = "on",
+        proactive_mode: str = "off",
     ) -> _Injection:
         from baton_proxy.report import find_file_sink_path, should_inject_report_tool
 
