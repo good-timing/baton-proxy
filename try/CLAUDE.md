@@ -143,9 +143,13 @@ work around it.
 
 **2. Say what will happen, before it does.** Briefly, in your own words: one
 entry in their MCP config is replaced so their server runs behind a local proxy;
-their credentials are untouched; everything captured is written to a file in this
-folder and nothing is sent anywhere; it is reversible with one command. Point at
-`SECURITY.md` for anyone who wants the detail. Then ask them to confirm.
+their agent will see two tools it did not have — `baton_annotate` and
+`baton_session_report`, both answered by the proxy and never by their server —
+plus three optional parameters grafted onto their existing tools' schemas, which
+the proxy strips back out before it forwards each call; their credentials are
+untouched; everything captured is written to a file in this folder and nothing is
+sent anywhere; it is reversible with one command. Point at `SECURITY.md` — §3
+lists every addition — for anyone who wants the detail. Then ask them to confirm.
 
 **If it is a remote server, two more sentences belong in that summary, and you
 should not skip them.** First: before the wrap no process of ours runs on their

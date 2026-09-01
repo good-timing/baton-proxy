@@ -4111,3 +4111,92 @@ def test_the_competing_first_check_would_notice_the_lead_it_was_written_for():
     assert _competing_first_offenders(_THE_LEAD_AS_IT_WAS_WRITTEN), (
         "the check would have passed on the prose it exists to catch"
     )
+
+
+# ---------------------------------------------------------------------------
+# TK-FL-2 — the pre-consent summary names the change they will notice
+# (followability run `follow-20260831-163630`, finding 2).
+#
+# Step 2's list covered the config entry, the credentials, the local file and
+# reversibility. It did not cover the two added tools or the three grafted
+# parameters — which is the addition a person is most likely to SEE, since it
+# shows up in their own agent's tool list. Every `a1` run volunteered it anyway,
+# but from `SECURITY.md` §3 rather than from step 2, so an agent that skipped
+# the document gave a strictly worse summary and could not tell.
+#
+# The two claims underneath it are mechanical and pinned as such: the tool names
+# come from `proxy.py`, the parameter count from the injector itself, and the
+# report tool is GATED — it appears only because the kit writes a file sink, so
+# a summary promising it is one config change away from being false.
+# ---------------------------------------------------------------------------
+
+
+def _step_two(text: str) -> str:
+    paras = list(_unwrapped(text))
+    hit = [p for _n, p in paras if "Say what will happen" in p]
+    assert hit, "step 2 is gone or reworded — re-point the marker, do not delete the check"
+    return hit[0]
+
+
+def test_step_2_names_the_addition_the_person_will_actually_see():
+    from baton_proxy.proxy import ANNOTATE_TOOL_NAME, REPORT_TOOL_NAME
+
+    para = _step_two(_claude_md())
+    for name in (ANNOTATE_TOOL_NAME, REPORT_TOOL_NAME):
+        assert f"`{name}`" in para, f"the pre-consent summary never names {name}"
+    assert "three optional parameters" in para, "the grafted parameters are still unmentioned"
+    assert "strips" in para, (
+        "naming the parameters without saying they are removed before the call "
+        "is forwarded leaves the summary worse than silence"
+    )
+    assert "§3" in para, (
+        "the summary is deliberately short of §3's full list — so it has to say "
+        "where the rest is, or the omission reads as the whole story"
+    )
+
+
+def test_step_2_says_it_before_setup_runs():
+    """Disclosure after the config edit is not disclosure. The step numbers are
+    prose; the ordering is the thing that has to hold."""
+    paras = [p for _n, p in _unwrapped(_claude_md())]
+    said_at = next(i for i, p in enumerate(paras) if "Say what will happen" in p)
+    runs = [i for i, p in enumerate(paras) if "**3. Run it.**" in p]
+    assert runs, "the step this is measured against is gone — re-point the marker"
+    assert said_at < runs[0], "the summary comes after the wrap is written"
+
+
+def test_the_tool_names_step_2_promises_are_the_ones_the_proxy_grafts():
+    """A rename in `proxy.py` would leave the doc naming tools that do not
+    exist, in the one paragraph a person reads before approving anything."""
+    from baton_proxy.proxy import ANNOTATE_TOOL_NAME, REPORT_TOOL_NAME
+
+    assert ANNOTATE_TOOL_NAME == "baton_annotate"
+    assert REPORT_TOOL_NAME == "baton_session_report"
+
+
+def test_step_2s_parameter_count_is_the_injectors_own():
+    """The word "three" is a number in a security summary, so it is read off the
+    code that does the grafting rather than copied from `SECURITY.md` §3 — two
+    docs agreeing proves only that they were written together."""
+    tool: dict[str, Any] = {"name": "t", "inputSchema": {"type": "object", "properties": {}}}
+    dispositions = _inject_goal_params(tool, "optional")
+    assert len(dispositions) == 3, (
+        f"the proxy grafts {len(dispositions)} parameters; step 2 and SECURITY.md §3 say three"
+    )
+    assert "required" not in tool["inputSchema"], (
+        "step 2 calls them optional; the default mode now marks one required"
+    )
+
+
+def test_the_report_tool_step_2_promises_is_one_the_kit_actually_gets(tmp_path):
+    """`baton_session_report` is injected only when a file sink is configured
+    (`report.should_inject_report_tool`). The kit writes exactly that and no
+    HTTP sink, which is what opens the gate — so the promise is true because of
+    a line in `kit.py`, not by construction."""
+    from baton_proxy.report import should_inject_report_tool
+
+    sink = kit.file_sink_uri(str(tmp_path / "events.jsonl"))
+    assert should_inject_report_tool(sink), (
+        "step 2 tells the person their agent will see baton_session_report, and "
+        "the kit's own sink no longer causes it to be injected"
+    )
