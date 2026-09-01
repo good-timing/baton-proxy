@@ -86,41 +86,72 @@ def test_instructions_carry_must_required_framing() -> None:
     assert "REQUIRED" in rendered
 
 
-def test_the_instructions_no_longer_ask_for_a_pre_call_annotation() -> None:
-    """D7, 2026-09-01. The BEFORE paragraph asked for user_goal /
-    expected_result / overall_task — the same three fields the injected params
-    already carry on EVERY call — and by naming them here it taught the agent
-    that intent is the annotation tool's job. Measured on 2026-09-01: three
-    real sessions, four annotations, every one BEFORE-style with no
-    signal_type, and zero friction signals filed. The tool spent itself
-    restating what the params had already recorded.
+def test_the_pre_call_request_is_gated_on_proactive_mode() -> None:
+    """The whole of D7's separation, and it is a KNOB rather than a deletion —
+    leg-for-leg the same choice baton-sdk's ``build_server_instructions``
+    makes, so one agent meeting both producers reads one rule.
 
-    Params carry INTENT; this tool carries FRICTION. Not gated on
-    ``proactive_mode`` — the drop is unconditional, which is the one place the
-    proxy deliberately diverges from the SDK, whose ``on`` still renders it.
-    """
-    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate")
-    assert "BEFORE" not in rendered
+    Why the paragraph is worth turning off: it names the same three fields the
+    injected params carry on every call, so it teaches the agent that intent is
+    the annotation tool's job. Measured 2026-09-01 — three real sessions, four
+    annotations, every one pre-call with no signal_type, and zero friction
+    signals filed. Why it is not deleted: agent-authored proactives supply
+    ~54% of turn boundaries, and the proxy fronts servers its operator does not
+    own."""
+    on = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
+    off = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="off")
+
+    assert "BEFORE" in on
+    assert "BEFORE" not in off
     # Named individually: a suffix that still asks for the three fields under
-    # some other heading is the same defect with different spelling.
-    assert "expected_result" not in rendered
-    assert "overall_task" not in rendered
-    # ...and the half that had to survive it. AFTER and IF are the friction
-    # signal, which is the product and has no other carrier.
-    assert "AFTER any tool" in rendered
-    assert "IF a tool response" in rendered
+    # some other heading is the same thing with different spelling.
+    for field in ("expected_result", "overall_task"):
+        assert field in on
+        assert field not in off
+    # The head moves with it — "record what the user is trying to do" is a
+    # promise the reactive-only mode does not keep.
+    assert "record what the user is trying to do" in on
+    assert "report when a tool call on this server goes wrong" in off
 
 
-def test_dropping_the_pre_call_paragraph_bought_real_headroom() -> None:
-    """The reason this is urgent rather than tidy. The proxy APPENDS its suffix
-    to the upstream server's own instructions, and Claude Code truncates the
-    field at ~2,087 chars — workfront's rendered value measured 4,408 on
-    2026-09-01, so on the servers we most want it is OUR framing, at the end,
-    that is silently cut. The paragraph was 260 of 1,236 chars."""
-    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate")
-    assert len(rendered) < 1000, (
-        f"the suffix grew back to {len(rendered)} chars; it was 1,236 before the "
-        "2026-09-01 drop and the whole point was headroom under the ~2,087 cap"
+def test_the_reactive_clauses_are_identical_in_both_modes() -> None:
+    """The half that must never be gated. AFTER and IF are the friction
+    signal — the product — and they have no param analogue, so nothing about
+    the proactive choice may touch them."""
+    on = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
+    off = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="off")
+    for clause in ("AFTER any tool", "IF a tool response", "does NOT replace answering"):
+        assert clause in on and clause in off
+    # And what `off` costs is exactly the paragraph, not a rewrite around it:
+    # the reactive tail is byte-identical.
+    tail = "AFTER any tool"
+    assert on[on.index(tail) :] == off[off.index(tail) :]
+
+
+def test_turning_proactive_off_is_what_buys_the_truncation_headroom() -> None:
+    """The cost side of the knob, and the reason someone would flip it on a
+    large server. The proxy APPENDS its suffix, and Claude Code truncates
+    `instructions` at ~2,087 chars — workfront's rendered value measured 4,408
+    on 2026-09-01 — so on an enterprise server it is our framing, at the end,
+    that is silently cut. `off` takes ~280 chars off the suffix."""
+    on = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
+    off = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="off")
+    assert len(on) - len(off) > 250, (
+        f"the paragraph stopped costing anything: {len(on)} vs {len(off)}"
+    )
+    assert len(on) <= _INSTRUCTIONS_LENGTH_CAP
+
+
+def test_the_default_is_todays_behaviour() -> None:
+    """The proxy defaults `on` where the SDK defaults `off`, and the asymmetry
+    is the point: the SDK wraps a server its vendor owns, the proxy fronts
+    servers its operator does not, so a default that changed live capture on
+    the next restart would make upgrading a decision."""
+    from baton_proxy.config import DEFAULT_PROACTIVE_MODE
+
+    assert DEFAULT_PROACTIVE_MODE == "on"
+    assert build_instructions_suffix("baton_annotate") == build_instructions_suffix(
+        "baton_annotate", DEFAULT_PROACTIVE_MODE
     )
 
 

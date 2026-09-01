@@ -61,31 +61,52 @@ from __future__ import annotations
 #      (the proxy is opaque to the wrapped server's identity), so the
 #      template uses neutral "any tool on this server" phrasing instead
 #      of the SDK's "{vendor_display_name} tool".
-#
-# The BEFORE paragraph was DROPPED 2026-09-01 (D7 in baton-internal
-# `intent_param_injection.md`), in both proactive modes, and this is the one
-# place in the proxy where the two channels were conflated. It asked for
-# user_goal / expected_result / overall_task — the same three fields the
-# injected params already carry on every single call — and by naming them here
-# it taught the agent that intent is the annotation tool's job. Evidence: on
-# 2026-09-01 three real sessions filed four annotations, every one of them
-# BEFORE-style, carrying intent with no signal_type, and filed ZERO friction
-# signals. The tool spent itself restating what the params had already
-# recorded. Now the params carry INTENT and this tool carries FRICTION, which
-# is the artifact with no param analogue.
-#
-# It also bought headroom that is not optional on the servers we most want:
-# 260 chars off a 1,236-char suffix, against Claude Code's ~2,087-char cap on
-# `instructions` — and the proxy APPENDS, so on a large enterprise server
-# (workfront rendered 4,408 chars) it is this framing, at the end, that gets
-# silently cut.
-#
-# What did NOT change: AFTER and IF stay in both modes. They produce the
-# friction signal, they are the product, and they have no other carrier.
-_DEFAULT_SERVER_INSTRUCTIONS_SUFFIX_TEMPLATE = (
+# Two heads and one gated clause, selected by ``proactive_mode`` — a
+# leg-for-leg port of baton-sdk's ``build_server_instructions``. The head
+# differs only in what it promises the tool is for: with proactive on it
+# records intent AND outcomes; with it off the injected params carry intent
+# and the tool is the friction channel alone.
+_HEAD_PROACTIVE = (
     " This server is wrapped in the Baton support-signal proxy. Use "
-    "`{annotation_tool_name}` to record how each tool call went. See that "
-    "tool's description for field-level detail.\n\n"
+    "`{annotation_tool_name}` to record what the user is trying to do "
+    "and how each tool call went. See that tool's description for "
+    "field-level detail.\n\n"
+)
+
+_HEAD_REACTIVE_ONLY = (
+    " This server is wrapped in the Baton support-signal proxy. Use "
+    "`{annotation_tool_name}` to report when a tool call on this server "
+    "goes wrong. See that tool's description for field-level detail.\n\n"
+)
+
+# Rendered only when proactive_mode == "on".
+#
+# WHY IT IS GATED RATHER THAN DELETED. It names the same three fields the
+# injected params already carry on every call, so it teaches the agent that
+# intent is the annotation tool's job — measured 2026-09-01, three real
+# sessions filed four annotations, every one of them a pre-call annotation
+# carrying intent with no `signal_type`, and ZERO friction signals. It also
+# costs 260 of the suffix's chars, which is not free: the proxy APPENDS to the
+# upstream server's own instructions, and Claude Code truncates the field at
+# ~2,087 (workfront's rendered value measured 4,408 on 2026-09-01), so on a
+# large enterprise server it is the tail — our framing — that is silently cut.
+#
+# Both of those are arguments for turning it OFF, not for removing the choice.
+# The proxy fronts servers its operator does not own, and agent-authored
+# proactive annotations supply ~54% of turn boundaries (SPEC §11.5 tier 2), so
+# deleting it outright would take that from every existing wrap on the next
+# restart with nobody choosing it. It is the knob's job, exactly as in the SDK.
+_PROACTIVE_CLAUSE = (
+    "BEFORE invoking any tool on this server, you MUST call "
+    "`{annotation_tool_name}` with user_goal (REQUIRED), expected_result "
+    "(REQUIRED), and overall_task (REQUIRED when the request fits a "
+    "recognizable broader task, e.g., 'morning meeting prep', "
+    "'pre-outreach research').\n\n"
+)
+
+# Always present, in both modes — this is the product signal, and it has no
+# param analogue.
+_REACTIVE_CLAUSES = (
     "AFTER any tool on this server errors, times out, returns an "
     "unhelpful or contradictory result, or the user shows signs of "
     "giving up, you MUST call `{annotation_tool_name}` again with "
@@ -103,14 +124,14 @@ _DEFAULT_SERVER_INSTRUCTIONS_SUFFIX_TEMPLATE = (
 )
 
 
-# The two leads, selected by ``proactive_mode``. Ported from baton-sdk's
-# ``_ANNOTATION_LEAD_PROACTIVE`` / ``_ANNOTATION_LEAD_REACTIVE_ONLY``.
+# The annotation tool's two description leads, selected by the same
+# ``proactive_mode``. Ported from baton-sdk's ``_ANNOTATION_LEAD_PROACTIVE`` /
+# ``_ANNOTATION_LEAD_REACTIVE_ONLY``.
 #
-# `on` is today's behaviour and stays the proxy's default: the tool is for
-# intent AND outcomes. `off` reframes it as the friction channel alone, which
-# is what the handler enforces in that mode — text alone is only a request,
-# and one stray proactive carrying an umbrella `overall_task` label is enough
-# to merge two distinct tasks in any consumer that groups on it.
+# `off` reframes the tool as the friction channel alone, which is also what the
+# handler then enforces — text is only a request, and one stray pre-call
+# annotation carrying an umbrella `overall_task` label is enough to merge two
+# distinct tasks in a consumer that groups on it.
 #
 # `user_goal` stays required in BOTH leads: a friction report still has to say
 # what was being attempted, and by then the params have carried it once
@@ -184,8 +205,15 @@ SIGNAL_TYPES: tuple[str, ...] = (
 )
 
 
-def build_instructions_suffix(annotation_tool_name: str) -> str:
+def build_instructions_suffix(annotation_tool_name: str, proactive_mode: str = "on") -> str:
     """Build the proxy's instructions suffix.
+
+    ``proactive_mode="off"`` reframes the head and drops the pre-call
+    annotation request; the reactive clauses are identical in both modes.
+    Leg-for-leg the same selection baton-sdk's ``build_server_instructions``
+    makes — only the DEFAULT differs, and deliberately: the SDK wraps a server
+    its vendor owns, the proxy fronts servers its operator does not, so the
+    proxy ships at today's behaviour and the operator chooses.
 
     Appended to the upstream server's existing ``instructions`` field
     (rather than replacing it, as the SDK does). Raises ``ValueError`` if
@@ -193,7 +221,9 @@ def build_instructions_suffix(annotation_tool_name: str) -> str:
     annotation-tool name fails loudly at injection time, rather than
     silently producing a string Claude Code would truncate mid-sentence.
     """
-    rendered = _DEFAULT_SERVER_INSTRUCTIONS_SUFFIX_TEMPLATE.format(
+    head = _HEAD_PROACTIVE if proactive_mode == "on" else _HEAD_REACTIVE_ONLY
+    clause = _PROACTIVE_CLAUSE if proactive_mode == "on" else ""
+    rendered = (head + clause + _REACTIVE_CLAUSES).format(
         annotation_tool_name=annotation_tool_name,
     )
     if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:

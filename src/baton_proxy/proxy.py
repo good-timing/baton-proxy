@@ -206,7 +206,7 @@ class _Injection:
             sink_path = find_file_sink_path(event_sink_url)
         return cls(
             tools=tools,
-            instructions_suffix=build_instructions_suffix(ANNOTATE_TOOL_NAME),
+            instructions_suffix=build_instructions_suffix(ANNOTATE_TOOL_NAME, proactive_mode),
             sink_path=sink_path,
             intent_param_mode=intent_param_mode,
             proactive_mode=proactive_mode,

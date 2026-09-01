@@ -1016,16 +1016,16 @@ def test_the_tool_description_changes_with_the_mode_but_the_fields_do_not() -> N
     assert _build_injected_tool("baton_annotate", "off")["inputSchema"]["required"] == ["user_goal"]
 
 
-def test_neither_mode_asks_for_a_pre_call_annotation_in_the_instructions() -> None:
-    """The deliberate divergence from the SDK, pinned where someone porting
-    the next knob will trip over it. D7 drops the BEFORE paragraph
-    unconditionally; the SDK's `proactive_mode="on"` still renders one. So
-    proxy-`on` is NOT SDK-`on`, and the two producers agree on the spelling
-    while differing on one leg of the meaning."""
+def test_the_injection_carries_the_mode_into_the_rendered_suffix() -> None:
+    """The wiring, not the text — `test_llm_text.py` owns what each mode says.
+    What is pinned here is that `_Injection` actually passes the mode through,
+    because a knob that renders correctly and is never handed the value is the
+    silent-no-op shape this repo keeps finding."""
     from baton_proxy._llm_text import build_instructions_suffix
 
-    rendered = build_instructions_suffix("baton_annotate")
-    assert "BEFORE" not in rendered
-    # The suffix is not a function of the mode at all — that is the claim.
-    assert _Injection.create(None, proactive_mode="on").instructions_suffix == rendered
-    assert _Injection.create(None, proactive_mode="off").instructions_suffix == rendered
+    on = _Injection.create(None, proactive_mode="on")
+    off = _Injection.create(None, proactive_mode="off")
+    assert on.instructions_suffix == build_instructions_suffix("baton_annotate", "on")
+    assert off.instructions_suffix == build_instructions_suffix("baton_annotate", "off")
+    assert "BEFORE" in on.instructions_suffix
+    assert "BEFORE" not in off.instructions_suffix
