@@ -1524,7 +1524,6 @@ def test_the_dependency_list_is_still_empty():
 _DOC_PLACEHOLDERS = {
     "<server-name>": "notion",
     "<name>": "notion",
-    "<label>": "trial-doc",
 }
 
 
@@ -3691,3 +3690,220 @@ def test_security_md_says_the_file_can_leave_and_who_makes_it_leave():
     section = doc[doc.index("## 4. What leaves your machine") : doc.index("## 5. What is recorded")]
     assert kit.TEAM_EMAIL in section, "§4 never mentions the address the receipt prints"
     assert "no upload endpoint" in section, "§4 does not say the kit has no way to send it"
+
+
+# ---------------------------------------------------------------------------
+# TK-D-5 — nothing asks them to name a tenant (Dave's run, 2026-08-28, item 8).
+#
+# Setup asked for a `--tenant` label and CLAUDE.md told the agent to offer one.
+# He does not have a tenant. He is running a local, no-account trial where
+# nothing is authenticated and nothing leaves, and being asked to name a tenant
+# invites exactly the thought the kit exists to prevent — "wait, am I signing up
+# for something?" — arriving at the moment we are trying to prove otherwise.
+#
+# The answer was already on hand: he picked a server by name one step earlier,
+# and that name is how he refers to it. So the default is the server's name and
+# the question is gone. Both labels reading the same is fine; neither is
+# authenticated, and `SECURITY.md` §5 already says so.
+#
+# `--tenant` itself survives as an override — `baton-internal/harness/kit_run.sh`
+# and `spikes/http_entry_wrap/run_kit_bridge_e2e.sh` both pass it to tell their
+# runs apart. What is banned is ASKING, not the flag, so the sweep is over the
+# prose and over the documented commands, not over the argparse declaration.
+# ---------------------------------------------------------------------------
+
+# The ASK forms. A document is allowed to say "do not ask them to name a
+# tenant" — that sentence is the fix — so a prohibition is not an offender, and
+# `_A_PROHIBITION` is the honest statement of that hole rather than a silent
+# carve-out ([[feedback_invariant_scoped_to_one_field]]: a guard is scoped too).
+_TENANT_ASK = re.compile(
+    r"(?i)"
+    r"(?:offer|ask\w*|suggest|prompt|invite|request)[^.\n]{0,40}\b(?:tenant|label)\b"
+    r"|what (?:tenant|label)"
+    r"|\b(?:tenant|label)\b[^.\n]{0,30}(?:do you want|would you like|of their choice)"
+)
+
+# Bare `not` is deliberately absent: "it is not offered by default, but you can
+# offer them a tenant label" would exempt itself on it.
+_A_PROHIBITION = re.compile(r"(?i)\b(?:do not|don't|never)\s+(?:ask|offer|suggest|prompt)")
+
+
+def _sentences(para: str) -> list[str]:
+    """A paragraph's sentences, tolerating the bold markers these docs wrap
+    around them (`label.**` ends a sentence as much as `label.` does).
+
+    The unit matters: the exemption below is per SENTENCE, not per paragraph.
+    These docs collapse blank-line-free bullet lists into single paragraphs —
+    one of them is 1,977 characters — so a paragraph-scoped carve-out would
+    blanket everything sharing a paragraph with one prohibition, INCLUDING the
+    step the fix sentence lives in, which is the likeliest place for the ask to
+    be re-added ([[feedback_invariant_scoped_to_one_field]]: the guard is scoped
+    too, and its scope is invisible the moment it passes)."""
+    return [x for x in re.split(r"(?<=[.!?])[*_`)\]]*\s+", para) if x.strip()]
+
+# CLAUDE.md is what tells the agent to ask; kit.py's strings are what the person
+# reads. SECURITY.md is swept too — it describes the entry the wrap writes, and
+# an example there is a claim about what setup does.
+_TENANT_SINKS = ("try/CLAUDE.md", "try/SECURITY.md")
+
+
+def _unwrapped(text: str):
+    """Paragraphs, each rejoined onto one line, with the line it starts at.
+
+    Not cosmetic. These docs are hard-wrapped at ~79 columns, and the ask this
+    sweeps for was FOUR lines long — "Offer a label" on one, "Suggest something
+    like their / company or team name" split across two more. A line-based
+    sweep sees a fragment of an instruction and matches none of it, which is how
+    a guard passes while the thing it names is still on the page.
+    """
+    para: list[str] = []
+    start = 1
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.strip():
+            if not para:
+                start = n
+            para.append(line.strip())
+            continue
+        if para:
+            yield start, " ".join(para)
+            para = []
+    if para:
+        yield start, " ".join(para)
+
+
+def test_no_text_the_trial_shows_asks_them_to_name_a_tenant():
+    offenders = []
+    for rel in _TENANT_SINKS:
+        text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        for n, para in _unwrapped(text):
+            for sentence in _sentences(para):
+                if _TENANT_ASK.search(sentence) and not _A_PROHIBITION.search(sentence):
+                    offenders.append(f"{rel}:{n}: {sentence[:120]}")
+    for n, s in _kit_strings():
+        for sentence in _sentences(s):
+            if (m := _TENANT_ASK.search(sentence)) and not _A_PROHIBITION.search(sentence):
+                offenders.append(f"try/kit.py:{n}: …{m.group(0)}…")
+    assert not offenders, "the kit still asks someone to name a tenant:\n" + "\n".join(offenders)
+
+
+# Verbatim from the prose this removed, plus the phrasings a rewrite would
+# reach for. A regex that matches nothing passes forever
+# ([[feedback_control_condition_must_be_able_to_fail]]).
+_THE_ASK_AS_IT_WAS_WRITTEN = (
+    # The step this removed, verbatim and wrapped exactly as it sat in
+    # CLAUDE.md — so the sweep is graded on the shape it actually has to catch.
+    """**3. Offer a label.** `--tenant` is a plain string that tags the events so the
+file can be told apart from anyone else's later. Suggest something like their
+company or team name. Nothing is authenticated by it; it is a label, and the
+default is a random one if they would rather not.""",
+    "Ask them for a label to tag the events with.",
+    "Suggest a tenant name — their company or team.",
+    "What label do you want on this trial?",
+    "Prompt them for a tenant id before running setup.",
+)
+
+# Sentences the fix is made of, and the vocabulary that has to stay writable:
+# the flag still exists, SECURITY.md still explains what the labels are, and the
+# receipt still prints them.
+_TRUE_TENANT_SENTENCES = (
+    "**Do not ask them to name a tenant or a label.**",
+    "The events are tagged with the server's own name, which they already picked.",
+    "labels         : tenant=notion vendor=notion",
+    "id, type, session id, sequence number, timestamp, and the tenant/vendor labels",
+    "Nothing is authenticated by either label.",
+)
+
+
+@pytest.mark.parametrize("line", _THE_ASK_AS_IT_WAS_WRITTEN)
+def test_the_tenant_sweep_would_notice_the_phrasings_it_was_written_for(line):
+    # Through `_unwrapped` and `_sentences`, because that is how the sweep sees
+    # the page: wrapped lines rejoined, then split at sentence boundaries.
+    para = next(text for _n, text in _unwrapped(line))
+    caught = [
+        x for x in _sentences(para) if _TENANT_ASK.search(x) and not _A_PROHIBITION.search(x)
+    ]
+    assert caught, f"the sweep would have missed {line!r}"
+
+
+@pytest.mark.parametrize("line", _TRUE_TENANT_SENTENCES)
+def test_the_tenant_sweep_leaves_the_true_sentences_alone(line):
+    unmatched = not _TENANT_ASK.search(line)
+    assert unmatched or _A_PROHIBITION.search(line), (
+        f"the sweep rejects its own replacement: {line!r}"
+    )
+
+
+def test_the_prohibition_exempts_its_own_sentence_and_not_its_paragraph():
+    """The carve-out's own limit, pinned. Step 3 states the rule and then
+    explains it, all in one paragraph — so a paragraph-scoped exemption would
+    make the step that says "do not ask" the one place an ask could be added
+    invisibly."""
+    para = (
+        "**Do not ask them to name a tenant or a label.** The events are tagged "
+        "with the server's own name. If they would rather, offer a label of "
+        "their own."
+    )
+    caught = [
+        x for x in _sentences(para) if _TENANT_ASK.search(x) and not _A_PROHIBITION.search(x)
+    ]
+    assert len(caught) == 1, f"expected only the re-added ask, got {caught}"
+    assert "offer a label" in caught[0]
+
+    # And the fix sentence alone stays exempt, or the sweep bans its own remedy.
+    only_the_rule = _sentences("**Do not ask them to name a tenant or a label.**")
+    assert not [
+        x for x in only_the_rule if _TENANT_ASK.search(x) and not _A_PROHIBITION.search(x)
+    ]
+
+
+def test_no_documented_command_passes_the_tenant_flag():
+    """The mechanical half, and the one that cannot be argued with. `--tenant`
+    in a command on the page is an instruction to supply one however the
+    surrounding prose is worded — and it is the form the agent copies."""
+    offenders = [
+        f"{where}: {' '.join(argv)}"
+        for where, argv in _documented_kit_commands()
+        if "--tenant" in argv
+    ]
+    assert not offenders, "a documented command still asks for a tenant:\n" + "\n".join(offenders)
+
+
+def test_setup_with_no_tenant_labels_the_events_with_the_server_name(tmp_path, kit_home, capsys):
+    """The behaviour the removed question was paying for. It used to default to
+    `trial-<random hex>`, which is unattributable on our side and meaningless on
+    theirs — so skipping the question was a real cost, and naming it was the
+    reason to ask. The server name settles both."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    out, _err = capsys.readouterr()
+
+    entry = json.loads(path.read_text())["mcpServers"]["notion"]
+    assert entry["env"]["BATON_TENANT_ID"] == "notion"
+    assert entry["env"]["BATON_VENDOR_ID"] == "notion"
+    assert "trial-" not in out, f"a random trial label is still being minted:\n{out}"
+
+
+def test_security_md_says_the_labels_authenticate_nothing():
+    """The deleted CLAUDE.md step held the ONLY sentence in the shipped kit
+    saying so, and dropping it made the docs quieter in the direction that
+    matters: the config examples now print the customer's own server name as
+    `BATON_TENANT_ID`, which reads more like an identity than `trial-4f2a9c11`
+    did, not less. So the disclosure moves to the document a reviewer reads
+    rather than disappearing with the step that used to carry it."""
+    doc = (KIT_PATH.parent / "SECURITY.md").read_text(encoding="utf-8")
+    section = doc[doc.index("## 5. What is recorded") : doc.index("## 6. What the scrubber")]
+    assert "authenticates anything" in section, (
+        "§5 never says the tenant/vendor labels check nothing — and no other "
+        "shipped file does either since the setup step was removed"
+    )
+
+
+def test_the_tenant_flag_still_works_for_the_rigs_that_pass_it(tmp_path, kit_home, capsys):
+    """`kit_run.sh` and `run_kit_bridge_e2e.sh` pass `--tenant` to tell their own
+    runs apart, and TK-F-8/9 assert every landed event carries it. Removing the
+    question must not remove the override."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t2-kit-run"]) == 0
+    entry = json.loads(path.read_text())["mcpServers"]["notion"]
+    assert entry["env"]["BATON_TENANT_ID"] == "t2-kit-run"
+    assert entry["env"]["BATON_VENDOR_ID"] == "notion", "the override must not move vendor too"

@@ -150,15 +150,13 @@ run `receipt` on the first day: an empty file is how a wrap that cannot
 authenticate gets found in an hour instead of at the end of the trial.
 `SECURITY.md` §2 carries all of this if they want it in writing.
 
-**3. Offer a label.** `--tenant` is a plain string that tags the events so the
-file can be told apart from anyone else's later. Suggest something like their
-company or team name. Nothing is authenticated by it; it is a label, and the
-default is a random one if they would rather not.
+**3. Run it.** `python3 kit.py setup <name>`. It prints the resulting config
+entry — show that to the person rather than summarizing it. **Do not ask them to
+name a tenant or a label.** The events are tagged with the server's own name,
+which they already picked; there is no account here to name, and asking invites
+exactly the "am I signing up for something?" thought the kit exists to prevent.
 
-**4. Run it.** `python3 kit.py setup <name> --tenant <label>`. It prints the
-resulting config entry — show that to the person rather than summarizing it.
-
-**5. Hand them a second terminal, and stay in this one.** The wrap does nothing
+**4. Hand them a second terminal, and stay in this one.** The wrap does nothing
 in the session their client is running right now — a client binds its server set
 at startup — but nothing needs to be closed for it to take effect. The next
 session they start reads the new config. Say both halves, because the first one

@@ -56,7 +56,6 @@ import re
 import shlex
 import shutil
 import urllib.parse
-import uuid
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1405,7 +1404,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
             "  → unwrap it by hand first, or pick a different server."
         )
 
-    tenant = args.tenant or f"trial-{uuid.uuid4().hex[:8]}"
+    # The server's own name, not a question. A stranger running a local,
+    # no-account trial has no tenant and being asked to name one invites the
+    # exact "am I signing up for something?" thought the kit exists to
+    # prevent. They already picked this name; it is how they refer to the
+    # server. Both labels reading the same is fine — nothing authenticates
+    # either. `--tenant` stays as an override for our own rigs.
+    tenant = args.tenant or name
     vendor = args.vendor or name
 
     if not SRC_DIR.is_dir():
@@ -1678,7 +1683,7 @@ def main(argv: list[str] | None = None) -> int:
     p_setup = sub.add_parser("setup", help="wrap one configured MCP server")
     p_setup.add_argument("server", nargs="?", help="name of the server entry to wrap")
     p_setup.add_argument("--config-file", help="config to use instead of searching")
-    p_setup.add_argument("--tenant", help="label for this trial (default: a random trial-XXXX)")
+    p_setup.add_argument("--tenant", help="label for this trial (default: the server's name)")
     p_setup.add_argument("--vendor", help="label for the wrapped server (default: its name)")
     p_setup.set_defaults(fn=cmd_setup)
 

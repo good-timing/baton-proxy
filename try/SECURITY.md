@@ -51,7 +51,7 @@ After:
   "env": {
     "NOTION_TOKEN": "${NOTION_TOKEN}",
     "PYTHONPATH": "/absolute/path/to/baton-proxy/src",
-    "BATON_TENANT_ID": "trial-4f2a9c11",
+    "BATON_TENANT_ID": "notion",
     "BATON_VENDOR_ID": "notion",
     "BATON_EVENT_SINK": "file:///absolute/path/to/baton-proxy/try/events.jsonl"
   }
@@ -101,7 +101,7 @@ After:
   "env": {
     "BATON_UPSTREAM_AUTH_TOKEN": "${ACME_TOKEN}",
     "PYTHONPATH": "/absolute/path/to/baton-proxy/src",
-    "BATON_TENANT_ID": "trial-4f2a9c11",
+    "BATON_TENANT_ID": "acme",
     "BATON_VENDOR_ID": "acme",
     "BATON_EVENT_SINK": "file:///absolute/path/to/baton-proxy/try/events.jsonl"
   }
@@ -351,6 +351,12 @@ the absence of `BATON_API_KEY` in the config entry as sufficient.
 Each event is one JSON line in `try/events.jsonl`. The envelope carries an event
 id, type, session id, sequence number, timestamp, and the tenant/vendor labels
 set in the config entry.
+
+**Neither label authenticates anything.** Both default to the name of the server
+you wrapped, they are written in plain text in the config entry you can read,
+and nothing checks them against anything — in the try configuration there is no
+account, no key and no endpoint for them to be checked against. They exist so a
+file can be told apart from another file later.
 
 Recorded in full:
 
