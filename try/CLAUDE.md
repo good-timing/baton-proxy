@@ -150,6 +150,18 @@ run `receipt` on the first day: an empty file is how a wrap that cannot
 authenticate gets found in an hour instead of at the end of the trial.
 `SECURITY.md` §2 carries all of this if they want it in writing.
 
+**If their server signs them in to something — Notion, Google, a ticketing
+system — say so before you run setup, not after.** A server that holds its own
+sign-in session may treat its first wrapped start as a new one and open a
+browser tab asking them to authorize it again, and the consent screen will name
+a `localhost` port. That port is their own server's, not ours, and the access
+goes where it always went — but a browser window opening unbidden during a
+security review reads as our tool authorizing itself against a third party, and
+by then there is no good moment to explain. You cannot tell from the config
+which servers do this, so ask rather than infer, and if they do not know, say it
+as something that may happen rather than something that will. `SECURITY.md` §2
+carries it in writing.
+
 **3. Run it.** `python3 kit.py setup <name>`. It prints the resulting config
 entry — show that to the person rather than summarizing it. **Do not ask them to
 name a tenant or a label.** The events are tagged with the server's own name,

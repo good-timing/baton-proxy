@@ -3907,3 +3907,95 @@ def test_the_tenant_flag_still_works_for_the_rigs_that_pass_it(tmp_path, kit_hom
     entry = json.loads(path.read_text())["mcpServers"]["notion"]
     assert entry["env"]["BATON_TENANT_ID"] == "t2-kit-run"
     assert entry["env"]["BATON_VENDOR_ID"] == "notion", "the override must not move vendor too"
+
+
+# ---------------------------------------------------------------------------
+# TK-D-6 — the consent screen that is not ours (Dave's run, 2026-08-28, item 8
+# and spec §9).
+#
+# In that run a wrapped server popped a browser tab mid-session reading "Grant
+# localhost:9553 access to Notion". It is legitimate — the server holds its own
+# sign-in session and treated its first wrapped start as a new one — and it is
+# unexplainable at a glance. To someone watching a Baton trial it reads as our
+# tool authorizing itself against a third party, and the timing makes it look
+# like ours even though the server was theirs all along. That ends a security
+# conversation on the spot, with no opportunity to explain afterward.
+#
+# It cannot be detected: a stdio server's own OAuth session is invisible in the
+# config. So the fix is disclosure in both registers — SECURITY.md §2 for the
+# person who reads before approving, CLAUDE.md for the agent who has to say it
+# BEFORE it happens rather than explain it after.
+#
+# And the claim the disclosure rests on is mechanical, so it is pinned as one:
+# the port on that screen belongs to their server, because we never open one.
+# ---------------------------------------------------------------------------
+
+# Constructs that would open a listening port. `socket` is deliberately absent
+# from this list as a bare word — it appears in SECURITY.md §9's own grep
+# command, and matching that would make this test fail on the document that
+# proves it.
+_A_LISTENER = re.compile(
+    r"socket\.socket|\.bind\(|\.listen\(|serve_forever|HTTPServer|socketserver"
+    # `socket.create_server`, `asyncio.start_server`, `loop.create_server` —
+    # none of them contain `socket.socket`, and an OAuth callback helper is
+    # likelier to be written with the asyncio pair than with the raw module.
+    r"|create_server\(|start_server\(|create_unix_server\("
+)
+
+
+def test_nothing_of_ours_opens_a_listening_port():
+    """The load-bearing half of the OAuth disclosure. §2 tells someone the
+    `localhost` port on that consent screen is their own server's and not ours,
+    which is only true while this holds — and it is the kind of claim that goes
+    quietly false the day someone adds a callback helper."""
+    offenders = []
+    for path in sorted((REPO_ROOT / "src").rglob("*.py")) + [KIT_PATH]:
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if m := _A_LISTENER.search(line):
+                offenders.append(f"{path.relative_to(REPO_ROOT)}:{n}: …{m.group(0)}…")
+    assert not offenders, (
+        "SECURITY.md §2 says we open no listening port; this does:\n" + "\n".join(offenders)
+    )
+
+
+def test_the_listener_sweep_can_fail():
+    """[[feedback_control_condition_must_be_able_to_fail]] — the assertion above
+    is an absence, and an absence is what a broken regex also reports."""
+    for line in (
+        "    srv = socketserver.TCPServer(('127.0.0.1', 0), Handler)",
+        "    s.bind(('localhost', 9553))",
+        "    httpd = HTTPServer(addr, CallbackHandler)",
+        "    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+        "    server = await asyncio.start_server(_callback, '127.0.0.1', 0)",
+        "    srv = await loop.create_server(factory, '127.0.0.1', 9553)",
+        "    s = socket.create_server(('127.0.0.1', 0))",
+    ):
+        assert _A_LISTENER.search(line), f"the sweep would have missed {line!r}"
+
+
+def test_security_md_discloses_the_reauthorization_prompt():
+    """§2 is "What changes on your machine", and a browser window opening
+    unbidden is a change on their machine. The document works because it
+    volunteers this class of fact before the reader meets it."""
+    doc = (KIT_PATH.parent / "SECURITY.md").read_text(encoding="utf-8")
+    section = doc[doc.index("## 2. What changes") : doc.index("## 3. What your agent sees")]
+    assert "signs you in to a third party" in section, "§2 never mentions re-authorization"
+    assert "localhost" in section, "§2 does not name what they will actually see"
+    assert "no listening port of its own" in section, (
+        "§2 asserts the port is theirs without saying why it cannot be ours"
+    )
+
+
+def test_claude_md_tells_the_agent_to_say_it_before_setup_runs():
+    """The doc and the terminal are two sinks for one claim. Disclosure that
+    only exists in a document nobody opened does not stop the surprise — and by
+    the time the tab is open there is no good moment to explain it."""
+    md = _claude_md()
+    para = next(
+        text for _n, text in _unwrapped(md) if "signs them in to something" in text
+    )
+    assert "before you run setup" in para, "the warning is not tied to a moment"
+    assert "cannot tell from the config" in para, (
+        "the agent is not told this is undetectable, so it will infer and be wrong"
+    )
+    assert "may happen" in para, "an agent told to predict this will overstate it"

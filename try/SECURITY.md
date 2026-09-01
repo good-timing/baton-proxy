@@ -164,6 +164,21 @@ Notes a reviewer should hold onto:
   now.** An MCP client binds its server set at startup, so a session that is
   already open keeps the server it launched. Nothing needs to be quit: a new
   terminal is enough, because each client process reads the config itself.
+- **A server that signs you in to a third party may ask you to sign in again.**
+  Wrapping changes how your server is launched, and a server holding its own
+  sign-in session can treat the first wrapped start as a new one: a browser tab
+  opens asking you to authorize it. The consent screen names a `localhost` port,
+  which reads like ours and is not — that port is opened by **your** server,
+  running as a child process of the proxy, and the access you grant goes to the
+  same third party it always did. The proxy implements no sign-in flow and opens
+  no listening port of its own — held by
+  `test_nothing_of_ours_opens_a_listening_port`, which sweeps `src/` and `kit.py`
+  for the constructs that open one. §9's greps are not the check here: they are
+  aimed at outbound calls, and a listener is neither shape they match. Seen once
+  in our own testing, where a wrapped server popped a tab reading "Grant
+  localhost:9553 access to Notion" — it is legitimate, it is unexplainable at a
+  glance, and it is the reason this paragraph exists rather than being left for
+  you to discover mid-trial.
 - **The original entry is recorded byte-for-byte before the write**, and the whole
   config file is backed up first. Removal restores it and prints the restored
   entry rather than claiming success — then **re-reads the file and compares every
