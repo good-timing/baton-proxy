@@ -458,6 +458,35 @@ def _build_degraded_response(req: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _refuse_unknown_signal(req: dict[str, Any], value: Any) -> dict[str, Any]:
+    """The response to an annotation whose ``signal_type`` is outside the enum.
+
+    Refused in both modes and never enqueued: nothing downstream validates this
+    field, and `report.py` renders an unrecognised value as a real friction
+    signal, so one invented word becomes a count someone acts on. The message
+    lists the enum rather than suggesting a substitute, because suggesting one
+    is how a made-up signal gets filed.
+    """
+    return {
+        "jsonrpc": "2.0",
+        "id": req.get("id"),
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"signal_type={value!r} is not one of "
+                        f"{', '.join(SIGNAL_TYPES)}. Nothing was recorded. If the call "
+                        "genuinely went wrong, re-send with the closest of those values; "
+                        "if it did not, do not re-send at all."
+                    ),
+                }
+            ],
+            "isError": True,
+        },
+    }
+
+
 def _refuse_proactive(req: dict[str, Any]) -> dict[str, Any]:
     """The response to an agent-filed pre-call annotation under
     ``proactive_mode="off"``.
@@ -466,6 +495,12 @@ def _refuse_proactive(req: dict[str, Any]) -> dict[str, Any]:
     one rule. It is a normal result rather than a JSON-RPC error: an error
     reads as the server being broken and invites a retry loop, while this tells
     the model what to do instead and why it is not needed.
+
+    It used to end "— and set signal_type", which read as a repair instruction:
+    an agent whose narration was refused could satisfy it by re-sending with
+    `other`. That is the exact fabrication the gate exists to prevent, moved one
+    call later rather than removed (found in review, 2026-09-01). It now says
+    the annotation was not needed and names re-sending as the wrong move.
     """
     return {
         "jsonrpc": "2.0",
@@ -478,9 +513,10 @@ def _refuse_proactive(req: dict[str, Any]) -> dict[str, Any]:
                         f"{ANNOTATE_TOOL_NAME} is reactive-only on this server. Call it "
                         "only AFTER a tool call returns an unhelpful, empty, failed or "
                         "contradictory result, or when no tool covers what the user asked "
-                        "for — and set signal_type. What the user is trying to do is "
-                        "already recorded on each tool call, so no pre-call annotation is "
-                        "needed."
+                        "for. What the user is trying to do is already recorded on each "
+                        "tool call, so no pre-call annotation is needed — nothing was "
+                        "lost. Do NOT re-send this call with a signal_type added: that "
+                        "would file a friction report for a call that did not go wrong."
                     ),
                 }
             ],
@@ -750,7 +786,23 @@ class MessageProcessor:
                     # this: it is built below from the first call's injected
                     # params, it is ours rather than the agent's, and it keeps
                     # one turn-opener per session in both modes.
-                    if self._injection.proactive_mode == "off" and args.get("signal_type") is None:
+                    signal_type = args.get("signal_type")
+                    # A value outside the advertised enum is refused in BOTH
+                    # modes. It is not pedantry: `signal_type` IS the friction
+                    # count, nothing downstream validates it
+                    # (`Emitter.enqueue_annotation`), and `report.py` buckets an
+                    # unknown value as a real signal. An agent that invents one
+                    # to satisfy a MUST corrupts the only number here worth
+                    # protecting. Refusing our OWN injected tool is not the
+                    # fail-open question — no vendor call is affected.
+                    if signal_type is not None and signal_type not in SIGNAL_TYPES:
+                        return _ClientAction(respond=_refuse_unknown_signal(req, signal_type))
+                    # `is None` was `not signal_type`'s job until 2026-09-01:
+                    # keyed on None alone, `signal_type: ""` walked through this
+                    # gate and was then recorded as a proactive by the falsy
+                    # check in `_handle_injected_call`. The enum check above now
+                    # takes "" first, so by here the value is None or valid.
+                    if self._injection.proactive_mode == "off" and signal_type is None:
                         return _ClientAction(respond=_refuse_proactive(req))
                     ann_meta = (
                         params.get("_meta") if isinstance(params.get("_meta"), dict) else None

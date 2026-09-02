@@ -971,11 +971,53 @@ def test_proactive_off_refuses_an_agent_filed_pre_call_annotation() -> None:
     assert action.forward is None, "the annotation tool is never forwarded upstream"
     text = action.respond["result"]["content"][0]["text"]
     assert "reactive-only" in text
-    assert "signal_type" in text, "the refusal has to say what would make it valid"
+    # And it must NOT read as a repair instruction. Until 2026-09-01 it ended
+    # "— and set signal_type", so an agent whose narration was refused could
+    # satisfy it by re-sending with `other`: the invented signal this gate
+    # exists to prevent, one call later. The refusal now names re-sending as
+    # the wrong move.
+    assert "and set signal_type" not in text
+    assert "Do NOT re-send" in text
     # NO annotation event. A refused proactive that still emits is the merge
     # hazard the mode exists to remove: one stray umbrella `overall_task` label
     # is enough to fuse two distinct tasks in a consumer that groups on it.
     assert emitter.calls == []
+
+
+def test_proactive_off_refuses_an_empty_signal_type_rather_than_recording_it() -> None:
+    """The gate keyed on `is None` until 2026-09-01, so `signal_type: ""` walked
+    through it — and `_handle_injected_call` then used a FALSY check, so the
+    event was confirmed and counted as a proactive. The mode was bypassable by
+    one empty string, in the one direction it exists to block."""
+    proc, emitter = _proactive_processor("off")
+    action = proc.handle_client_message(_annotate({"user_goal": INTENT_TEXT, "signal_type": ""}))
+
+    assert action.respond is not None
+    assert action.forward is None
+    assert emitter.calls == [], "an empty signal_type must not become an annotation"
+
+
+def test_an_unknown_signal_type_is_refused_in_both_modes() -> None:
+    """`signal_type` IS the friction count. Nothing downstream validates it —
+    `Emitter.enqueue_annotation` takes the string as given and `report.py`
+    renders an unrecognised value as a real signal — so one invented word
+    becomes a number someone acts on.
+
+    Refused in BOTH modes: this is our own injected tool, not the vendor's, so
+    no wrapped call can fail because of it and the fail-open rule is not in
+    play. The refusal lists the enum without proposing a substitute, since
+    proposing one is how a made-up signal gets filed."""
+    for mode in ("off", "on"):
+        proc, emitter = _proactive_processor(mode)
+        action = proc.handle_client_message(
+            _annotate({"user_goal": INTENT_TEXT, "signal_type": "urgent"})
+        )
+        assert action.respond is not None, mode
+        assert action.forward is None, mode
+        text = action.respond["result"]["content"][0]["text"]
+        assert "not one of" in text, mode
+        assert "feature_gap" in text, "the enum has to be named, or the agent guesses again"
+        assert emitter.calls == [], f"{mode}: an invented signal_type must not be recorded"
 
 
 def test_proactive_off_still_takes_the_friction_report() -> None:
