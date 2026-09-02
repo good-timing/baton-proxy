@@ -66,6 +66,26 @@ TRANSIENT_BACKOFFS = (1.0, 2.0, 4.0)
 
 REQUIRED_FIELDS = ("console_url", "api_key", "tenant_id")
 
+# Said at every exit that stops the run, because every one of them leaves the
+# person holding a capture and no way out of this command. It names no address:
+# `TEAM_EMAIL` is pinned across `kit.py`, `CLAUDE.md` and SECURITY.md §4, and a
+# fourth copy here would be a fourth thing to keep in step — `receipt` prints
+# the real one.
+#
+# The sender constraint is not politeness. We resolve the workspace from the
+# address a capture was mailed FROM, and the console de-duplicates on
+# `event_id` globally rather than per workspace — so whatever already uploaded
+# will not be re-added under a second workspace. A forward from someone else
+# therefore splits one trial across two places, and the half that already landed
+# is the half that goes missing.
+EMAIL_FALLBACK = (
+    "  You can still send it by email, which needs nothing from us: run\n"
+    "    python3 kit.py receipt\n"
+    "  for the command and the address. Send it from the address we set your\n"
+    "  workspace up with — we match the workspace to the sender, so a forward\n"
+    "  from anyone else lands it somewhere separate from whatever already went."
+)
+
 
 def open_request(req: urllib.request.Request) -> Any:
     """The kit's only network call, on purpose in a function of its own.
@@ -190,7 +210,8 @@ def post_event(
                     raise Terminal(
                         f"line {lineno}: still rate-limited after {MAX_THROTTLE_RETRIES} "
                         "waits. Nothing is wrong with the file — wait a few minutes and "
-                        "run it again; what already landed will not land twice."
+                        "run it again; what already landed will not land twice.\n\n"
+                        + EMAIL_FALLBACK
                     ) from e
                 # The server always sends Retry-After, whole seconds, floor 1.
                 sleep(float(e.headers.get("Retry-After", 1) or 1))
@@ -203,7 +224,7 @@ def post_event(
                     f"line {lineno}: the console refused this key (HTTP {e.code}). Every "
                     "line would fail the same way. Send us the message you see here and "
                     f"the {CREDENTIALS_NAME} we gave you may need replacing — do not edit "
-                    "it yourself."
+                    "it yourself.\n\n" + EMAIL_FALLBACK
                 ) from e
             if e.code == 413:
                 # Per-event and never fixable by re-sending: this one event's
@@ -288,13 +309,27 @@ def send(
                 continue
             except urllib.error.URLError as e:
                 if delivered == 0:
-                    # Nothing has ever landed, so this is a wrong address or a
-                    # console that is not up — not a blip. Say so now rather
-                    # than after four thousand backoffs.
+                    # Nothing has ever landed after the backoffs, so this is the
+                    # connection and not a blip. Say so now rather than after
+                    # four thousand more.
+                    #
+                    # It does NOT read as a fault in the file we sent. The
+                    # address and the key are checked against the real console
+                    # before the file is handed over, so the one cause left is
+                    # the network in front of them — and in the companies this
+                    # kit is written for, outbound HTTPS to somewhere new being
+                    # blocked is the expected outcome, not a malfunction. Saying
+                    # "the address is wrong, we will send you a new one" would
+                    # send someone back to us for a replacement that changes
+                    # nothing, having just been refused by their own network.
                     raise Terminal(
-                        f"cannot reach {url} ({e.reason}) and nothing has landed yet. "
-                        "Check that you are online; if you are, the address in "
-                        f"{CREDENTIALS_NAME} is wrong and we should send you a new one."
+                        f"cannot reach {url} ({e.reason}) and nothing has landed yet.\n"
+                        "\n"
+                        "  This usually means your network does not allow the connection —\n"
+                        "  common where outbound traffic is controlled, and nothing you can\n"
+                        "  fix from here. The address and key were checked against the\n"
+                        "  console before we sent them, so there is nothing to replace.\n"
+                        "\n" + EMAIL_FALLBACK
                     ) from e
                 failed += 1
                 continue

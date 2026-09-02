@@ -1385,7 +1385,7 @@ EXPECTED_AUDIT_HITS = {
     # argument precisely so this grep can see it — written
     # `opener=urllib.request.urlopen` the call has no paren after the name, and
     # the kit would have gained an egress §9's published check could not find.
-    ("try/upload.py", 80, "urllib.request.urlopen(req)"),
+    ("try/upload.py", 100, "urllib.request.urlopen(req)"),
 }
 
 
@@ -4872,10 +4872,12 @@ class _FakeResponse:
 def _recording_opener(codes=None):
     """An opener that records the bodies it was given and replays `codes`.
 
-    Each entry is either None (a 201) or an int status, raised as the HTTPError
-    urllib would raise. Returns (opener, sent) where `sent` is the list of
-    decoded envelopes — which is how the tenant-rewrite property is checked
-    without a network.
+    Each entry is None (a 201), an int status raised as the HTTPError urllib
+    would raise, or an exception instance raised as-is — the last of those is
+    how the transport faults are driven, since a blocked network arrives as a
+    `URLError` and never as a status. Returns (opener, sent) where `sent` is the
+    list of decoded envelopes — which is how the tenant-rewrite property is
+    checked without a network.
     """
     sent: list[dict] = []
     codes = list(codes or [])
@@ -4883,6 +4885,8 @@ def _recording_opener(codes=None):
     def opener(req):
         sent.append(json.loads(req.data.decode()))
         code = codes.pop(0) if codes else None
+        if isinstance(code, BaseException):
+            raise code
         if code is not None:
             raise urllib.error.HTTPError(req.full_url, code, "no", {"Retry-After": "0"}, None)
         return _FakeResponse()
@@ -4999,6 +5003,81 @@ def test_a_throttled_event_waits_and_then_gives_up_saying_nothing_is_wrong(tmp_p
     assert len(sent) == upload_mod.MAX_THROTTLE_RETRIES + 1
     assert len(slept) == upload_mod.MAX_THROTTLE_RETRIES, "a 429 was not waited on"
     assert "will not land twice" in str(e.value)
+
+
+def test_every_exit_that_stops_the_run_still_leaves_them_a_way_to_send(tmp_path):
+    """Ujwal's call, 2026-09-02: a failed upload falls back to email.
+
+    Each of these exits used to end the conversation — the person is left with a
+    capture, a command that will not work, and no next line. The email path
+    needs nothing from us and works for anyone, so it belongs on every stop.
+
+    Pinned as a set rather than one message at a time: the failure mode is a
+    fourth branch added later that quietly ends without it.
+    """
+    events = tmp_path / "events.jsonl"
+    events.write_text("".join(f'{{"event_id":"e{i}"}}\n' for i in range(3)), encoding="utf-8")
+
+    stops = {}
+    for label, codes in (("401", [401]), ("403", [403])):
+        opener, _ = _recording_opener(codes)
+        with pytest.raises(upload_mod.Terminal) as e:
+            upload_mod.send(events, CREDS, rate=0, emit=lambda *_: None, opener=opener)
+        stops[label] = str(e.value)
+
+    opener, _ = _recording_opener([429] * (upload_mod.MAX_THROTTLE_RETRIES + 1))
+    with pytest.raises(upload_mod.Terminal) as e:
+        upload_mod.send(
+            events, CREDS, rate=0, emit=lambda *_: None, sleep=lambda *_: None, opener=opener
+        )
+    stops["throttled"] = str(e.value)
+
+    opener, _ = _recording_opener([urllib.error.URLError("blocked")] * 8)
+    with pytest.raises(upload_mod.Terminal) as e:
+        upload_mod.send(
+            events, CREDS, rate=0, emit=lambda *_: None, sleep=lambda *_: None, opener=opener
+        )
+    stops["unreachable"] = str(e.value)
+
+    for label, message in stops.items():
+        assert "kit.py receipt" in message, f"the {label} exit offers no way to send"
+        # The sender constraint travels with the offer or the offer is a trap:
+        # the console de-duplicates on `event_id` globally, and we resolve the
+        # workspace from the sending address, so a forward strands whatever
+        # already uploaded in a different workspace.
+        assert "from the address we set your" in message, (
+            f"the {label} exit offers email without saying which mailbox it has to come from"
+        )
+        assert kit.TEAM_EMAIL not in message, (
+            f"the {label} exit hard-codes the address instead of pointing at receipt, "
+            "adding a fourth site to a three-site pin"
+        )
+
+
+def test_a_blocked_network_is_not_reported_as_a_credential_we_got_wrong(tmp_path):
+    """The message this replaces told them the address in `upload.json` was
+    wrong and we should send a new one. In the environments this kit is written
+    for, a blocked outbound connection is the expected outcome — and the file is
+    verified against the real console before it is handed over, so a replacement
+    would change nothing. Sending someone back to us for one, seconds after
+    their own network refused them, is the worst version of this moment.
+    """
+    events = tmp_path / "events.jsonl"
+    events.write_text('{"event_id":"e1"}\n', encoding="utf-8")
+    opener, _ = _recording_opener([urllib.error.URLError("blocked")] * 8)
+    with pytest.raises(upload_mod.Terminal) as e:
+        upload_mod.send(
+            events, CREDS, rate=0, emit=lambda *_: None, sleep=lambda *_: None, opener=opener
+        )
+    message = str(e.value)
+    assert "your network does not allow the connection" in message, (
+        "the blocked-network case stopped naming the cause we actually expect"
+    )
+    assert "nothing to replace" in message, (
+        "the message no longer rules out the credential, so they will ask us for a new one"
+    )
+    for retired in ("is wrong and we should send you a new one", "Check that you are online"):
+        assert retired not in message, f"the misdiagnosis is back: {retired!r}"
 
 
 def test_upload_names_the_key_and_never_prints_it(kit_home, monkeypatch, capsys):
