@@ -106,7 +106,17 @@ them is a fork, and how you ask decides what they are agreeing to.
 **Where your client can show a choice, show one.** In Claude Code that is
 `AskUserQuestion` — the options arrive as things to pick rather than a paragraph
 to answer in prose, and picking is what someone does when they have understood
-the question. Two options is the usual shape and neither is pre-chosen.
+the question. Two options is the usual shape and neither is pre-chosen; the
+ending is the exception and its set is named where it lives, under *Ending it*.
+
+**An option that exists in prose but not in the chooser has not been offered.**
+The twin of the rule above, and the one the second dogfood run broke: the
+receipt printed the `upload` offer, the agent relayed the email path and the
+do-nothing path as options, and upload survived only as text — so the one person
+in the trial who could use it would have had to reject the menu to reach it. A
+list reads as the whole set of things available. Where a section names what the
+options are, offer all of them, including the ones you expect to be false for
+this person; a condition belongs in the option's own words, not in its absence.
 
 **The disclosure stays in prose above the question. The question carries the
 choice, never the fact.** Write the facts out first — in the shape the section
@@ -371,7 +381,24 @@ are in. Not what you expected to be in:
 **Calls landed.** Say what was captured — the numbers, and the file path as an
 aside rather than as a step. Say "captured" because you read the receipt and
 there were calls in it, never optimistically. Then hand over the decision, and
-do not push:
+do not push.
+
+**This fork has three options and they are named here, because leaving the set
+to you is what lost one of them.** *Email it myself* — the `gzip` command and
+the address. *Send it to my Baton workspace* — `upload`, carrying its condition
+in its own words. *Not sending anything.* All three are shown every time, to
+everyone, in whatever your client uses to ask. Reading the file first is not a
+fourth option: it is a deferral, it is advice you give in the prose above, and
+putting it in the list turns a decision into a menu where one entry is "wait".
+
+**Which of the two send paths leads depends on one thing: whether you were
+handed an `upload.json`.** If the person has told you where that file is — or
+the message they pasted named it — they are provisioned, and upload goes first
+because for them it is the shorter road to the same place. If nobody has
+mentioned such a file, email goes first and upload sits below it, still shown
+and still conditional. Knowing the path is not permission to open it, and the
+absence of a mention is not a reason to go looking: no hunting the filesystem
+for a credential, the same rule that took the checkout search out of the paste.
 
 - Suggest they read the file first. It is one JSON object per line and it holds
   real results from their tools.
@@ -385,8 +412,11 @@ do not push:
   offering the command bare is the one way to get this wrong: for most people it
   is false, and a command they cannot run reads as a step they missed. It is the
   same decision as the email either way — their data, their call, their
-  keystroke — and the file is worth reading first. Do not present it as the
-  recommended one; it is shorter, not safer.
+  keystroke — and the file is worth reading first. Where it sits in the list is
+  set by whether they were handed the file, above, and that is the only thing
+  that moves it. Position is not a recommendation and must not be dressed as
+  one: no "easiest", no "just run this". It is shorter, not safer, and someone
+  who reads it as our preference is being told something we did not check.
 - **If they pick upload, ask where the file is — and only where.** It arrives by
   mail, so it is usually still in a downloads folder rather than beside
   `kit.py`. Take the path, put it in the command, and hand them the line to run —

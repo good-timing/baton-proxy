@@ -4701,6 +4701,62 @@ def test_the_remote_addendum_is_bounded_separately_rather_than_squeezed():
         assert fact in doc, f"the remote section lost a fact while being reshaped: {fact!r}"
 
 
+def test_the_ending_fork_names_its_option_set_rather_than_leaving_it_to_the_agent():
+    """The second dogfood run's second finding, and the same failure mode as
+    `fc7bf82` one layer up.
+
+    The receipt printed the `upload` offer to a kit that had one; the agent
+    relayed a three-option chooser of read-it / email-it / send-nothing, and
+    upload survived only as prose. So the one reader the offer was ungated FOR
+    could reach it only by rejecting the menu — a gate removed from the
+    filesystem and put back in the presentation.
+
+    Two things are pinned: the general rule, which is where the next surface
+    will look for it, and this fork's set, because "two options is the usual
+    shape" is what let three options look correct.
+    """
+    doc = _flat(_claude_md())
+    assert "An option that exists in prose but not in the chooser has not been offered" in doc, (
+        "the presentation-layer rule is gone; a chooser can silently drop an option again"
+    )
+    assert "This fork has three options and they are named here" in doc, (
+        "the ending fork went back to leaving its option set to the agent"
+    )
+    assert "Reading the file first is not a fourth option" in doc, (
+        "the deferral is back in the option list, where it competes with two decisions"
+    )
+
+
+def test_upload_leads_only_when_the_person_was_handed_the_file():
+    """Ordering is conditional (Ujwal, 2026-09-02): provisioned → upload first,
+    otherwise email first, both always shown.
+
+    The signal is that someone TOLD the agent where the file is, not a
+    filesystem check — the check is what `fc7bf82` removed, and it failed
+    because the file lands in a downloads folder and never beside `kit.py`.
+    Three things have to survive together or the rule turns into either the old
+    gate or a recommendation: the condition, the ban on hunting for the file,
+    and the fact that position carries no endorsement.
+    """
+    doc = _flat(_claude_md())
+    assert "whether you were handed an `upload.json`" in doc, (
+        "the ordering rule lost the signal it keys on"
+    )
+    assert "not a reason to go looking" in doc, (
+        "nothing now stops the agent hunting the filesystem for a credential"
+    )
+    assert "Position is not a recommendation" in doc, (
+        "ordering upload first now reads as us recommending it"
+    )
+    # The bullet this replaced said "do not present it as the recommended one",
+    # full stop, which directly contradicts an ordering rule that sometimes puts
+    # it first. A contradiction left in place is what §13 cost us on 09-01.
+    assert "Do not present it as the recommended one" not in doc, (
+        "the absolute wording is back and now contradicts the conditional ordering"
+    )
+    assert "shorter, not safer" in doc, "the reason the position means nothing is gone"
+
+
 def test_the_ask_has_to_name_what_it_is_asking_about():
     """The second dogfood run's first finding. The chooser read "Do you want to
     go ahead, or see the detail first?" with the four labelled lines correctly
