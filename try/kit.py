@@ -1816,6 +1816,13 @@ def load_uploader() -> Any:
         raise Refuse(f"{path} is missing or unreadable; re-clone the kit.")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    # The address is defined once, here, and handed over rather than copied.
+    # `upload.py` cannot import it — a module-level import back into `kit.py`
+    # is exactly the import-graph edge the docstring above refuses — and a
+    # second literal would be a fourth site to keep in step with the three
+    # already pinned. So it is injected, and the uploader's own fallback text
+    # is built at call time from whatever it was given.
+    mod.TEAM_EMAIL = TEAM_EMAIL
     return mod
 
 

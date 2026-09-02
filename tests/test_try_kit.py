@@ -1385,7 +1385,7 @@ EXPECTED_AUDIT_HITS = {
     # argument precisely so this grep can see it — written
     # `opener=urllib.request.urlopen` the call has no paren after the name, and
     # the kit would have gained an egress §9's published check could not find.
-    ("try/upload.py", 100, "urllib.request.urlopen(req)"),
+    ("try/upload.py", 116, "urllib.request.urlopen(req)"),
 }
 
 
@@ -5037,33 +5037,46 @@ def test_every_exit_that_stops_the_run_still_leaves_them_a_way_to_send(tmp_path)
 
     Pinned as a set rather than one message at a time: the failure mode is a
     fourth branch added later that quietly ends without it.
+
+    Driven through `kit.load_uploader()` rather than the module-level import,
+    because the address is INJECTED there — reaching for the module directly
+    would test a fallback that names no address and pass while the real command
+    printed something else.
     """
+    mod = kit.load_uploader()
     events = tmp_path / "events.jsonl"
     events.write_text("".join(f'{{"event_id":"e{i}"}}\n' for i in range(3)), encoding="utf-8")
 
     stops = {}
     for label, codes in (("401", [401]), ("403", [403])):
         opener, _ = _recording_opener(codes)
-        with pytest.raises(upload_mod.Terminal) as e:
-            upload_mod.send(events, CREDS, rate=0, emit=lambda *_: None, opener=opener)
+        with pytest.raises(mod.Terminal) as e:
+            mod.send(events, CREDS, rate=0, emit=lambda *_: None, opener=opener)
         stops[label] = str(e.value)
 
-    opener, _ = _recording_opener([429] * (upload_mod.MAX_THROTTLE_RETRIES + 1))
-    with pytest.raises(upload_mod.Terminal) as e:
-        upload_mod.send(
-            events, CREDS, rate=0, emit=lambda *_: None, sleep=lambda *_: None, opener=opener
-        )
+    opener, _ = _recording_opener([429] * (mod.MAX_THROTTLE_RETRIES + 1))
+    with pytest.raises(mod.Terminal) as e:
+        mod.send(events, CREDS, rate=0, emit=lambda *_: None, sleep=lambda *_: None, opener=opener)
     stops["throttled"] = str(e.value)
 
     opener, _ = _recording_opener([urllib.error.URLError("blocked")] * 8)
-    with pytest.raises(upload_mod.Terminal) as e:
-        upload_mod.send(
-            events, CREDS, rate=0, emit=lambda *_: None, sleep=lambda *_: None, opener=opener
-        )
+    with pytest.raises(mod.Terminal) as e:
+        mod.send(events, CREDS, rate=0, emit=lambda *_: None, sleep=lambda *_: None, opener=opener)
     stops["unreachable"] = str(e.value)
 
-    for label, message in stops.items():
-        assert "kit.py receipt" in message, f"the {label} exit offers no way to send"
+    for label, raw in stops.items():
+        # Flattened: these messages are hard-wrapped for a terminal, so a literal
+        # `in` check against the raw text passes or fails on where the wrap
+        # happens to fall, which is not a property of the message.
+        message = _flat(raw)
+        assert kit.TEAM_EMAIL in message, (
+            f"the {label} exit offers email without naming the address — someone who "
+            "has just been stopped should not need another command to find it"
+        )
+        # `receipt` is still named, and not as a way to look the address up: it
+        # prints the `gzip` line, and the raw capture is the thing you do not
+        # want mailed.
+        assert "kit.py receipt" in message, f"the {label} exit lost the compression step"
         # The sender constraint travels with the offer or the offer is a trap:
         # the console de-duplicates on `event_id` globally, and we resolve the
         # workspace from the sending address, so a forward strands whatever
@@ -5071,10 +5084,33 @@ def test_every_exit_that_stops_the_run_still_leaves_them_a_way_to_send(tmp_path)
         assert "from the address we set your" in message, (
             f"the {label} exit offers email without saying which mailbox it has to come from"
         )
-        assert kit.TEAM_EMAIL not in message, (
-            f"the {label} exit hard-codes the address instead of pointing at receipt, "
-            "adding a fourth site to a three-site pin"
-        )
+
+
+def test_the_uploader_is_handed_the_one_address_rather_than_keeping_its_own():
+    """`TEAM_EMAIL` is pinned across kit.py, CLAUDE.md and SECURITY.md §4, and
+    the fallback messages need it. `upload.py` cannot import it — a module-level
+    import back into `kit.py` is the import-graph edge `load_uploader` exists to
+    refuse — and a second literal would be a fourth site to keep in step.
+
+    So it is injected at load. This pins both halves: the uploader holds no
+    address of its own, and loading it through the kit supplies one.
+    """
+    source = (Path(kit.__file__).resolve().parent / "upload.py").read_text(encoding="utf-8")
+    assert kit.TEAM_EMAIL not in source, (
+        "upload.py now carries its own copy of the address, which is the fourth site "
+        "the injection exists to avoid"
+    )
+    fresh = _load_uploader_module()
+    assert fresh.TEAM_EMAIL is None, "upload.py defaults to an address it was not given"
+    assert kit.TEAM_EMAIL not in fresh.email_fallback(), (
+        "an uninjected uploader names an address from somewhere"
+    )
+    assert "kit.py receipt" in fresh.email_fallback(), (
+        "without an address the fallback must still point somewhere that has one"
+    )
+    assert kit.load_uploader().TEAM_EMAIL == kit.TEAM_EMAIL, (
+        "kit.py stopped handing the uploader the address it prints everywhere else"
+    )
 
 
 def test_a_blocked_network_is_not_reported_as_a_credential_we_got_wrong(tmp_path):
