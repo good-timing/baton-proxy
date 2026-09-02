@@ -362,16 +362,19 @@ def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
         schema["properties"] = props
 
     dispositions: dict[str, str] = {}
-    for name, build_desc in (
-        (USER_GOAL_PARAM_NAME, build_user_goal_param_description),
-        (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description),
-        (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description),
+    for name, description in (
+        (
+            USER_GOAL_PARAM_NAME,
+            build_user_goal_param_description(intent_param_mode=mode),
+        ),
+        (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description()),
+        (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description()),
     ):
         if name in props:
             dispositions[name] = "native"
             continue
         dispositions[name] = "injected"
-        props[name] = {"type": "string", "description": build_desc()}
+        props[name] = {"type": "string", "description": description}
 
     if mode == "required" and dispositions[USER_GOAL_PARAM_NAME] == "injected":
         required = schema.get("required")

@@ -32,6 +32,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 import fixture_http_server  # noqa: E402
 
+from baton_proxy._llm_text import (
+    build_expected_result_param_description,
+    build_user_goal_param_description,
+)
 from baton_proxy.config import (
     _INTENT_PARAM_MODES,
     DEFAULT_INTENT_PARAM_MODE,
@@ -95,6 +99,41 @@ def test_inject_required_appends_only_user_goal_to_required() -> None:
     # stay optional even in "required" mode, matching baton-sdk's
     # _inject_goal_params.
     assert tool["inputSchema"]["required"] == ["x", USER_GOAL_PARAM_NAME]
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_lead"), [("optional", "OPTIONAL."), ("required", "REQUIRED.")]
+)
+def test_inject_user_goal_description_label_tracks_the_mode(mode: str, expected_lead: str) -> None:
+    """The advertised label has to move with the schema.
+
+    Under ``required`` — this proxy's DEFAULT since 2026-09-01 — the injector
+    appends ``user_goal`` to the tool's ``required`` list, so a description
+    still opening "OPTIONAL." contradicts the schema it ships inside, and the
+    model reads both. Pinned in BOTH directions: the ``optional`` leg is the
+    control that proves the mode is what moves the label, not the injection.
+    """
+    tool = _tool()
+    _inject_goal_params(tool, mode)
+    props = tool["inputSchema"]["properties"]
+
+    goal_desc = props[USER_GOAL_PARAM_NAME]["description"]
+    assert goal_desc.startswith(expected_lead), f"{mode} mode advertised {goal_desc[:12]!r}"
+    assert goal_desc == build_user_goal_param_description(intent_param_mode=mode)
+    # Only the label moved — the measured sentence after it is identical.
+    assert (
+        goal_desc[len(expected_lead) :] == build_user_goal_param_description()[len("OPTIONAL.") :]
+    )
+
+    # Neither sibling is ever escalated, so neither label ever moves. This is
+    # what separates a label that tracks the SCHEMA from one that tracks the
+    # mode.
+    assert (
+        props[EXPECTED_RESULT_PARAM_NAME]["description"]
+        == build_expected_result_param_description()
+    )
+    assert props[EXPECTED_RESULT_PARAM_NAME]["description"].startswith("OPTIONAL.")
+    assert props[OVERALL_TASK_PARAM_NAME]["description"].startswith("OPTIONAL.")
 
 
 def test_inject_required_creates_required_list_when_absent() -> None:
