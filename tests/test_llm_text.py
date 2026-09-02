@@ -114,18 +114,32 @@ def test_the_pre_call_request_is_gated_on_proactive_mode() -> None:
     assert "report when a tool call on this server goes wrong" in off
 
 
-def test_the_reactive_clauses_are_identical_in_both_modes() -> None:
+def test_the_reactive_clauses_survive_both_modes_intact() -> None:
     """The half that must never be gated. AFTER and IF are the friction
-    signal — the product — and they have no param analogue, so nothing about
-    the proactive choice may touch them."""
+    signal — the product — and they have no param analogue, so the proactive
+    choice may not weaken them.
+
+    It may touch ONE word. This test asserted byte-identity until 2026-09-01,
+    and that identity was the defect: `again` back-references the pre-call
+    request, so under the shipped `off` default the agent's first instruction
+    was to call the tool "again" with nothing to refer back to. A test that
+    pins a string cannot see what the string MEANS in each mode — so the
+    assertion is now identity modulo that one back-reference, plus the
+    back-reference appearing exactly where it has a referent."""
     on = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
     off = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="off")
     for clause in ("AFTER any tool", "IF a tool response", "does NOT replace answering"):
         assert clause in on and clause in off
-    # And what `off` costs is exactly the paragraph, not a rewrite around it:
-    # the reactive tail is byte-identical.
     tail = "AFTER any tool"
-    assert on[on.index(tail) :] == off[off.index(tail) :]
+    on_tail, off_tail = on[on.index(tail) :], off[off.index(tail) :]
+    # Identical apart from the back-reference: dropping it from `on` must
+    # reproduce `off` exactly, so no other rewrite can hide in this diff.
+    assert on_tail.replace("`baton_annotate` again with", "`baton_annotate` with") == off_tail
+    # And the word itself is gated on having something to point at.
+    assert "again" in on_tail
+    assert "again" not in off
+    # No collapsed spacing where the token was removed.
+    assert "  " not in off
 
 
 def test_turning_proactive_off_is_what_buys_the_truncation_headroom() -> None:

@@ -106,10 +106,17 @@ _PROACTIVE_CLAUSE = (
 
 # Always present, in both modes — this is the product signal, and it has no
 # param analogue.
+#
+# ONE WORD VARIES, and it is a back-reference rather than a rewrite: `again`
+# points at the pre-call request, so under ``proactive_mode="off"`` — the
+# default since 2026-09-01 — it pointed at a paragraph that no longer renders.
+# The agent's first instruction was to do a thing "again" it had never been
+# asked to do once, while the tool description one field over said "Do NOT call
+# it before a tool call". Found in review 2026-09-01, live on every wrap.
 _REACTIVE_CLAUSES = (
     "AFTER any tool on this server errors, times out, returns an "
     "unhelpful or contradictory result, or the user shows signs of "
-    "giving up, you MUST call `{annotation_tool_name}` again with "
+    "giving up, you MUST call `{annotation_tool_name}` {again}with "
     "signal_type (REQUIRED) — one of failure, retry_loop, dead_end, "
     "parameter_confusion, slow_performance, abandonment, feature_gap, "
     "other — and suggested_improvement (REQUIRED whenever you can "
@@ -209,7 +216,9 @@ def build_instructions_suffix(annotation_tool_name: str, proactive_mode: str = "
     """Build the proxy's instructions suffix.
 
     ``proactive_mode="off"`` reframes the head and drops the pre-call
-    annotation request; the reactive clauses are identical in both modes.
+    annotation request; the reactive clauses are the same in both modes apart
+    from the word `again`, which is a back-reference to that request and is
+    rendered only when the request is.
     Leg-for-leg the same selection baton-sdk's ``build_server_instructions``
     makes — only the DEFAULT differs, and deliberately: the SDK wraps a server
     its vendor owns, the proxy fronts servers its operator does not, so the
@@ -225,6 +234,10 @@ def build_instructions_suffix(annotation_tool_name: str, proactive_mode: str = "
     clause = _PROACTIVE_CLAUSE if proactive_mode == "on" else ""
     rendered = (head + clause + _REACTIVE_CLAUSES).format(
         annotation_tool_name=annotation_tool_name,
+        # The back-reference only has a referent when the clause above it
+        # rendered. Trailing space lives in the token so `off` leaves no
+        # double space behind.
+        again="again " if proactive_mode == "on" else "",
     )
     if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:
         raise ValueError(
