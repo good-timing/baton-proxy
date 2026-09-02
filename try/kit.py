@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
-"""The Baton try kit — setup, receipt, uninstall.
+"""The Baton try kit — setup, receipt, upload, uninstall.
 
-Three commands, and nothing else. Everything they do is described in
+Four commands, and nothing else. Everything they do is described in
 ``SECURITY.md`` beside this file; if the two ever disagree, the document is the
 one that is wrong, because a stranger approved the trial by reading it.
 
-Why these three are code and the rest of the trial is prose: a bad config edit is
-silent for days, and a wrong receipt is a claim we repeat to someone else. Those
-are the only two steps whose failure nobody witnesses. Everything else in the
-flow — choosing a server, explaining what is about to happen, handing over to a
-second terminal, deciding whether the file may leave — fails loudly and
-immediately, so an agent narrating from ``CLAUDE.md`` is the right medium.
+``upload`` is the fourth and the only one that sends anything. Its code is not in
+this file: it lives in ``upload.py`` and is loaded by path from inside the
+command, so the three commands that touch only local files never import it. That
+is a claim a reviewer checks with §9's grep rather than by believing this
+docstring.
+
+Why setup and receipt are code and the rest of the trial is prose: a bad config
+edit is silent for days, and a wrong receipt is a claim we repeat to someone
+else. Those are the only two steps whose failure nobody witnesses. Everything
+else in the flow — choosing a server, explaining what is about to happen,
+handing over to a second terminal, deciding whether the file may leave — fails
+loudly and immediately, so an agent narrating from ``CLAUDE.md`` is the right
+medium. ``upload`` is in the file for a different reason: not because it could
+fail silently, but because a person typing a command is the only form of consent
+that cannot be inferred on their behalf.
 
 The rule this file exists to enforce: **the same code writes the wrap and
 reverses it**, so the removal promise in SECURITY.md §7 is keepable rather than
@@ -70,6 +79,21 @@ SRC_DIR = CHECKOUT / "src"
 EVENTS_PATH = TRY_DIR / "events.jsonl"
 STATE_PATH = TRY_DIR / "state.json"
 
+
+# Handed over out of band, and only to someone we provisioned a workspace for.
+# Its absence is the ordinary case: every kit downloaded from the repository is
+# a kit without this file, and `upload` refuses cleanly rather than inventing a
+# destination. The receipt's upload offer is gated on it existing, so a kit that
+# cannot upload never mentions uploading.
+#
+# A function and not a module constant, for the same reason `come_back()` is one:
+# `TRY_DIR / "upload.json"` evaluated at import freezes the real `try/` directory
+# into the module, and every test that redirects TRY_DIR would then be checking
+# for a file beside the live kit rather than beside its own fixture.
+def upload_credentials_path() -> Path:
+    return TRY_DIR / "upload.json"
+
+
 STATE_VERSION = 1
 
 # Names a baton-proxy invocation can appear under in someone's config.
@@ -94,10 +118,12 @@ STATE_POINTER = (
 # address than the code prints is wrong in the single place a person acts on it
 # — the failure shape §4's injected-param pins were written for.
 #
-# Naming it costs nothing from the security posture, because THEY send the file.
-# "Never send the file anywhere" holds verbatim, "nothing here sends it" stays
-# literally true, and §9.1's egress grep is untouched: no network call is added
-# anywhere by knowing where a file may go.
+# Naming it costs nothing from the security posture, because THEY send the file:
+# no network call is added anywhere by knowing where a file may go. That was once
+# the whole argument, back when it also let "nothing here sends it" stay literally
+# true and left §9.1's grep untouched. `upload` spends both of those, and spends
+# them deliberately — see SECURITY.md §4. The address survives it unchanged and is
+# still the path that works for a kit we handed to nobody in particular.
 TEAM_EMAIL = "team@goodtiming.ai"
 
 
@@ -1655,7 +1681,13 @@ def cmd_receipt(args: argparse.Namespace) -> int:
         print(DEAD_SESSION_NOTE, end="")
 
     print()
-    print("This file has not left your machine, and nothing here sends it.")
+    # This sentence used to read "and nothing here sends it", which was exactly
+    # true while the kit had no network call in it. `upload.py` is one, so the
+    # sentence changed the day the command landed rather than being left to age
+    # into a lie a reviewer would catch with the §9 grep. What survives is the
+    # part that was ever load-bearing: nothing moves unless a person moves it.
+    print("This file has not left your machine. One command here can send it —")
+    print("`python3 kit.py upload` — and only if you run it yourself (SECURITY.md §4).")
     print("Read it before you decide whether it may: it contains the full arguments")
     print("and full results of every tool call, which the scrubber does not redact")
     print("(see SECURITY.md §6).")
@@ -1670,10 +1702,10 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     if not (s["tool_calls"] or s["other_calls"]):
         return 0
 
-    # An address, not an endpoint. The kit still has no network call in it: the
-    # person sends the file, which is what keeps "nothing here sends it" true
-    # one line above, keeps CLAUDE.md's "never send the file anywhere" rule
-    # verbatim, and leaves §9.1's egress grep at its six adjudicated matches.
+    # An address, not an endpoint — and still not one, now that `upload` exists.
+    # Nothing in this block names a URL, on purpose: the receipt tells a person
+    # where their file may go and never shows them a place a machine could POST
+    # to, which stays true whether or not this kit was provisioned.
     # What it removes is the older ending, which read "arrange it with whoever
     # you are talking to at Baton" — an instruction with no address in it,
     # handed to someone who by construction may not be talking to anyone.
@@ -1687,8 +1719,7 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     print(f"  gzip -c {events_path} > {events_path}.gz")
     print(f"Then email the .gz to {TEAM_EMAIL}, by whatever channel your company")
     print("already allows, and we will load it and send back a link to your own")
-    print("sessions. There is no upload endpoint in this kit and you do not need to")
-    print("create one.")
+    print("sessions. You do not need an account, and there is nothing to sign up for.")
     # Said here because it is what makes a multi-day trial work without either
     # side tracking what was already sent: console ingest keys on `event_id` and
     # ignores one it has seen, so the whole file can go again and only the new
@@ -1705,6 +1736,20 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     print("Sending it again later is safe — we key on the event ids already in the")
     print("file, so a second send adds only what is new. Use the server for another")
     print("week and send the whole file again if you like.")
+
+    # Gated on the handed-over file, which is why this is the last block rather
+    # than the first: email is the path that works for everyone and it stays the
+    # one every kit prints. A kit without `upload.json` never mentions uploading
+    # at all, so the offer cannot be read as an account we are asking them to
+    # make. No URL is printed even here — the receipt names an address and never
+    # an endpoint, and that property should not depend on who the kit went to.
+    if upload_credentials_path().exists():
+        print()
+        print("Or send it straight to the workspace we set up for you, without email:")
+        print("  python3 kit.py upload")
+        print(f"That reads {upload_credentials_path().name} — the file we handed you — and")
+        print("sends this same capture there. Same data and the same decision; it just")
+        print("skips the mail. Read the file first either way.")
     return 0
 
 
@@ -1738,6 +1783,104 @@ def checkout_note(verified: bool) -> str:
         f"not verify, and {STATE_PATH} is the only record of what your entry\n"
         "said before setup. Settle the config first, then delete the folder."
     )
+
+
+def load_uploader() -> Any:
+    """Load `upload.py` by path, here rather than at module import.
+
+    Two reasons, and the second is the one that matters. `kit.py` is run as a
+    bare script by people and loaded by path in the tests, so a plain
+    `import upload` resolves in one and not the other. And a module-level import
+    would put the kit's one network-capable file on the import graph of `setup`,
+    `receipt` and `uninstall`, none of which send anything: keeping it here means
+    the only command that even loads the sending code is the one that was typed.
+    """
+    import importlib.util
+
+    # `__file__` and not `TRY_DIR`: the uploader ships beside this file, while
+    # TRY_DIR is where the trial's DATA lives and is redirected under test. The
+    # two are the same directory in every real run and must not be assumed to be.
+    path = Path(__file__).resolve().parent / "upload.py"
+    spec = importlib.util.spec_from_file_location("try_kit_upload", path)
+    if spec is None or spec.loader is None:  # pragma: no cover — a broken checkout
+        raise Refuse(f"{path} is missing or unreadable; re-clone the kit.")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def cmd_upload(args: argparse.Namespace) -> int:
+    """Send the capture to the workspace named in `upload.json`.
+
+    Run by hand, by the person, after they have read the file — never on their
+    behalf and never as part of another command. That is the whole difference
+    between this and a sink pointed at a URL: the wrap still opens no socket,
+    and nothing moves until someone types this.
+    """
+    uploader = load_uploader()
+
+    # Credentials before capture, deliberately. Someone without `upload.json`
+    # will never be able to run this, and "there is nothing to send yet" would
+    # tell them to come back once they have data — sending them away to earn a
+    # refusal they were always going to get. The permanent condition is reported
+    # first, and it is the one with a working alternative attached.
+    try:
+        creds = uploader.load_credentials(TRY_DIR)
+    except uploader.NoCredentials as e:
+        raise Refuse(str(e)) from e
+
+    events_path = EVENTS_PATH
+    if STATE_PATH.exists():
+        events_path = Path(load_state().get("events_path", EVENTS_PATH))
+    if not events_path.exists():
+        raise Refuse(
+            f"no capture at {events_path} — there is nothing to send yet.\n"
+            "  → run `python3 kit.py receipt` to see where the trial is."
+        )
+
+    # Named, never quoted — the same rule the entry printer follows. `console`
+    # and `workspace` are the two things a person needs to recognise as theirs;
+    # the key is the one field that is deliberately not echoed.
+    print("Baton upload")
+    print("=" * 60)
+    print(f"file       : {events_path}  ({human_size(events_path.stat().st_size)})")
+    print(f"console    : {safe_endpoint(creds['console_url'])}")
+    print(f"workspace  : {creds['tenant_id']}")
+    print("key        : <from upload.json, not shown>")
+    print()
+
+    try:
+        result = uploader.send(events_path, creds)
+    except uploader.Terminal as e:
+        raise Refuse(str(e)) from e
+
+    print()
+    print(f"delivered  : {result['delivered']} events in {result['sessions']} sessions")
+    if result["failed"]:
+        print(f"failed     : {result['failed']} events the console would not take")
+    if result["oversized_lines"]:
+        # Per-event and permanent: the body is over the limit and a re-send
+        # sends the same body. Saying "try again" here would be false comfort.
+        lines = ", ".join(str(n) for n in result["oversized_lines"][:5])
+        more = "…" if len(result["oversized_lines"]) > 5 else ""
+        print(f"too large  : lines {lines}{more} — these will not fit on a retry either")
+    if result["skipped"]:
+        print(f"skipped    : {result['skipped']} unreadable lines")
+    print()
+    # The honest limit, stated rather than smoothed over. A 201 is the console
+    # accepting delivery; whether a row was written is a query against its
+    # database, which this cannot run from here.
+    print("Delivered is not the same as stored — the console answers the same way")
+    print("for an event it already had. We check on our side and reply with a link.")
+    if creds.get("sign_in_email"):
+        print()
+        print(f"When it is ready, sign in at {safe_endpoint(creds['console_url'])} with")
+        print(f"Google, using {creds['sign_in_email']} — that address is what opens the")
+        print("workspace on your own sessions.")
+    print()
+    print("Sending again later is safe: we key on the event ids already in the file,")
+    print("so a second run adds only what is new.")
+    return 0
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -1786,6 +1929,14 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         left.append(f"  {EVENTS_PATH}  ({human_size(EVENTS_PATH.stat().st_size)})")
     for b in sorted(TRY_DIR.glob("config-backup.*.json")):
         left.append(f"  {b}")
+    # The credential is left for the same reason the events are: removing the
+    # wrap and disposing of the data are separate decisions, and this command
+    # only owns the first. But it is named rather than left silent — it is the
+    # one file here that is a live key, and someone who has just been told the
+    # trial is over should not have to discover that on their own later.
+    creds = upload_credentials_path()
+    if creds.exists():
+        left.append(f"  {creds}  (the API key we gave you — deleting it disables `upload`)")
     if left:
         print("\nDeliberately left in place, for you to read or delete:")
         print("\n".join(left))
@@ -1797,7 +1948,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="kit.py",
-        description="Baton try kit — set up, receipt, remove. See SECURITY.md beside this file.",
+        description="Baton try kit — set up, receipt, send, remove. See SECURITY.md beside this file.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -1810,6 +1961,13 @@ def main(argv: list[str] | None = None) -> int:
 
     p_receipt = sub.add_parser("receipt", help="what has been captured so far")
     p_receipt.set_defaults(fn=cmd_receipt)
+
+    # Deliberately takes no arguments. Everything it needs — where to send, which
+    # workspace, which key — is in the file that was handed over, so there is no
+    # flag that could point it somewhere we did not provision, and nothing for a
+    # person to get wrong at the moment they decide to release their data.
+    p_upload = sub.add_parser("upload", help="send the capture to the workspace we made for you")
+    p_upload.set_defaults(fn=cmd_upload)
 
     p_uninstall = sub.add_parser("uninstall", help="restore the original entry")
     p_uninstall.set_defaults(fn=cmd_uninstall)

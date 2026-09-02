@@ -1,5 +1,8 @@
 # The trial's captured events and its setup state never belong in git —
 # events.jsonl carries complete tool arguments and results (see SECURITY.md §5).
+# upload.json is the credential we hand over for `kit.py upload`: it is written
+# by us, given to one person, and committing it would publish a live key.
 events.jsonl
 state.json
 config-backup.*
+upload.json

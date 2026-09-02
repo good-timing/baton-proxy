@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import threading
+import urllib.error
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
@@ -855,13 +856,23 @@ def test_the_receipt_names_an_address_but_never_a_place_to_upload_to(tmp_path, m
     to guess where a file they have decided to release should go.
 
     So the pin moves rather than lifting: an address, yes; a URL, an endpoint,
-    or anything the kit itself would talk to, no."""
+    or anything the kit itself would talk to, no.
+
+    Moved a second time when `kit.py upload` shipped, and the surviving half is
+    the one that was ever load-bearing. "Nothing here sends it" is gone because
+    it became false — there is now a command that sends it — and pretending
+    otherwise in the one document a reviewer greps is the failure this file
+    exists to prevent. What still holds, and holds for every kit whether or not
+    it was provisioned: the receipt names an address and never an endpoint, and
+    nothing moves without the person."""
     _events, out = _run_receipt(tmp_path, monkeypatch, capsys, [_ev(payload={"tool_name": "s"})])
     assert kit.TEAM_EMAIL in out, f"the receipt still ends with nowhere to send it:\n{out}"
     for scheme in ("http://", "https://"):
         assert scheme not in out, f"the receipt offered an endpoint ({scheme})"
-    assert "nothing here sends it" in out, "the sentence the kit sells is gone"
-    assert "no upload endpoint in this kit" in out, "the promise that replaced it is gone"
+    assert "only if you run it yourself" in out, "the receipt stopped saying who does the sending"
+    assert "nothing here sends it" not in out, (
+        "a sentence that is no longer true came back: `upload.py` sends it"
+    )
 
 
 def test_receipt_reports_no_error_counts():
@@ -1369,6 +1380,12 @@ EXPECTED_AUDIT_HITS = {
     ("src/baton_proxy/sinks.py", 159, "urllib.request.urlopen(req"),
     ("src/baton_proxy/sinks.py", 191, 'boto3.client("s3")'),
     ("src/baton_proxy/scan.py", 510, "subprocess.run(cmd"),
+    # The kit's own, and the only one that exists to send the person's data.
+    # `upload.py` puts it in a named function rather than inline as a default
+    # argument precisely so this grep can see it — written
+    # `opener=urllib.request.urlopen` the call has no paren after the name, and
+    # the kit would have gained an egress §9's published check could not find.
+    ("try/upload.py", 80, "urllib.request.urlopen(req)"),
 }
 
 
@@ -1377,7 +1394,7 @@ EXPECTED_AUDIT_HITS = {
 # reviewer who wrapped a server that talks about `subprocess.run(` has that text
 # sitting inside src|try — and the six-match promise is about OUR CODE, not
 # about what their agent happened to say. Pinned against try/.gitignore below.
-TRIAL_ARTIFACTS = ("events.jsonl", "state.json", "config-backup.*")
+TRIAL_ARTIFACTS = ("events.jsonl", "state.json", "config-backup.*", "upload.json")
 
 
 def _audited_files(root: Path = REPO_ROOT):
@@ -1408,9 +1425,15 @@ def _grep(pattern: str, root: Path = REPO_ROOT):
     return hits
 
 
-def test_security_md_section_9_narrow_grep_returns_exactly_its_six():
-    """§9: "Six matches: the five in the §4 table, plus one comment line in
+def test_security_md_section_9_narrow_grep_returns_exactly_its_seven():
+    """§9: "Seven matches: the six in the §4 table, plus one comment line in
     transport_http.py."
+
+    It was six until `kit.py upload` shipped, and the count moved in the same
+    commit as the code — which is the whole point of pinning it. A reviewer runs
+    the printed command and counts; a document that says six over a tree that
+    answers seven is the one failure this section cannot survive, because its
+    only claim is that its claims are mechanical.
 
     Note what makes this stable at all: SECURITY.md quotes the regex as
     `urlopen\\(` — escaped — so the document does not match its own grep.
@@ -1422,8 +1445,8 @@ def test_security_md_section_9_narrow_grep_returns_exactly_its_six():
         assert any(p == path and n == lineno and needle in line for p, n, line in found), (
             f"§9's expected match is gone or moved: {path}:{lineno} ({needle!r})"
         )
-    assert len(hits) == 6, (
-        "SECURITY.md §9 promises a reviewer SIX matches; this grep now returns "
+    assert len(hits) == 7, (
+        "SECURITY.md §9 promises a reviewer SEVEN matches; this grep now returns "
         f"{len(hits)}:\n" + "\n".join(f"  {p}:{n}: {line.strip()}" for p, n, line in hits)
     )
 
@@ -1598,10 +1621,19 @@ def test_one_of_the_six_is_a_comment_not_a_call_site():
     assert comments == [("src/baton_proxy/transport_http.py", 187)]
 
 
-def test_the_kit_contributes_no_audited_call_site():
-    """§9: "The kit contributes none — it only reads and writes local files."
-    The narrow grep covers `try/` precisely so a reviewer can see that zero."""
-    assert [h for h in _grep(NARROW_AUDIT_RE) if h[0].startswith("try/")] == []
+def test_the_kit_contributes_exactly_one_audited_call_site_and_it_is_the_uploader():
+    """§9 said "The kit contributes none" for as long as that was true. `upload`
+    made it one, and the value of the sentence is that it moved with the code.
+
+    The assertion is deliberately tighter than a count: it names the file. A
+    second network call anywhere in `try/` — in `kit.py`, or a helper someone
+    adds beside it — is the regression this catches, and the whole argument for
+    putting the sending in its own auditable file dies quietly without it."""
+    kit_hits = [h for h in _grep(NARROW_AUDIT_RE) if h[0].startswith("try/")]
+    assert [h[0] for h in kit_hits] == ["try/upload.py"], (
+        "the kit's egress is no longer confined to try/upload.py: "
+        + repr([(p, n, line.strip()) for p, n, line in kit_hits])
+    )
 
 
 def test_the_widened_grep_introduces_no_new_call_site():
@@ -1680,7 +1712,12 @@ def test_the_docs_document_commands_that_actually_exist():
     file passes while checking zero commands — the green-by-emptiness failure."""
     found = list(_documented_kit_commands())
     assert len(found) >= 6, f"extractor found only {len(found)}; the docs have more"
-    assert {tuple(argv[:1]) for _, argv in found} == {("setup",), ("receipt",), ("uninstall",)}
+    assert {tuple(argv[:1]) for _, argv in found} == {
+        ("setup",),
+        ("receipt",),
+        ("upload",),
+        ("uninstall",),
+    }
 
 
 def test_every_kit_command_in_the_docs_parses(monkeypatch, capsys):
@@ -1693,7 +1730,7 @@ def test_every_kit_command_in_the_docs_parses(monkeypatch, capsys):
     that argparse accepts the argv, but that it dispatches to the handler the
     document's reader would expect."""
     dispatched: list[str] = []
-    for name in ("cmd_setup", "cmd_receipt", "cmd_uninstall"):
+    for name in ("cmd_setup", "cmd_receipt", "cmd_upload", "cmd_uninstall"):
         monkeypatch.setattr(kit, name, lambda _args, _n=name: dispatched.append(_n) or 0)
 
     for where, argv in _documented_kit_commands():
@@ -3966,7 +4003,14 @@ def test_security_md_says_the_file_can_leave_and_who_makes_it_leave():
     doc = (KIT_PATH.parent / "SECURITY.md").read_text()
     section = doc[doc.index("## 4. What leaves your machine") : doc.index("## 5. What is recorded")]
     assert kit.TEAM_EMAIL in section, "§4 never mentions the address the receipt prints"
-    assert "no upload endpoint" in section, "§4 does not say the kit has no way to send it"
+    # Was "no upload endpoint", which the document could say while it was true.
+    # `upload` is the second user-facing exit and gets the same treatment the
+    # address got, for the same reason: a reviewer who meets it at the end of a
+    # trial this page never described re-reads the whole page as a setup.
+    assert "kit.py upload" in section, "§4 never mentions the command that sends the file"
+    assert "refuses without `try/upload.json`" in section, (
+        "§4 does not say what stops `upload` on a kit we handed to nobody"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -4664,3 +4708,304 @@ def test_the_prompt_leaves_the_ending_to_the_kit():
         "the prompt offers the ending before there is anything to send"
     )
     assert not re.findall(r"[\w.+-]+@[\w-]+\.[\w.]+", text), "the prompt names an address"
+
+
+# =============================================================================
+# `upload` (2026-09-01) — the kit's first and only egress.
+#
+# Everything in this section guards one shape: the kit can now send the person's
+# data, and the only thing that makes that acceptable is that the sending is
+# bounded, visible, and theirs. So these tests are not about whether the POST
+# works — that is `replay_events.py`'s job and it has been doing it against prod
+# for weeks. They are about the bounds: it refuses without the handed-over file,
+# it is invisible to a kit that has no such file, it never prints the key, it
+# rewrites one field and not the other, and the agent is told not to type it.
+# =============================================================================
+
+
+def _load_uploader_module():
+    """The uploader, loaded the same way `kit.py` loads it — by path."""
+    spec = importlib.util.spec_from_file_location(
+        "try_kit_upload_under_test", REPO_ROOT / "try" / "upload.py"
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+upload_mod = _load_uploader_module()
+
+
+CREDS = {
+    "console_url": "https://console.example.test",
+    "api_key": "bk_live_not_a_real_key",
+    "tenant_id": "ten_abc123",
+}
+
+
+class _FakeResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return b""
+
+
+def _recording_opener(codes=None):
+    """An opener that records the bodies it was given and replays `codes`.
+
+    Each entry is either None (a 201) or an int status, raised as the HTTPError
+    urllib would raise. Returns (opener, sent) where `sent` is the list of
+    decoded envelopes — which is how the tenant-rewrite property is checked
+    without a network.
+    """
+    sent: list[dict] = []
+    codes = list(codes or [])
+
+    def opener(req):
+        sent.append(json.loads(req.data.decode()))
+        code = codes.pop(0) if codes else None
+        if code is not None:
+            raise urllib.error.HTTPError(req.full_url, code, "no", {"Retry-After": "0"}, None)
+        return _FakeResponse()
+
+    return opener, sent
+
+
+def test_upload_refuses_without_the_handed_over_file(kit_home, capsys):
+    """The ordinary case, and the one most people meet: every kit cloned from
+    the repository is a kit with no `upload.json`.
+
+    Two things the refusal has to do, because someone reading it has just been
+    told no by a security tool. Name the alternative that actually works —
+    email needs nothing from us in advance — and make clear this is a missing
+    arrangement rather than a broken kit."""
+    (kit_home / "events.jsonl").write_text('{"event_id":"e1"}\n', encoding="utf-8")
+    with pytest.raises(kit.Refuse) as e:
+        kit.cmd_upload(argparse.Namespace())
+    msg = str(e.value)
+    assert "upload.json" in msg, "the refusal does not name the file it wants"
+    assert "email" in msg.lower(), "the refusal leaves them with no working path"
+    assert "receipt" in msg, "the refusal does not say what to run instead"
+
+
+def test_upload_refuses_before_it_mentions_the_capture(kit_home):
+    """Credentials are checked before the event file, and the order is the point.
+
+    A person with no `upload.json` will never be able to run this. Leading with
+    "there is nothing to send yet" tells them to come back once they have data
+    and earn the same refusal then — the permanent condition goes first."""
+    # No events file AND no credentials: the credential refusal is the one that
+    # should surface, because it is the one that will not change.
+    with pytest.raises(kit.Refuse) as e:
+        kit.cmd_upload(argparse.Namespace())
+    assert "upload.json" in str(e.value)
+    assert "nothing to send yet" not in str(e.value)
+
+
+def test_a_malformed_credential_file_is_the_same_answer_as_a_missing_one(kit_home):
+    """The person did not write this file and cannot fix its schema. Three
+    failures — absent, unparseable, incomplete — have one useful answer, and it
+    is the one that points at email."""
+    (kit_home / "events.jsonl").write_text('{"event_id":"e1"}\n', encoding="utf-8")
+    for bad in ("{not json", "[]", '{"console_url": "https://x.test"}'):
+        (kit_home / "upload.json").write_text(bad, encoding="utf-8")
+        with pytest.raises(kit.Refuse) as e:
+            kit.cmd_upload(argparse.Namespace())
+        assert "email" in str(e.value).lower(), f"no alternative offered for {bad!r}"
+
+
+def test_upload_rewrites_the_tenant_and_never_the_vendor(tmp_path):
+    """`tenant_id` says which workspace the events land in; `vendor_id` says
+    which of their servers each event came from, and the dashboard's server
+    picker keys off it. Rewriting both would file a capture from `notion` as
+    having come from the workspace itself, which is the kind of wrong that looks
+    right on the screen."""
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        '{"event_id":"e1","session_id":"s1","tenant_id":"notion","vendor_id":"notion"}\n'
+        '{"event_id":"e2","session_id":"s1","tenant_id":"notion","vendor_id":"notion"}\n',
+        encoding="utf-8",
+    )
+    opener, sent = _recording_opener()
+    result = upload_mod.send(events, CREDS, rate=0, emit=lambda *_: None, opener=opener)
+    assert [e["tenant_id"] for e in sent] == ["ten_abc123", "ten_abc123"]
+    assert [e["vendor_id"] for e in sent] == ["notion", "notion"], "vendor_id was rewritten"
+    assert result["delivered"] == 2
+    assert result["sessions"] == 1
+
+
+def test_a_refused_key_stops_the_run_instead_of_repeating_itself(tmp_path):
+    """A wrong key 401s identically on every line. Grinding a four-thousand-line
+    file through it produces four thousand copies of one fact, and the person
+    watching cannot tell that from four thousand different problems.
+
+    403 is in the same branch on purpose: it is also how an over-quota or
+    suspended tenant is refused, and both readings mean every remaining line
+    fails the same way."""
+    events = tmp_path / "events.jsonl"
+    events.write_text("".join(f'{{"event_id":"e{i}"}}\n' for i in range(50)), encoding="utf-8")
+    for code in (401, 403):
+        opener, sent = _recording_opener([code])
+        with pytest.raises(upload_mod.Terminal):
+            upload_mod.send(events, CREDS, rate=0, emit=lambda *_: None, opener=opener)
+        assert len(sent) == 1, f"HTTP {code} kept going after the first refusal"
+
+
+def test_an_event_too_large_is_skipped_and_the_rest_still_go(tmp_path):
+    """413 is per-event and is never fixed by re-sending: the body is over the
+    limit and will be over it again. So it is counted and stepped past, and the
+    report names the lines rather than telling someone to try again."""
+    events = tmp_path / "events.jsonl"
+    events.write_text('{"event_id":"e1"}\n{"event_id":"e2"}\n{"event_id":"e3"}\n', encoding="utf-8")
+    opener, sent = _recording_opener([None, 413, None])
+    result = upload_mod.send(events, CREDS, rate=0, emit=lambda *_: None, opener=opener)
+    assert len(sent) == 3, "one oversized event stopped the file"
+    assert result["delivered"] == 2
+    assert result["oversized_lines"] == [2]
+
+
+def test_a_throttled_event_waits_and_then_gives_up_saying_nothing_is_wrong(tmp_path):
+    """429 is the server asking for a pause, so it is retried on the same event
+    rather than counted as a failure. Past the ceiling it stops — and the
+    message says the file is fine and a later run will not double-send, because
+    the person's next move is to run it again."""
+    events = tmp_path / "events.jsonl"
+    events.write_text('{"event_id":"e1"}\n', encoding="utf-8")
+    slept: list[float] = []
+    opener, sent = _recording_opener([429] * (upload_mod.MAX_THROTTLE_RETRIES + 1))
+    with pytest.raises(upload_mod.Terminal) as e:
+        upload_mod.send(
+            events, CREDS, rate=0, emit=lambda *_: None, sleep=slept.append, opener=opener
+        )
+    assert len(sent) == upload_mod.MAX_THROTTLE_RETRIES + 1
+    assert len(slept) == upload_mod.MAX_THROTTLE_RETRIES, "a 429 was not waited on"
+    assert "will not land twice" in str(e.value)
+
+
+def test_upload_names_the_key_and_never_prints_it(kit_home, monkeypatch, capsys):
+    """The same rule the entry printer follows, on the one file whose whole
+    content is a credential. A person may paste this output into a thread with
+    us, or into one with their own security team."""
+    (kit_home / "events.jsonl").write_text(
+        '{"event_id":"e1","session_id":"s1"}\n', encoding="utf-8"
+    )
+    (kit_home / "upload.json").write_text(json.dumps(CREDS), encoding="utf-8")
+    opener, _sent = _recording_opener()
+    monkeypatch.setattr(upload_mod, "open_request", opener)
+    monkeypatch.setattr(kit, "load_uploader", lambda: upload_mod)
+    kit.cmd_upload(argparse.Namespace())
+    out = capsys.readouterr().out
+    assert CREDS["api_key"] not in out, "the upload printed the key it was handed"
+    assert "not shown" in out, "the key was dropped silently rather than named"
+    assert CREDS["tenant_id"] in out, "the person cannot see which workspace this went to"
+    assert "Delivered is not the same as stored" in out, (
+        "the receipt-side honesty about 201 went missing"
+    )
+
+
+def test_the_receipt_offers_upload_only_where_the_file_exists(kit_home, capsys):
+    """The gate the send fork rests on. A kit we handed to nobody in particular
+    must not name a command that will refuse — and the agent is told to read the
+    offer off the receipt rather than to know about it, so the receipt is the
+    thing that has to be right."""
+    (kit_home / "events.jsonl").write_text(
+        json.dumps(_ev(payload={"tool_name": "s"})) + "\n", encoding="utf-8"
+    )
+    kit.cmd_receipt(argparse.Namespace())
+    without = capsys.readouterr().out
+    assert "workspace we set up for you" not in without, (
+        "a kit with no credential file offered an upload anyway"
+    )
+
+    (kit_home / "upload.json").write_text(json.dumps(CREDS), encoding="utf-8")
+    kit.cmd_receipt(argparse.Namespace())
+    with_file = capsys.readouterr().out
+    assert "python3 kit.py upload" in with_file, "the provisioned kit never mentions the option"
+    assert kit.TEAM_EMAIL in with_file, "the email path stopped being offered alongside"
+    for scheme in ("http://", "https://"):
+        assert scheme not in with_file, (
+            "the provisioned receipt printed an endpoint; the no-URL property must not "
+            "depend on who the kit went to"
+        )
+
+
+def test_the_uploader_is_not_on_the_import_graph_of_the_other_commands():
+    """SECURITY.md §3a claims the only command that loads the sending code is
+    the one that was typed, and §4 row 6 repeats it. A module-level
+    `import upload` would falsify both while every test still passed."""
+    source = KIT_PATH.read_text(encoding="utf-8")
+    module_level = [
+        line
+        for line in source.splitlines()
+        if re.match(r"^(import|from)\s", line) and "upload" in line
+    ]
+    assert not module_level, f"kit.py imports the uploader at module level: {module_level}"
+    assert "def load_uploader" in source, "the by-path loader is gone"
+
+
+def test_claude_md_forbids_the_agent_from_running_upload():
+    """The rule that had to move when the button appeared. "Never send the file
+    anywhere" was written when no command in the kit could send it — the agent
+    had nothing to send it WITH. It now has a shell and a one-line command, so
+    the prohibition has to name it or it is a rule about a thing that no longer
+    exists."""
+    doc = _flat(_claude_md())
+    assert "kit.py upload" in doc, "the doc does not mention the command it must forbid"
+    assert "not yours to run" in doc, "the command list does not mark it off-limits"
+    assert "even if they ask you to" in doc or "do not run it when asked to" in doc, (
+        "the rule does not survive the person asking, which is when it is needed"
+    )
+
+
+def test_security_md_keeps_the_config_entry_check_that_upload_could_have_broken():
+    """The one sentence a reviewer is handed as sufficient proof: `file://` plus
+    no `BATON_API_KEY` in the entry means the wrap cannot deliver anywhere.
+
+    `upload` is exactly the change that could have falsified it — putting the key
+    in the config entry was the easy shape and needed no new code. It reads its
+    key from `upload.json` instead, so this pins both the surviving sentence and
+    the reason it survived."""
+    security = (REPO_ROOT / "try" / "SECURITY.md").read_text(encoding="utf-8")
+    assert "absence of `BATON_API_KEY` in the config entry as sufficient" in _flat(security), (
+        "§4's closing check is gone; upload must not have taken it with it"
+    )
+    assert "never in your MCP config entry" in _flat(security), (
+        "§4 stopped saying where upload's key does NOT live"
+    )
+
+
+def test_uninstall_names_the_credential_it_leaves_behind(kit_home, monkeypatch, capsys):
+    """`uninstall` leaves the events file and the backups on purpose, and now a
+    third thing that is different in kind: a live API key.
+
+    Left for the same reason — removing the wrap and disposing of the data are
+    separate decisions — but named, because someone who has just ended the trial
+    should not find out months later that a working credential is sitting in a
+    folder they stopped thinking about. §7 carries the same sentence."""
+    config = _config(kit_home, {"mcpServers": {"acme": {"command": "acme-server"}}})
+    kit.cmd_setup(
+        argparse.Namespace(server="acme", config_file=str(config), tenant=None, vendor=None)
+    )
+    capsys.readouterr()
+    (kit_home / "upload.json").write_text(json.dumps(CREDS), encoding="utf-8")
+    kit.cmd_uninstall(argparse.Namespace())
+    out = capsys.readouterr().out
+    assert "upload.json" in out, "uninstall said nothing about the key it left in place"
+    assert CREDS["api_key"] not in out, "uninstall printed the key while naming it"
+
+
+def test_security_md_section_7_inventories_the_credential_file():
+    """§7 is the removal inventory, and its promise is that it is complete —
+    "that is the entire footprint". A file the kit does not delete and the
+    document does not list is the one shape that sentence cannot survive."""
+    doc = (KIT_PATH.parent / "SECURITY.md").read_text(encoding="utf-8")
+    section = doc[doc.index("## 7. Where the data lives") : doc.index("## 8. Provenance")]
+    assert "try/upload.json" in section, "§7's inventory omits the credential file"
+    assert "does **not** delete it" in section, (
+        "§7 does not say uninstall leaves the credential in place"
+    )

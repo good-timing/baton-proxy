@@ -22,6 +22,12 @@ python3 kit.py receipt                # what has been captured so far
 python3 kit.py uninstall              # put the original entry back
 ```
 
+There is a fourth, `python3 kit.py upload`, and it is **not yours to run** — see
+*Rules that do not bend*. It sends the capture to a Baton workspace, exists only
+where we set one up in advance, and refuses everywhere else. Most kits do not
+have it available; the receipt says so itself by only mentioning it where it
+works, so let the receipt tell you rather than assuming either way.
+
 Your job is everything the commands deliberately do not do: work out which
 server, explain what is about to happen before it happens, hand them a second
 terminal, and hand the decision at the end to the person. The commands own the two steps
@@ -72,6 +78,14 @@ person needs to see.
 **Never send the file anywhere.** Not to us, not to a paste service, not
 attached to anything. Whether it leaves is the person's decision, made at the
 end, on their own.
+
+**That includes `kit.py upload`, and especially that.** It is a real command in
+this kit and it really sends the capture, so it is the one rule here you could
+break by following an instruction rather than by improvising: you have a shell,
+and typing it would take one line. Do not run it, do not offer to run it, and do
+not run it when asked to — say that this one is theirs to type, and why. The
+same goes for `gzip`: preparing the file is fine, sending it is not. If they ask
+you to do it for them, that is the moment the rule is for.
 
 **Never install anything.** The trial runs from this checkout with no
 dependencies. If something seems to need an install, that is a finding to report,
@@ -200,8 +214,12 @@ these four labels, in this order, one line each:
   redacted.** That clause is the worst fact in the summary and the one a reviewer
   is listening for: state it in full even though the line is otherwise short.
   Shortening a line is not what the bound is for.
-- **What leaves** — nothing. No network call, no upload endpoint, no account. The
-  file moves only if they decide to email it at the end.
+- **What leaves** — nothing unless they send it at the end, and no account
+  either way. The wrap holds no credential and makes no network call; one
+  command, `kit.py upload`, does send the capture, and only if they type it.
+  Both halves belong in the line: a summary that says "nothing leaves" beside a
+  send command that exists is a gap a reviewer will close for themselves, and
+  worse than the longer sentence.
 
 Then two more lines and nothing else: `SECURITY.md` §3 lists every addition, so
 offer it explicitly rather than merely citing it; and the ask, alone on the last
@@ -333,7 +351,16 @@ do not push:
   real results from their tools.
 - The receipt prints a `gzip` command and the address: `team@goodtiming.ai`,
   which loads it and sends back a link to their own sessions. If they want it
-  sent, they send it. You do not, and there is no upload endpoint to look for.
+  sent, they send it. You do not — that is the rule, not a preference, and it
+  holds even if they ask you to.
+- **Where the receipt also offers `python3 kit.py upload`, relay it as a second
+  option and nothing more.** It appears only for a trial we set up a workspace
+  for in advance, which is why the receipt is the thing that knows: if that
+  block is not in the output, the option does not exist and inventing it sends
+  someone to a command that will refuse. Where it is there, it is the same
+  decision as the email — their data, their call, their keystroke — and the
+  file is worth reading first either way. Do not present it as the recommended
+  one; it is shorter, not safer.
 - Sending is repeatable — a second send of the whole file adds only the new
   events. So this is not a now-or-never decision, and someone who wants another
   week of data first can have it.
