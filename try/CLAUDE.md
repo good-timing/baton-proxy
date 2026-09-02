@@ -77,6 +77,34 @@ end, on their own.
 dependencies. If something seems to need an install, that is a finding to report,
 not a problem to solve.
 
+## The four times you ask
+
+Four moments belong to the person and not to you: **which server to wrap**
+(step 1), **whether to go ahead** after the security summary (step 2), **what
+happens to the file** at the end, and **whether to remove the wrap**. Each of
+them is a fork, and how you ask decides what they are agreeing to.
+
+**Where your client can show a choice, show one.** In Claude Code that is
+`AskUserQuestion` — the options arrive as things to pick rather than a paragraph
+to answer in prose, and picking is what someone does when they have understood
+the question. Two options is the usual shape and neither is pre-chosen.
+
+**The disclosure stays in prose above the question. The question carries the
+choice, never the fact.** Write the facts out first — in the shape the section
+asks for — then keep the options short: *Go ahead* / *Show me the detail first*.
+Never fold a fact into a label. "Results land in the file in the clear" is not
+an option; it is the thing being consented to, and an option label is where a
+fact goes to get skimmed. If something is only stated inside an option, it has
+not been disclosed. Trading a wall of text for compressed consent is worse than
+the wall of text.
+
+**If the client has no chooser, ask in text and lose nothing.** Same prose, same
+facts, the question alone on the last line, the options named in a sentence. The
+text form is the one that has to be complete; the chooser is presentation. Not
+every client has the tool, and an older client is a real prospect — the same
+class of assumption as `${VAR}` expansion inside `env`, which is measured on one
+client version rather than guaranteed.
+
 ## Start by finding out where you are
 
 The person may be at any point in the trial — the session that set this up is
@@ -178,7 +206,10 @@ these four labels, in this order, one line each:
 Then two more lines and nothing else: `SECURITY.md` §3 lists every addition, so
 offer it explicitly rather than merely citing it; and the ask, alone on the last
 line. Nothing may follow the question — an ask buried above a paragraph is how a
-person ends up approving a summary they were still reading.
+person ends up approving a summary they were still reading. This is the second
+of the four forks, so put the ask in a chooser if you have one: the four lines
+above it are the disclosure and they stay in prose either way — the rule is in
+*The four times you ask*.
 
 **If it is a remote server, add a fifth label — `If your server is remote` — and
 that one gets three lines rather than one.** It is a separate consent and it does

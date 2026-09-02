@@ -733,6 +733,25 @@ def test_the_two_intent_mechanisms_are_reported_apart(tmp_path, kit_home, capsys
     assert "nothing here to refuse" not in out
 
 
+def test_the_four_forks_are_asked_the_same_way_and_the_text_form_is_complete():
+    """Track 2's chooser rule. Two halves, and the second is the load-bearing
+    one: a client without the tool is a real prospect, so the text form has to
+    carry the same facts. Pinned because the failure is silent — a fact that
+    only ever appears inside an option label reads as disclosed to whoever
+    wrote it and as never said to whoever skimmed it."""
+    doc = _claude_md()
+    assert "## The four times you ask" in doc, "the chooser rule has no section"
+    section = doc.split("## The four times you ask", 1)[1].split("\n## ", 1)[0]
+    assert "AskUserQuestion" in section, "the section never names the client's chooser"
+    # The rule itself: prose above, choice below, and never a fact in a label.
+    assert "never the fact" in section
+    # The fallback, and that it is the complete one rather than the reduced one.
+    assert "no chooser" in section
+    # Step 2's ask is one of the four, so it has to route here rather than
+    # keeping a rule of its own that says something else.
+    assert "*The four times you ask*" in doc, "step 2 does not route to the rule"
+
+
 def test_claude_md_routes_on_both_intent_rows_by_name():
     """Track 2.1. The doc's branch for these two numbers is only reachable if it
     names the rows the receipt prints, so the labels are read out of the doc —
