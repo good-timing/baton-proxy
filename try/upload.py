@@ -38,7 +38,6 @@ run, and all of them stated to the person rather than swallowed:
 from __future__ import annotations
 
 import json
-import os
 import time
 import urllib.error
 import urllib.request
@@ -112,7 +111,7 @@ def refusal(where: Path) -> str:
         "  kit can create one, and it will not invent a destination.\n"
         "\n"
         "  If we did send you one and it is somewhere else — your downloads folder,\n"
-        "  most likely — point at it and this keeps a copy for next time:\n"
+        "  most likely — point at it:\n"
         "    python3 kit.py upload --credentials <path to that file>\n"
         "\n"
         "  If you did not get that file, nothing is wrong: run `receipt` and email\n"
@@ -147,32 +146,6 @@ def read_credentials(path: Path) -> dict[str, str]:
 def load_credentials(directory: Path) -> dict[str, str]:
     """The no-arguments case: the file in its canonical home beside `kit.py`."""
     return read_credentials(directory / CREDENTIALS_NAME)
-
-
-def install_credentials(source: Path, dest: Path) -> bool:
-    """Copy a validated credential file to its canonical home, 0600.
-
-    Returns True if it wrote, False if source and dest are the same file.
-
-    **The mode is the whole reason this is not `shutil.copy`.** The file being
-    copied came out of a mail client or a browser, so it is 0644 — and this
-    writes a live API key into a checkout. Plain copying would republish it to
-    every account on a shared machine, which is the same slip `write_state_file`
-    documents at length for the state file and which §7 promises against. Callers
-    validate BEFORE calling this: installing an unusable file over the canonical
-    home would leave every later bare `upload` refusing for a reason the person
-    cannot see.
-    """
-    if source.resolve() == dest.resolve():
-        return False
-    payload = source.read_bytes()
-    # `os.open` sets the mode only on CREATE, so the chmod is not redundant: a
-    # file left by an earlier install, or by hand, keeps its old mode without it.
-    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(payload)
-    os.chmod(dest, 0o600)
-    return True
 
 
 def endpoint(console_url: str) -> str:

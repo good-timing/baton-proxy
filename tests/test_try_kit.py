@@ -1385,7 +1385,7 @@ EXPECTED_AUDIT_HITS = {
     # argument precisely so this grep can see it — written
     # `opener=urllib.request.urlopen` the call has no paren after the name, and
     # the kit would have gained an egress §9's published check could not find.
-    ("try/upload.py", 81, "urllib.request.urlopen(req)"),
+    ("try/upload.py", 80, "urllib.request.urlopen(req)"),
 }
 
 
@@ -4936,69 +4936,64 @@ def test_the_receipt_offers_upload_to_everyone_with_its_condition_attached(kit_h
         assert scheme not in out, "the receipt printed an endpoint"
 
 
-def test_a_credential_from_anywhere_is_validated_before_it_is_installed(kit_home, tmp_path):
+def test_a_credential_from_anywhere_is_validated_the_same_way(kit_home, tmp_path):
     """A path that is wrong, or points at something that is not a credential,
-    must not land on the canonical home. If it did, every later bare `upload`
-    would refuse for a reason the person cannot see — and they would have no way
-    to know the file they were sent is fine."""
+    gets the same refusal as a missing file — including the line naming the
+    email path. Someone who mistyped and someone who was never sent a file both
+    need to be told what still works."""
     (kit_home / "events.jsonl").write_text('{"event_id":"e1"}\n', encoding="utf-8")
     bad = tmp_path / "not-a-credential.json"
     bad.write_text('{"console_url": "https://x.test"}', encoding="utf-8")
-    with pytest.raises(kit.Refuse):
+    with pytest.raises(kit.Refuse) as e:
         kit.cmd_upload(argparse.Namespace(credentials=str(bad)))
-    assert not kit.upload_credentials_path().exists(), (
-        "an unusable file was installed over the canonical home"
-    )
+    assert "email" in str(e.value).lower(), "a bad path left them with no working path"
 
 
-def test_an_installed_credential_is_0600_and_makes_the_bare_command_work(
+def test_upload_reads_the_credential_and_never_makes_a_second_copy(
     kit_home, tmp_path, monkeypatch, capsys
 ):
-    """The file being copied came out of a mail client, so it is 0644 — and this
-    writes a live API key into a checkout. Copying the mode across would
-    republish it to every account on a shared machine: the same slip
-    `write_state_file` documents for the state file, and the one §7 promises
-    against. Also the round trip: given once, then `upload` alone works."""
+    """A first version installed the file beside `kit.py` so a second run could
+    skip the flag. That optimised the wrong case.
+
+    This is a prospect proving the thing works, and most of them send once — so
+    the copy bought a shorter second command that usually never happens, and
+    paid for it by leaving a live API key inside a checkout permanently, in a
+    place the person did not choose. Their download stays their only copy, which
+    also makes the cleanup one sentence: delete the file you were sent.
+
+    Pinned as an absence, because that is how it would regress: someone adds a
+    convenience copy back and nothing else fails."""
     (kit_home / "events.jsonl").write_text(
         '{"event_id":"e1","session_id":"s1"}\n', encoding="utf-8"
     )
     downloaded = tmp_path / "upload.json"
     downloaded.write_text(json.dumps(CREDS), encoding="utf-8")
-    downloaded.chmod(0o644)
 
     opener, sent = _recording_opener()
     monkeypatch.setattr(upload_mod, "open_request", opener)
     monkeypatch.setattr(kit, "load_uploader", lambda: upload_mod)
-
     kit.cmd_upload(argparse.Namespace(credentials=str(downloaded)))
-    installed = kit.upload_credentials_path()
-    assert installed.exists(), "the credential was not kept for next time"
-    assert oct(installed.stat().st_mode & 0o777) == "0o600", (
-        f"a live key was installed world-readable: {oct(installed.stat().st_mode & 0o777)}"
+
+    assert len(sent) == 1, "the capture did not go"
+    assert not kit.upload_credentials_path().exists(), (
+        "upload copied the credential into the checkout; the download is meant to "
+        "stay the only copy"
     )
-    assert json.loads(installed.read_text()) == CREDS, "the installed copy is not the file given"
-
-    # Round trip: no flag this time.
-    kit.cmd_upload(argparse.Namespace(credentials=None))
-    assert len(sent) == 2, "the second, flagless run did not send"
-    out = capsys.readouterr().out
-    assert CREDS["api_key"] not in out, "installing printed the key"
+    strays = [f.name for f in kit_home.rglob("*") if f.is_file() and "upload" in f.name]
+    assert strays == [], f"a credential-shaped file appeared in try/: {strays}"
+    assert CREDS["api_key"] not in capsys.readouterr().out, "the key was printed"
 
 
-def test_pointing_at_the_installed_file_does_not_copy_it_onto_itself(kit_home, monkeypatch):
-    """`--credentials try/upload.json` is what someone types when they have
-    forgotten it is already there. Reading and rewriting the same path is how a
-    file gets truncated to nothing."""
-    (kit_home / "events.jsonl").write_text(
-        '{"event_id":"e1","session_id":"s1"}\n', encoding="utf-8"
-    )
-    canonical = kit.upload_credentials_path()
-    canonical.write_text(json.dumps(CREDS), encoding="utf-8")
-    opener, _sent = _recording_opener()
-    monkeypatch.setattr(upload_mod, "open_request", opener)
-    monkeypatch.setattr(kit, "load_uploader", lambda: upload_mod)
-    kit.cmd_upload(argparse.Namespace(credentials=str(canonical)))
-    assert json.loads(canonical.read_text()) == CREDS, "the file was clobbered by its own install"
+def test_the_uploader_has_no_write_path_at_all():
+    """The narrower form of the rule above, read off the module. `upload.py`
+    reads a capture and sends it; the moment it can write, "your download stays
+    your only copy" becomes something a reviewer takes on trust rather than
+    checks."""
+    source = (REPO_ROOT / "try" / "upload.py").read_text(encoding="utf-8")
+    # The one `open(` is the capture, opened for reading.
+    assert 'open(events_path, encoding="utf-8")' in source
+    for writer in ("write_text(", "write_bytes(", "shutil", "os.open", '"w"', "'w'"):
+        assert writer not in source, f"upload.py gained a write path: {writer}"
 
 
 def test_the_uploader_is_not_on_the_import_graph_of_the_other_commands():
@@ -5047,13 +5042,14 @@ def test_security_md_keeps_the_config_entry_check_that_upload_could_have_broken(
 
 
 def test_uninstall_names_the_credential_it_leaves_behind(kit_home, monkeypatch, capsys):
-    """`uninstall` leaves the events file and the backups on purpose, and now a
-    third thing that is different in kind: a live API key.
+    """`uninstall` leaves the events file and the backups on purpose. If a
+    credential is also sitting there it names that too, and it is different in
+    kind from the other two: a live API key.
 
-    Left for the same reason — removing the wrap and disposing of the data are
-    separate decisions — but named, because someone who has just ended the trial
-    should not find out months later that a working credential is sitting in a
-    folder they stopped thinking about. §7 carries the same sentence."""
+    The kit never puts it there — `upload` reads it wherever the person saved it
+    — so this fires only when they chose to keep it beside `kit.py`. Named when
+    it is, because the moment the trial is declared over is the last moment
+    anyone thinks to look in that folder."""
     config = _config(kit_home, {"mcpServers": {"acme": {"command": "acme-server"}}})
     kit.cmd_setup(
         argparse.Namespace(server="acme", config_file=str(config), tenant=None, vendor=None)
@@ -5066,13 +5062,15 @@ def test_uninstall_names_the_credential_it_leaves_behind(kit_home, monkeypatch, 
     assert CREDS["api_key"] not in out, "uninstall printed the key while naming it"
 
 
-def test_security_md_section_7_inventories_the_credential_file():
-    """§7 is the removal inventory, and its promise is that it is complete —
-    "that is the entire footprint". A file the kit does not delete and the
-    document does not list is the one shape that sentence cannot survive."""
+def test_security_md_section_7_accounts_for_the_credential_file():
+    """§7 is the removal inventory and its promise is completeness — "that is
+    the entire footprint". The credential is the one file in this trial the kit
+    does not create, so what §7 owes the reader is the opposite of an entry in
+    the cleanup list: that there is nothing here to clean up, because the file
+    never moved from wherever they saved it."""
     doc = (KIT_PATH.parent / "SECURITY.md").read_text(encoding="utf-8")
     section = doc[doc.index("## 7. Where the data lives") : doc.index("## 8. Provenance")]
-    assert "try/upload.json" in section, "§7's inventory omits the credential file"
-    assert "does **not** delete it" in section, (
-        "§7 does not say uninstall leaves the credential in place"
+    assert "upload.json" in section, "§7 never accounts for the credential file"
+    assert "never moves or copies it" in section, (
+        "§7 stopped saying the kit leaves the credential where the person put it"
     )

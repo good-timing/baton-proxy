@@ -370,7 +370,9 @@ do not push:
   mail, so it is usually still in a downloads folder rather than beside
   `kit.py`. Take the path, put it in the command, and hand them the line to run —
   `python3 kit.py upload --credentials <path>` with their path in place of
-  `<path>`. The kit installs a copy on that first run, so it is asked once.
+  `<path>`. The kit reads that file and does not copy it, so if they send again
+  another week they will need the path again — which is a reason to ask rather
+  than to guess, not a reason to stash it anywhere.
 - **Never open that file.** Not to check it, not to confirm they gave you the
   right path, not to read the workspace name back to them. It is a live
   credential — the one thing in this trial that is — and *Do not read out a

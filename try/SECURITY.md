@@ -368,8 +368,10 @@ promised:
   A kit downloaded from the repository does not have one, cannot obtain one, and
   `upload` prints the email path instead rather than inventing a destination.
   `--credentials <path>` points at that file where it landed — a downloads
-  folder, usually — and installs a copy beside `kit.py` at mode 0600 so it is
-  given once. **The receipt offers this command to everyone**, conditioned in
+  folder, usually. It is **read, never copied**: the kit makes no second copy of
+  a key, so the file you were sent stays the only one and deleting it is the
+  whole of the cleanup. **The receipt offers this command to everyone**,
+  conditioned in
   its own first clause on having been sent a file, so you will meet it at the
   end of the trial whether or not it applies to you. It is named here for the
   same reason the address is: meeting it unannounced would be a fair reason to
@@ -554,15 +556,16 @@ it should not leave, delete it; we will never know it existed.
   the one place a literal env value is written to disk by the kit — deliberately,
   since an exact restore is impossible without it. `try/.gitignore` keeps it out of
   git; `uninstall` deletes it once the restore is verified.
-- **If we handed you a `try/upload.json`, it holds a live API key** — the one
+- **If we sent you an `upload.json`, it holds a live API key** — the one
   `kit.py upload` uses (§4, row 6). It is ours, issued for your workspace, and
-  it is the one file here that is a credential rather than a record. `uninstall`
-  does **not** delete it, for the same reason it does not delete your events:
-  removing the wrap and disposing of your data are separate decisions and we do
-  not make the second one for you. Delete it whenever you like — `upload` simply
-  refuses afterwards — and tell us if it was ever exposed, because rotating it is
-  something only we can do. `try/.gitignore` keeps it out of git; if you did not
-  receive one, this bullet does not apply to you and nothing here is missing.
+  it is the only credential in this trial rather than a record of one. **The kit
+  never moves or copies it**: it stays wherever you saved it, which is wherever
+  you chose, and `upload` reads it at the moment you run the command. So there
+  is nothing here for `uninstall` to clean up — delete that file when you are
+  done, and tell us if it was ever exposed, because rotating it is something
+  only we can do. `try/.gitignore` covers the name in case you did save it into
+  the checkout. If you did not receive one, this bullet does not apply to you
+  and nothing here is missing.
 
 **To remove the kit at any point, including mid-trial:** run the uninstall
 command, which restores the recorded entry, prints it for you to check (with any

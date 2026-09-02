@@ -1756,10 +1756,10 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     print("If we set up a workspace for you and sent you an `upload.json`, you can")
     print("send it straight there instead, without the mail:")
     print("  python3 kit.py upload --credentials <path to that file>")
-    print("Same data and the same decision — it just skips the attachment. The kit")
-    print("keeps a copy after the first run, so `python3 kit.py upload` works alone")
-    print("from then on. If none of that means anything to you, the address above is")
-    print("your path and nothing is missing.")
+    print("Same data and the same decision — it just skips the attachment. It reads")
+    print("that file and does not copy it, so the one you downloaded stays your only")
+    print("copy. If none of that means anything to you, the address above is your")
+    print("path and nothing is missing.")
     return 0
 
 
@@ -1835,21 +1835,23 @@ def cmd_upload(args: argparse.Namespace) -> int:
     # refusal they were always going to get. The permanent condition is reported
     # first, and it is the one with a working alternative attached.
     #
-    # `--credentials` exists because the receipt offers upload to everyone and
-    # the file arrives by mail: it lands in a downloads folder, not beside
-    # `kit.py`, and telling someone to move a file into a directory their agent
-    # cloned five minutes ago is a step to get wrong. Validated BEFORE it is
-    # installed — a bad path copied over the canonical home would make every
-    # later bare `upload` refuse for a reason they cannot see.
+    # `--credentials` exists because the file arrives by mail: it lands in a
+    # downloads folder, not beside `kit.py`, and telling someone to move a file
+    # into a directory their agent cloned five minutes ago is a step to get
+    # wrong.
+    #
+    # It READS the file and does not copy it. A first version installed it here
+    # so a second run could be typed without the flag, which was optimising the
+    # wrong case: this is a prospect proving the thing works, and most of them
+    # will send once. That bought a shorter second command that usually never
+    # happens, and paid for it by leaving a live API key inside a checkout
+    # permanently — a copy nobody asked for, in a place they were not the ones
+    # to choose. Their download stays their only copy, and deleting it is the
+    # whole of the cleanup.
     explicit = getattr(args, "credentials", None)
     try:
         if explicit:
-            source = Path(explicit).expanduser()
-            creds = uploader.read_credentials(source)
-            if uploader.install_credentials(source, upload_credentials_path()):
-                print(f"Kept a copy at {upload_credentials_path()} — `upload` alone works now.")
-                print("It is readable only by you. Delete the one you downloaded.")
-                print()
+            creds = uploader.read_credentials(Path(explicit).expanduser())
         else:
             creds = uploader.load_credentials(TRY_DIR)
     except uploader.NoCredentials as e:
@@ -1955,11 +1957,12 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         left.append(f"  {EVENTS_PATH}  ({human_size(EVENTS_PATH.stat().st_size)})")
     for b in sorted(TRY_DIR.glob("config-backup.*.json")):
         left.append(f"  {b}")
-    # The credential is left for the same reason the events are: removing the
-    # wrap and disposing of the data are separate decisions, and this command
-    # only owns the first. But it is named rather than left silent — it is the
-    # one file here that is a live key, and someone who has just been told the
-    # trial is over should not have to discover that on their own later.
+    # The kit never puts the credential here — `upload` reads it wherever they
+    # saved it — so this fires only when someone chose to keep it beside
+    # `kit.py`. Named anyway when it is: it is a live key, and the moment the
+    # trial is declared over is the last moment anyone will think to look. Left
+    # rather than deleted for the same reason the events are: removing the wrap
+    # and disposing of data are separate decisions, and this command owns one.
     creds = upload_credentials_path()
     if creds.exists():
         left.append(f"  {creds}  (the API key we gave you — deleting it disables `upload`)")
@@ -1991,8 +1994,8 @@ def main(argv: list[str] | None = None) -> int:
     # One optional flag, and it points at a file rather than at a destination:
     # where to send is inside the file we sent, so this cannot aim the capture
     # anywhere we did not provision. It exists for the ordinary case of a
-    # credential sitting in a downloads folder, and the first run that uses it
-    # installs a copy beside `kit.py`, so it is needed once and never again.
+    # credential sitting in a downloads folder, and it is read rather than
+    # copied — the kit never makes a second copy of a key.
     p_upload = sub.add_parser("upload", help="send the capture to the workspace we made for you")
     p_upload.add_argument(
         "--credentials", help="path to the upload.json we sent you, if it is not in try/"
