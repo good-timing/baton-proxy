@@ -169,6 +169,39 @@ CC_IS_A_CHECKSUM = (
     "                     nothing here can tell you which it was."
 )
 
+# The proxy's provenance marker, copied rather than imported: `try/` runs from a
+# checkout with no dependencies and no `baton_proxy` on the path (see the header).
+# It is `INTENT_SOURCE_PARAM` in `src/baton_proxy/proxy.py`.
+INTENT_SOURCE_PARAM = "injected_param"
+
+# Printed under the intent line when it is zero and calls were captured. The
+# first human-led run produced an empty intent layer and the agent explained it
+# as "the agent never called `baton_annotate`" — a cause that was wrong then and
+# is impossible now: intent rides parameters on the tool's own schema, so there
+# is no prompt to refuse and no tool to skip. What the file cannot say is WHY the
+# model left them off, and that half is stated rather than left to be filled in.
+INTENT_IS_ZERO = (
+    "                     The goal rides parameters the proxy adds to your own\n"
+    "                     tools' schemas, so there is nothing here to refuse and\n"
+    "                     nothing to switch off: a zero means the model left them\n"
+    "                     off every call, no call failed for it, and your server\n"
+    "                     saw the calls exactly as it always does. Why the model\n"
+    "                     left them off is not in this file."
+)
+
+# Printed under the annotations line when it is zero. This is the number where
+# a refusal IS one of the causes — and where a refusal is invisible, because a
+# client-side denial never reaches the proxy. Both causes are named for the same
+# reason the `cc` note exists: an unexplained zero gets explained downstream.
+ANNOTATIONS_ARE_ZERO = (
+    "                     Zero is the ordinary case: the tool is for friction —\n"
+    "                     a wrong result, a dead end, a missing capability — and\n"
+    "                     a session that went smoothly files none. It is also\n"
+    "                     what a refusal looks like: if you declined the tool at\n"
+    "                     a prompt, that stayed in your client and never reached\n"
+    "                     this file. Nothing here can tell the two apart."
+)
+
 
 # Uninstall's version, and deliberately not the constant above. Nothing is
 # pending here and nothing is inert: the config already says what it said before
@@ -881,7 +914,14 @@ def summarize(events: list[dict], size_bytes: int) -> dict:
     # traffic this file proves the proxy captured.
     other_by_session: Counter[str] = Counter()
     first_seen: dict[str, str] = {}
-    with_intent: set[str] = set()
+    # Two mechanisms, counted apart, because they fail for different reasons.
+    # Intent rides the injected params on every tool call; `baton_annotate` is
+    # the friction path and is the only one of the two a person can refuse. The
+    # old single number merged them at session grain, which is how an empty
+    # intent layer came to be explained as a refusal — a cause the file cannot
+    # see, and not a cause of this number at all.
+    calls_with_intent = 0
+    agent_annotations = 0
     tool_calls = 0
     tools: list[str] = []
     stamps: list[str] = []
@@ -903,9 +943,15 @@ def summarize(events: list[dict], size_bytes: int) -> dict:
             if sid:
                 calls_by_session[sid] += 1
             if payload.get("call_intent"):
-                with_intent.add(e.get("session_id") or "")
-        elif kind == "annotation" and payload.get("intent"):
-            with_intent.add(e.get("session_id") or "")
+                calls_with_intent += 1
+        elif kind == "annotation":
+            # The proxy synthesises ONE annotation per session out of the first
+            # call's injected params, marked `intent_source="injected_param"`
+            # (`proxy.py`). Counting those as agent-filed would report an agent
+            # that called nothing as one that filed on every session — the same
+            # oracle bug that would have failed the 2026-09-01 denial verify.
+            if payload.get("intent_source") != INTENT_SOURCE_PARAM:
+                agent_annotations += 1
         elif kind == "surface_snapshot":
             names = [t.get("name", "") for t in payload.get("tools") or [] if isinstance(t, dict)]
             if names:
@@ -928,7 +974,8 @@ def summarize(events: list[dict], size_bytes: int) -> dict:
         # Dead means nothing reached the server at all — not merely no TOOL call.
         "dead_sessions": sum(1 for _s, c, o in per_session if c == 0 and o == 0),
         "other_calls": sum(o for _s, _c, o in per_session),
-        "sessions_with_intent": len(with_intent - {""}),
+        "calls_with_intent": calls_with_intent,
+        "agent_annotations": agent_annotations,
         "tool_calls": tool_calls,
         "tools": tools,
         "first": min(stamps) if stamps else None,
@@ -1554,7 +1601,20 @@ def cmd_receipt(args: argparse.Namespace) -> int:
             f"({sum(1 for _s, c, o in hidden if c == 0 and o == 0)} with nothing in them)"
         )
     print(f"tool calls           {s['tool_calls']}")
-    print(f"intent captured      {s['sessions_with_intent']} of {s['sessions']} sessions")
+    # Per CALL, and per mechanism. Sessions was the wrong grain — one call with a
+    # goal in a session of twenty made the row read as a covered session — and
+    # merging the two mechanisms made the number unanswerable when it was zero.
+    # Both rows are gated on there being calls to have carried a goal. `0 of 0`
+    # with six lines under it explaining the zero argues with the banner below,
+    # which has already said nothing came down the pipe.
+    if s["tool_calls"]:
+        print(f"intent captured      {s['calls_with_intent']} of {s['tool_calls']} tool calls")
+        if not s["calls_with_intent"]:
+            print(INTENT_IS_ZERO)
+    if s["tool_calls"] or s["agent_annotations"]:
+        print(f"annotations filed    {s['agent_annotations']} by your agent")
+        if not s["agent_annotations"]:
+            print(ANNOTATIONS_ARE_ZERO)
     print(f"tool definitions     {len(s['tools'])} captured exactly as your server served them")
     if s["tools"]:
         print(

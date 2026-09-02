@@ -666,6 +666,9 @@ def _ev(**kw):
 
 
 def test_receipt_counts_sessions_calls_and_intent_coverage():
+    """Intent is counted per CALL, not per session. One goal in a session of
+    twenty is one covered call, and the session grain reported it as full
+    coverage of that session."""
     events = [
         _ev(session_id="s1", payload={"tool_name": "search", "call_intent": "find the doc"}),
         _ev(session_id="s1", payload={"tool_name": "search"}),
@@ -674,7 +677,105 @@ def test_receipt_counts_sessions_calls_and_intent_coverage():
     s = kit.summarize(events, 1234)
     assert s["sessions"] == 2
     assert s["tool_calls"] == 3
-    assert s["sessions_with_intent"] == 1
+    assert s["calls_with_intent"] == 1
+
+
+def test_a_synthesised_annotation_is_not_counted_as_one_the_agent_filed():
+    """The proxy makes one annotation per session out of the first call's
+    injected params (`intent_source="injected_param"`). Counting those as
+    agent-filed reports an agent that called nothing as one that filed on every
+    session — which is what the first denial-verify oracle did, and it would
+    have failed a passing run."""
+    events = [
+        _ev(
+            session_id="s1",
+            event_type="annotation",
+            payload={"intent": "find the doc", "intent_source": "injected_param"},
+        ),
+        _ev(
+            session_id="s1",
+            event_type="annotation",
+            payload={"intent": "find the doc", "signal_type": "failure"},
+        ),
+    ]
+    s = kit.summarize(events, 1234)
+    assert s["agent_annotations"] == 1
+
+
+def test_the_two_intent_mechanisms_are_reported_apart(tmp_path, kit_home, capsys):
+    """Params and the tool fail for different reasons, and only one of them can
+    be refused. Merging them at session grain is what left the first human-led
+    run's empty intent layer open to being explained as a refusal."""
+    out = _receipt_with_events(
+        tmp_path,
+        kit_home,
+        capsys,
+        [
+            {
+                "event_type": "tool_call_start",
+                "session_id": "s1",
+                "captured_at": "2026-08-30T10:00:00Z",
+                "payload": {"tool_name": "echo", "call_intent": "check the wrap"},
+            },
+            {
+                "event_type": "tool_call_start",
+                "session_id": "s1",
+                "captured_at": "2026-08-30T10:00:02Z",
+                "payload": {"tool_name": "echo"},
+            },
+        ],
+    )
+    assert "intent captured      1 of 2 tool calls" in out
+    assert "annotations filed    0 by your agent" in out
+    # The zero that CAN be a refusal says so, and says the refusal is invisible.
+    assert "declined the tool at" in out
+    # The zero that cannot is not on this receipt at all.
+    assert "nothing here to refuse" not in out
+
+
+def test_a_zero_intent_layer_is_not_left_open_to_a_refusal(tmp_path, kit_home, capsys):
+    """The first human-led run captured four calls with no intent and the agent
+    reported it as "the agent never called `baton_annotate`". Nothing was
+    called: intent rides the tool schema, so a refusal cannot produce this
+    number, and the receipt says which causes remain rather than leaving the
+    space for one to be invented."""
+    out = _receipt_with_events(
+        tmp_path,
+        kit_home,
+        capsys,
+        [
+            {
+                "event_type": "tool_call_start",
+                "session_id": "s1",
+                "captured_at": "2026-08-30T10:00:00Z",
+                "payload": {"tool_name": "echo"},
+            }
+        ],
+    )
+    assert "intent captured      0 of 1 tool calls" in out
+    assert "nothing here to refuse" in out
+    assert "Why the model" in out and "not in this file" in out
+
+
+def test_neither_zero_note_fires_when_nothing_reached_the_server(tmp_path, kit_home, capsys):
+    """`0 of 0 tool calls` plus six lines explaining the zero argues with the
+    CONNECTED, BUT NOTHING CALLED IT banner printed underneath it."""
+    out = _receipt_with_events(
+        tmp_path,
+        kit_home,
+        capsys,
+        [
+            {
+                "event_type": "surface_snapshot",
+                "session_id": "s1",
+                "captured_at": "2026-08-30T10:00:00Z",
+                "payload": {"tools": [{"name": "echo"}]},
+            }
+        ],
+    )
+    assert "CONNECTED, BUT NOTHING CALLED IT" in out
+    assert "intent captured" not in out
+    assert "annotations filed" not in out
 
 
 def test_receipt_reads_redaction_markers_off_the_file_not_process_state():
@@ -2441,23 +2542,33 @@ def test_receipt_branch_four_counts(tmp_path, kit_home, capsys):
     assert "No events have been captured yet" not in out
 
 
-def _receipt_with_redactions(tmp_path, kit_home, capsys, marker_text: str) -> str:
+def _receipt_with_events(tmp_path, kit_home, capsys, events: list[dict]) -> str:
+    """A set-up trial whose event file is exactly these events. Setup runs for
+    real so `receipt` reads the state it would read on a live machine — the
+    banners below the counts are gated on it."""
     path = _config(tmp_path, GLOBAL_ONLY)
     assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     (kit_home / "events.jsonl").write_text(
-        json.dumps(
+        "".join(json.dumps(e) + "\n" for e in events), encoding="utf-8"
+    )
+    return _receipt_output(capsys)
+
+
+def _receipt_with_redactions(tmp_path, kit_home, capsys, marker_text: str) -> str:
+    return _receipt_with_events(
+        tmp_path,
+        kit_home,
+        capsys,
+        [
             {
                 "event_type": "tool_call_end",
                 "session_id": "s1",
                 "captured_at": "2026-08-30T10:00:01Z",
                 "payload": {"tool_name": "echo", "result": marker_text, "duration_ms": 3},
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        ],
     )
-    return _receipt_output(capsys)
 
 
 def test_a_cc_count_is_printed_with_what_it_cannot_mean(tmp_path, kit_home, capsys):
