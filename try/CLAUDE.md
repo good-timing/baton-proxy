@@ -42,6 +42,16 @@ verbatim and let them choose. Do not retry it with different flags hoping it
 lands, do not delete `state.json` or a `config-backup.*` file to clear a
 refusal, and do not pick for them when the command says it will not pick.
 
+**Never explain a number you only counted.** The receipt reports what is in
+the file. It does not know why any number is what it is, and neither do you —
+the causes sit in their client, their prompts and their data, and none of those
+reach this machine. Where a count has more than one cause the receipt names
+them: relay that, do not pick one of them, and do not add one it does not name.
+An intent of zero is not "you refused something", a `cc` count is not a card in
+their data, and a session with no calls is not proof another server answered.
+If they ask why, say what would settle it — usually using the server again with
+the receipt open — rather than answering from the number.
+
 **Do not quote the captured events into the conversation.** `events.jsonl`
 contains the full arguments and full results of every tool call — real business
 data, which the scrubber does not redact (`SECURITY.md` §6). `receipt` prints
@@ -253,6 +263,24 @@ path, and it is the same one whether they were gone ten minutes or ten days.
 If they check in, run `receipt` and report it. Suggest running it **early** —
 the first day, not the last — because an empty file on day one is a five-minute
 fix and an empty file on day five is a wasted trial.
+
+**Two of its rows are about intent, and they are different mechanisms.**
+`intent captured` counts tool calls that carried the goal parameters the proxy
+grafts onto their own tools' schemas — those ride the call itself, there is no
+prompt attached to them and nothing to switch off, so a refusal cannot produce
+a zero there. `annotations filed` counts what their agent chose to file with
+`baton_annotate`, which is friction only — a wrong result, a dead end, a missing
+capability — and zero is the ordinary case rather than a fault. That is also the
+one number a refusal can explain, and it is invisible: a tool declined at a
+prompt is declined inside their client and never reaches the proxy, so a refusal
+and a smooth session are the same zero here. When either row is zero the receipt
+prints what it can and cannot tell apart underneath it. Relay those lines and
+stop there.
+
+**`secrets redacted` counts patterns, not findings.** Where the kit prints a
+note under a category — `cc` has one — that note is the reading of the number.
+Give it whole rather than in your own words: it says what the count cannot mean,
+and it is the sentence a person repeats to their security reviewer.
 
 ## Ending it
 

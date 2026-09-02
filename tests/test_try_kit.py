@@ -733,6 +733,17 @@ def test_the_two_intent_mechanisms_are_reported_apart(tmp_path, kit_home, capsys
     assert "nothing here to refuse" not in out
 
 
+def test_claude_md_routes_on_both_intent_rows_by_name():
+    """Track 2.1. The doc's branch for these two numbers is only reachable if it
+    names the rows the receipt prints, so the labels are read out of the doc —
+    a rename on either side fails here rather than leaving the agent to explain
+    a row the doc never mentions. The prose itself is NOT pinned: whether the
+    agent relays it is a followability property and is graded by the harness."""
+    doc = _claude_md()
+    for row in ("intent captured", "annotations filed"):
+        assert f"`{row}`" in doc, f"CLAUDE.md no longer routes on the `{row}` row"
+
+
 def test_a_zero_intent_layer_is_not_left_open_to_a_refusal(tmp_path, kit_home, capsys):
     """The first human-led run captured four calls with no intent and the agent
     reported it as "the agent never called `baton_annotate`". Nothing was
