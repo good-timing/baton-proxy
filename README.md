@@ -179,7 +179,7 @@ All knobs are environment variables. Every emission-related one has a default; t
 | `BATON_TENANT_ID`     | `local` | Tenant identifier. Placeholder; replace when shipping to a Console. |
 | `BATON_CONSENT_TOKEN` | `local` | Per-process consent token. **Placeholder; you MUST replace this before pointing at an `http(s)://` sink** — the proxy refuses to start in that combination, so accidental remote leakage of placeholder-tagged events doesn't happen. |
 | `BATON_API_KEY`       | _(unset)_ | Bearer token. Required only when the sink scheme is `http(s)://`; `file://` and `stderr:` sinks ignore it. |
-| `BATON_VENDOR_ID`     | _(unset)_ | Labels the install for the operator (useful for multi-vendor customers grepping their JSONL). Does NOT prefix the injected tool name — that stays `baton_annotate` in v1. Vendors who need a white-labelled tool name will get an opt-in switch when they ask. |
+| `BATON_VENDOR_ID`     | `local` | Labels the install for the operator (useful for multi-vendor customers grepping their JSONL). Placeholder; **a remote sink refuses to start while it is still `local`**, because the Console buckets friction by vendor and an unset label files rows under a vendor nobody owns. Does NOT prefix the injected tool name — that stays `baton_annotate` in v1. Vendors who need a white-labelled tool name will get an opt-in switch when they ask. |
 | `BATON_UPSTREAM_AUTH_TOKEN` | _(unset)_ | Credential for the `--url` bridge, sent upstream as `Authorization: Bearer`. Ignored by the stdio form, which passes the entry's own `env` to the child instead. |
 | `BATON_TENANT_TYPE`   | `vendor` | Which tenant shape this install ships to. `vendor` sends signal to the wrapped server's vendor Console; `customer` sends it to the end user's own Baton tenant. Also decides whether `baton_session_report` survives alongside an HTTP sink. |
 | `BATON_INTENT_PARAM`  | `optional` | Injection mode for the intent parameters. `required` additionally lists `user_goal` in the schema's advertised `required` set. That is an advertisement only: nothing validates it, the param is stripped before forwarding, and no call fails for omitting it. |
@@ -195,7 +195,7 @@ Pick the rung you need; the env-var deltas are the entire difference.
 |---|---|---|
 | **1. Default (install-and-play)** | stderr + `/tmp/baton-proxy.jsonl` | _(none)_ |
 | **2. Custom local capture** | wherever you want | `BATON_EVENT_SINK=file:///path/to/your.jsonl` |
-| **3. Ship to a Console** | hosted | `BATON_EVENT_SINK=https://console.example.com` + `BATON_API_KEY=...` + `BATON_TENANT_ID=your-tenant` + `BATON_CONSENT_TOKEN=real-token` |
+| **3. Ship to a Console** | hosted | `BATON_EVENT_SINK=https://console.example.com` + `BATON_API_KEY=...` + `BATON_TENANT_ID=your-tenant` + `BATON_CONSENT_TOKEN=real-token` + `BATON_VENDOR_ID=your-vendor` |
 
 ### See it locally
 
@@ -219,6 +219,7 @@ See `examples/live-claude-invocation/` for a guided walk-through that also cover
 The proxy refuses to start when:
 - an `http(s)://` sink is configured but `BATON_API_KEY` is unset
 - an `http(s)://` sink is configured but `BATON_CONSENT_TOKEN` is still the placeholder `"local"`
+- an `http(s)://` sink is configured but `BATON_VENDOR_ID` is still the placeholder `"local"`
 - the sink URL has an unsupported scheme
 
 These are emitted as proxy startup errors so a misconfigured install never silently drops or silently mistags events.

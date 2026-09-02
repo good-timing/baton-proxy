@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from baton_proxy.config import Config
+from baton_proxy.config import DEFAULT_VENDOR_ID, Config
 from baton_proxy.emitter import Emitter, detect_agent_runtime
 
 
@@ -313,6 +313,47 @@ def test_http_sink_with_placeholder_consent_refuses_at_start() -> None:
     e = Emitter(config)
     with pytest.raises(ValueError, match="placeholder BATON_CONSENT_TOKEN"):
         e.start()
+
+
+def test_http_sink_with_placeholder_vendor_refuses_at_start() -> None:
+    """`vendor_id` defaults to the `local` placeholder so the zero-config
+    install starts (config.py). That is fine while events stay on the
+    machine; it is not fine once they reach a Console, which buckets
+    friction BY vendor. A stream labelled `local` there is not mislabelled
+    in a cosmetic way, it lands in a bucket nobody owns. Same shape as the
+    consent guard: harmless locally, refused at the boundary."""
+    config = Config(
+        session_id="test-session",
+        event_sink="https://collector.example.com",
+        tenant_id="t",
+        api_key="k",
+        consent_token="real-token",
+        vendor_id=DEFAULT_VENDOR_ID,  # the placeholder
+        log_file=None,
+    )
+    e = Emitter(config)
+    with pytest.raises(ValueError, match="BATON_VENDOR_ID"):
+        e.start()
+
+
+def test_local_sinks_with_placeholder_vendor_are_fine(tmp_path: Path) -> None:
+    """The whole point of the default: wrap a server, set nothing, get
+    events. file:// and stderr: never trigger the vendor guard."""
+    sink_path = tmp_path / "events.jsonl"
+    config = Config(
+        session_id="test-session",
+        event_sink=f"stderr:,file://{sink_path}",
+        tenant_id="local",
+        api_key=None,
+        consent_token="local",
+        vendor_id=DEFAULT_VENDOR_ID,
+        log_file=None,
+    )
+    e = Emitter(config)
+    e.start()  # no raise
+    e.enqueue_tool_call_start(tool_name="echo", params={})
+    assert _wait_for(lambda: sink_path.exists() and sink_path.stat().st_size > 0)
+    e.stop()
 
 
 def test_local_sinks_with_placeholder_consent_are_fine(tmp_path: Path) -> None:

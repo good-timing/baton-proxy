@@ -16,6 +16,7 @@ from baton_proxy.config import (
     DEFAULT_CONSENT_TOKEN,
     DEFAULT_EVENT_SINK,
     DEFAULT_TENANT_ID,
+    DEFAULT_VENDOR_ID,
     Config,
 )
 
@@ -23,9 +24,10 @@ from baton_proxy.config import (
 def _scrub_baton_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove any BATON_* env vars so from_env() sees a clean environment.
 
-    Note: BATON_VENDOR_ID is required at startup since Phase 2; tests that
-    call from_env() must set it explicitly via ``_set_required_env`` (below).
-    Leaving it out is what the missing-vendor-id test exercises."""
+    Note: BATON_VENDOR_ID falls back to the ``local`` placeholder like
+    tenant and consent do, so from_env() succeeds on a clean environment.
+    ``_set_required_env`` (below) still sets it where a test wants a real
+    vendor label rather than the placeholder."""
     for key in (
         "BATON_EVENT_SINK",
         "BATON_TENANT_ID",
@@ -116,26 +118,31 @@ def test_api_key_remains_optional_with_defaults(monkeypatch: pytest.MonkeyPatch)
     assert config.api_key is None
 
 
-def test_from_env_raises_when_vendor_id_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """vendor_id is required at startup — the console needs it to bucket
-    friction signal per wrapped MCP server, and the local JSONL stream uses
-    it to label events. Loud failure beats silent emission tagged with an
-    empty vendor."""
-    _scrub_baton_env(monkeypatch)
-    with pytest.raises(ValueError, match="BATON_VENDOR_ID"):
-        Config.from_env()
-
-
-def test_from_env_raises_when_vendor_id_is_empty_string(
+def test_from_env_defaults_vendor_id_to_the_placeholder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An exported-but-empty BATON_VENDOR_ID="" should fail the same way as
-    unset — an empty string is a misconfigured shell export, not a valid
-    vendor identifier."""
+    """The zero-config install starts. It used to raise, which meant the
+    quick start we published on five pages — wrap the command, set nothing —
+    killed the MCP server outright rather than degrading capture: the proxy
+    IS the server from the client's perspective, so the tool vanished. The
+    label is worth a placeholder, not a dead server. The loud failure moves
+    to the remote sink, where a mislabelled stream actually costs someone
+    something (see the emitter's vendor guard)."""
+    _scrub_baton_env(monkeypatch)
+    config = Config.from_env()
+    assert config.vendor_id == DEFAULT_VENDOR_ID
+    assert config.using_placeholder_vendor is True
+
+
+def test_from_env_treats_empty_vendor_id_as_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exported-but-empty BATON_VENDOR_ID="" resolves the same way as
+    unset. An empty string is a misconfigured shell export, not a valid
+    vendor identifier, and ``_env`` already folds it to None."""
     _scrub_baton_env(monkeypatch)
     monkeypatch.setenv("BATON_VENDOR_ID", "")
-    with pytest.raises(ValueError, match="BATON_VENDOR_ID"):
-        Config.from_env()
+    assert Config.from_env().vendor_id == DEFAULT_VENDOR_ID
 
 
 def test_from_env_tenant_type_defaults_to_vendor(monkeypatch: pytest.MonkeyPatch) -> None:

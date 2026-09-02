@@ -32,6 +32,19 @@ DEFAULT_EVENT_SINK = "stderr:,file:///tmp/baton-proxy.jsonl"
 DEFAULT_TENANT_ID = "local"
 DEFAULT_CONSENT_TOKEN = "local"
 DEFAULT_TENANT_TYPE = "vendor"
+# The vendor label, and a placeholder for the same reason tenant and consent
+# are. It was REQUIRED until 2026-09-02, and that cost more than it bought:
+# the proxy IS the MCP server from the client's perspective, so a missing
+# label did not degrade capture, it killed the wrapped server. Every quick
+# start we publish says "wrap the command, set nothing" — five pages of it —
+# and every one of them was a traceback instead of a working install.
+#
+# Nothing that reads the label locally needs it to be true: it exists so the
+# operator can grep their own JSONL. The Console is different, which is why
+# the loud failure MOVED rather than went away — see ``Emitter._guard_remote_
+# vendor``. There, `local` lands friction in a bucket nobody owns, so a
+# remote sink still refuses to start with the placeholder.
+DEFAULT_VENDOR_ID = "local"
 
 # Valid values for BATON_TENANT_TYPE. ``vendor`` = production install
 # wrapped on a customer's machine that ships signal to the vendor's
@@ -159,9 +172,9 @@ class Config:
     consent_token: str | None
 
     # Vendor identifier surfaced in proxy logs and used by the console to
-    # bucket friction signal per wrapped MCP server. Required at startup
-    # so every event carries a meaningful vendor label — without it the
-    # customer-mode dashboard can't render its cross-vendor view.
+    # bucket friction signal per wrapped MCP server. Defaults to the
+    # ``local`` placeholder; a remote sink refuses to start while it is
+    # still that, so the cross-vendor view never fills with unowned rows.
     vendor_id: str
 
     # Where the proxy writes its own operational log. Stderr by default;
@@ -215,6 +228,12 @@ class Config:
         return all(v is not None for v in (self.event_sink, self.tenant_id, self.consent_token))
 
     @property
+    def using_placeholder_vendor(self) -> bool:
+        """True when vendor_id is still the install-time placeholder.
+        Emitter refuses to start an http(s)/s3 sink while this is True."""
+        return self.vendor_id == DEFAULT_VENDOR_ID
+
+    @property
     def using_placeholder_consent(self) -> bool:
         """True when consent_token is still the install-time placeholder.
         Emitter refuses to start an http(s) sink while this is True — a
@@ -223,14 +242,7 @@ class Config:
 
     @classmethod
     def from_env(cls) -> Config:
-        vendor_id = _env("BATON_VENDOR_ID")
-        if not vendor_id:
-            raise ValueError(
-                "BATON_VENDOR_ID is required — set it to the wrapped MCP "
-                "server's vendor identifier (e.g., 'notion', 'github', "
-                "'slack'). The console uses this to bucket friction signal "
-                "by vendor; it also labels events in the local JSONL stream."
-            )
+        vendor_id = _env("BATON_VENDOR_ID") or DEFAULT_VENDOR_ID
         tenant_type = _env("BATON_TENANT_TYPE") or DEFAULT_TENANT_TYPE
         if tenant_type not in _TENANT_TYPES:
             raise ValueError(

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **`BATON_VENDOR_ID` is no longer required at startup; it defaults to the `local` placeholder, and the hard failure moves to the remote sink.** `Config.from_env()` raised without it, which meant the zero-config install did not degrade to an unlabelled event stream — it did not start. The proxy IS the MCP server from the client's perspective, so the wrapped server vanished from the client entirely, and the published quick start (wrap the command, set nothing) was the exact shape that triggered it, on five documentation surfaces. Nothing reading the label locally needs it to be true; it exists so an operator can grep their own JSONL, and `local` is honest there, matching `BATON_TENANT_ID` and `BATON_CONSENT_TOKEN` which have defaulted that way all along. The Console is the case that actually costs something — it buckets friction BY vendor, so a stream labelled `local` files rows under a vendor nobody owns — so `Emitter.start()` now refuses an http/https/s3 sink while the placeholder is in place, mirroring the existing consent guard exactly. **Not breaking for any install that already sets the variable**, which is every real path: `scan` sets it from the config entry name, and the Console's onboarding recipes and local-setup page all emit it.
+
+
 ## [0.5.3] — 2026-08-13
 
 ### Added

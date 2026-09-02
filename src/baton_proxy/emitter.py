@@ -177,6 +177,7 @@ class Emitter:
             return
         assert self._config.event_sink is not None  # emission_enabled gates this
         self._guard_remote_consent()
+        self._guard_remote_vendor()
         self._sink = make_sink(self._config.event_sink, api_key=self._config.api_key)
         self._thread = threading.Thread(target=self._drain, name="baton-proxy-emitter", daemon=True)
         self._thread.start()
@@ -227,6 +228,31 @@ class Emitter:
                 "placeholder BATON_CONSENT_TOKEN='local' — set BATON_CONSENT_TOKEN "
                 "to the real per-install consent token before pointing at a remote "
                 "endpoint."
+            )
+
+    def _guard_remote_vendor(self) -> None:
+        """Refuse a remote sink while vendor_id is still the placeholder.
+
+        The mirror of the consent guard, and the reason ``vendor_id`` can
+        have a default at all. Locally the label is a grep convenience and
+        `local` is honest. On a Console it is the key friction is bucketed
+        by, so an install that ships `local` does not produce a slightly
+        wrong dashboard — it produces rows filed under a vendor nobody owns,
+        which is indistinguishable from another install doing the same.
+        Refused at start(), before sink construction, so the operator sees
+        it once rather than discovering it in the Console days later.
+        """
+        if not self._config.using_placeholder_vendor:
+            return
+        assert self._config.event_sink is not None
+        parts = [p.strip() for p in self._config.event_sink.split(",") if p.strip()]
+        if any(p.startswith(("http://", "https://", "s3://")) for p in parts):
+            raise ValueError(
+                "Refusing to ship events to a remote sink (http/https/s3) with "
+                "the placeholder BATON_VENDOR_ID='local' — set BATON_VENDOR_ID "
+                "to the wrapped MCP server's vendor identifier (e.g. 'notion', "
+                "'github', 'slack') before pointing at a Console. It is the key "
+                "friction is bucketed by."
             )
 
     def stop(self, timeout: float = 2.0) -> None:
