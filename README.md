@@ -1,6 +1,6 @@
 # baton-proxy
 
-Transparent MCP proxy. Wraps a stdio MCP server as a subprocess, **or** bridges to a remote Streamable-HTTP MCP server (`--url`); injects an annotation tool into the handshake, and emits friction events to one or more sinks (stderr, a JSONL file, or a Baton Console).
+Transparent MCP proxy. Wraps a stdio MCP server as a subprocess, **or** bridges to a remote Streamable-HTTP MCP server (`--url`); injects an annotation tool and two intent parameters into the handshake, and emits friction events to one or more sinks (stderr, a JSONL file, or a Baton Console).
 
 Zero changes to the underlying MCP server. The proxy *is* the MCP server from Claude's perspective; the real server is either its child process (stdio) or the endpoint it forwards to (`--url`).
 
@@ -109,17 +109,42 @@ Details:
 
 ## What gets emitted
 
-Per real tool call, three event types match the [Baton wire format](https://github.com/good-timing/baton/blob/main/docs/SPEC.md) (`tool_call_start` / `tool_call_end` / `tool_call_error`):
+These event types match the [Baton wire format](https://github.com/good-timing/baton/blob/main/docs/SPEC.md):
 
 | Event | Payload |
 |---|---|
-| `tool_call_start` | `{tool_name, params}` |
+| `tool_call_start` | `{tool_name, params, call_intent, call_expected, intent_source}` |
 | `tool_call_end`   | `{tool_name, result, duration_ms}` |
 | `tool_call_error` | `{tool_name, error_type, error_body, duration_ms}` |
+| `annotation` | `{signal_type, intent, expected_outcome, suggested_improvement}` |
+| `surface_snapshot` | serverInfo, capabilities, instructions and the full tool list, hashed over the vendor-true (pre-injection) surface. At most one per session, and only when the hash changes. |
 
 Each event carries a session id (one per proxy process), monotonic sequence number, and the upstream MCP request's `_meta` block (for cycle correlation).
 
 The injected `baton_annotate` tool itself is handled by the proxy; the upstream server never sees it.
+
+### Intent parameters
+
+At `tools/list` the proxy adds two optional string parameters to every upstream
+tool's advertised schema, and strips them at `tools/call` before forwarding. Your
+server receives the arguments it would have received unwrapped.
+
+| Parameter | Captured as |
+|---|---|
+| `user_goal` | `tool_call_start.payload.call_intent` |
+| `expected_result` | `tool_call_start.payload.call_expected`, omitted when the agent did not fill it in |
+
+This is the capture path that survives clients which drop
+`InitializeResult.instructions` entirely (observed on Claude Desktop): a
+parameter description reaches the model at the moment it composes the call.
+`intent_source` records where a captured intent came from, and the session's
+first one also emits a proactive annotation sequenced before its
+`tool_call_start`.
+
+A tool that already declares a parameter of one of those names is left alone for
+that field. Its value is forwarded to the vendor untouched and never read as
+intent. Injection and stripping are fail-open throughout: an error there
+forwards the message unmodified rather than failing the call.
 
 ### Payload scrubbing
 
@@ -156,6 +181,10 @@ All knobs are environment variables. Every emission-related one has a default; t
 | `BATON_API_KEY`       | _(unset)_ | Bearer token. Required only when the sink scheme is `http(s)://`; `file://` and `stderr:` sinks ignore it. |
 | `BATON_VENDOR_ID`     | _(unset)_ | Labels the install for the operator (useful for multi-vendor customers grepping their JSONL). Does NOT prefix the injected tool name — that stays `baton_annotate` in v1. Vendors who need a white-labelled tool name will get an opt-in switch when they ask. |
 | `BATON_UPSTREAM_AUTH_TOKEN` | _(unset)_ | Credential for the `--url` bridge, sent upstream as `Authorization: Bearer`. Ignored by the stdio form, which passes the entry's own `env` to the child instead. |
+| `BATON_TENANT_TYPE`   | `vendor` | Which tenant shape this install ships to. `vendor` sends signal to the wrapped server's vendor Console; `customer` sends it to the end user's own Baton tenant. Also decides whether `baton_session_report` survives alongside an HTTP sink. |
+| `BATON_INTENT_PARAM`  | `optional` | Injection mode for the intent parameters. `required` additionally lists `user_goal` in the schema's advertised `required` set. That is an advertisement only: nothing validates it, the param is stripped before forwarding, and no call fails for omitting it. |
+| `BATON_USER_ID_HMAC_KEY` | _(unset)_ | Per-tenant secret keying the end-user `user_id` hash. The raw principal is hashed at the edge, so no sink ever sees it. Unset means `user_id` is skipped and events still emit; it is additive analytics, never a consent gate. |
+| `BATON_UPSTREAM_TIMEOUT` | `60` | Read timeout in seconds for the `--url` bridge. A bad value logs a warning and falls back to the default. |
 | `BATON_PROXY_LOG_FILE`| _(unset)_ | Path to tee proxy logs to (default: stderr only). |
 
 ### The three rungs
@@ -209,8 +238,8 @@ These are emitted as proxy startup errors so a misconfigured install never silen
 
 Two unidirectional pumps:
 
-- **client → server**: forwards stdin lines to the child process. Intercepts `tools/call` for `baton_annotate` (proxy synthesises the response). For every other `tools/call`, enqueues a `tool_call_start` event and records the request id.
-- **server → client**: forwards child stdout to the client. Modifies the `initialize` response to append annotation-tool instructions; modifies the `tools/list` response to append the `baton_annotate` tool. Correlates responses by id to emit `tool_call_end` / `tool_call_error`.
+- **client → server**: forwards stdin lines to the child process. Intercepts `tools/call` for `baton_annotate` (proxy synthesises the response). For every other `tools/call`, reads and strips the intent parameters, enqueues a `tool_call_start` event carrying them, and records the request id.
+- **server → client**: forwards child stdout to the client. Modifies the `initialize` response to append annotation-tool instructions; modifies the `tools/list` response to append the `baton_annotate` tool and splice the intent parameters onto every upstream tool's schema, and snapshots the vendor-true surface before those additions. Correlates responses by id to emit `tool_call_end` / `tool_call_error`.
 
 A third background thread drains an in-memory queue and delivers events one at a time to the configured sink (HTTP POST for `https://`, JSONL append for `file://`). Failed deliveries are logged and dropped — the proxy never retries on the hot path.
 
