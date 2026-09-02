@@ -1385,7 +1385,7 @@ EXPECTED_AUDIT_HITS = {
     # argument precisely so this grep can see it — written
     # `opener=urllib.request.urlopen` the call has no paren after the name, and
     # the kit would have gained an egress §9's published check could not find.
-    ("try/upload.py", 80, "urllib.request.urlopen(req)"),
+    ("try/upload.py", 81, "urllib.request.urlopen(req)"),
 }
 
 
@@ -1687,6 +1687,10 @@ def test_the_dependency_list_is_still_empty():
 _DOC_PLACEHOLDERS = {
     "<server-name>": "notion",
     "<name>": "notion",
+    # Both docs write the credential path as one token for exactly this reason:
+    # `<path to that file>` would shlex-split into four, and the extra three
+    # would reach argparse as positionals `upload` does not take.
+    "<path>": "/tmp/upload.json",
 }
 
 
@@ -4908,30 +4912,93 @@ def test_upload_names_the_key_and_never_prints_it(kit_home, monkeypatch, capsys)
     )
 
 
-def test_the_receipt_offers_upload_only_where_the_file_exists(kit_home, capsys):
-    """The gate the send fork rests on. A kit we handed to nobody in particular
-    must not name a command that will refuse — and the agent is told to read the
-    offer off the receipt rather than to know about it, so the receipt is the
-    thing that has to be right."""
+def test_the_receipt_offers_upload_to_everyone_with_its_condition_attached(kit_home, capsys):
+    """This was gated on the credential file existing, for one day.
+
+    Gating made the option invisible to the one person it was FOR: the file
+    arrives by mail and lands in a downloads folder, so the reader who could
+    use it was the reader who never saw it offered. Ungated, the load-bearing
+    thing is the CONDITION — "if we set up a workspace for you and sent you an
+    `upload.json`" — which is false for almost everyone and obviously false to
+    them. A bare command with no condition on it reads as a step they missed,
+    so the clause is pinned the way the address is."""
     (kit_home / "events.jsonl").write_text(
         json.dumps(_ev(payload={"tool_name": "s"})) + "\n", encoding="utf-8"
     )
     kit.cmd_receipt(argparse.Namespace())
-    without = capsys.readouterr().out
-    assert "workspace we set up for you" not in without, (
-        "a kit with no credential file offered an upload anyway"
+    out = capsys.readouterr().out
+    assert "If we set up a workspace for you and sent you an `upload.json`" in out, (
+        "the upload offer lost the condition that tells most readers it is not for them"
+    )
+    assert "python3 kit.py upload --credentials" in out, "the offer names no command"
+    assert kit.TEAM_EMAIL in out, "the email path stopped being offered alongside"
+    for scheme in ("http://", "https://"):
+        assert scheme not in out, "the receipt printed an endpoint"
+
+
+def test_a_credential_from_anywhere_is_validated_before_it_is_installed(kit_home, tmp_path):
+    """A path that is wrong, or points at something that is not a credential,
+    must not land on the canonical home. If it did, every later bare `upload`
+    would refuse for a reason the person cannot see — and they would have no way
+    to know the file they were sent is fine."""
+    (kit_home / "events.jsonl").write_text('{"event_id":"e1"}\n', encoding="utf-8")
+    bad = tmp_path / "not-a-credential.json"
+    bad.write_text('{"console_url": "https://x.test"}', encoding="utf-8")
+    with pytest.raises(kit.Refuse):
+        kit.cmd_upload(argparse.Namespace(credentials=str(bad)))
+    assert not kit.upload_credentials_path().exists(), (
+        "an unusable file was installed over the canonical home"
     )
 
-    (kit_home / "upload.json").write_text(json.dumps(CREDS), encoding="utf-8")
-    kit.cmd_receipt(argparse.Namespace())
-    with_file = capsys.readouterr().out
-    assert "python3 kit.py upload" in with_file, "the provisioned kit never mentions the option"
-    assert kit.TEAM_EMAIL in with_file, "the email path stopped being offered alongside"
-    for scheme in ("http://", "https://"):
-        assert scheme not in with_file, (
-            "the provisioned receipt printed an endpoint; the no-URL property must not "
-            "depend on who the kit went to"
-        )
+
+def test_an_installed_credential_is_0600_and_makes_the_bare_command_work(
+    kit_home, tmp_path, monkeypatch, capsys
+):
+    """The file being copied came out of a mail client, so it is 0644 — and this
+    writes a live API key into a checkout. Copying the mode across would
+    republish it to every account on a shared machine: the same slip
+    `write_state_file` documents for the state file, and the one §7 promises
+    against. Also the round trip: given once, then `upload` alone works."""
+    (kit_home / "events.jsonl").write_text(
+        '{"event_id":"e1","session_id":"s1"}\n', encoding="utf-8"
+    )
+    downloaded = tmp_path / "upload.json"
+    downloaded.write_text(json.dumps(CREDS), encoding="utf-8")
+    downloaded.chmod(0o644)
+
+    opener, sent = _recording_opener()
+    monkeypatch.setattr(upload_mod, "open_request", opener)
+    monkeypatch.setattr(kit, "load_uploader", lambda: upload_mod)
+
+    kit.cmd_upload(argparse.Namespace(credentials=str(downloaded)))
+    installed = kit.upload_credentials_path()
+    assert installed.exists(), "the credential was not kept for next time"
+    assert oct(installed.stat().st_mode & 0o777) == "0o600", (
+        f"a live key was installed world-readable: {oct(installed.stat().st_mode & 0o777)}"
+    )
+    assert json.loads(installed.read_text()) == CREDS, "the installed copy is not the file given"
+
+    # Round trip: no flag this time.
+    kit.cmd_upload(argparse.Namespace(credentials=None))
+    assert len(sent) == 2, "the second, flagless run did not send"
+    out = capsys.readouterr().out
+    assert CREDS["api_key"] not in out, "installing printed the key"
+
+
+def test_pointing_at_the_installed_file_does_not_copy_it_onto_itself(kit_home, monkeypatch):
+    """`--credentials try/upload.json` is what someone types when they have
+    forgotten it is already there. Reading and rewriting the same path is how a
+    file gets truncated to nothing."""
+    (kit_home / "events.jsonl").write_text(
+        '{"event_id":"e1","session_id":"s1"}\n', encoding="utf-8"
+    )
+    canonical = kit.upload_credentials_path()
+    canonical.write_text(json.dumps(CREDS), encoding="utf-8")
+    opener, _sent = _recording_opener()
+    monkeypatch.setattr(upload_mod, "open_request", opener)
+    monkeypatch.setattr(kit, "load_uploader", lambda: upload_mod)
+    kit.cmd_upload(argparse.Namespace(credentials=str(canonical)))
+    assert json.loads(canonical.read_text()) == CREDS, "the file was clobbered by its own install"
 
 
 def test_the_uploader_is_not_on_the_import_graph_of_the_other_commands():

@@ -38,6 +38,7 @@ run, and all of them stated to the person rather than swallowed:
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -93,21 +94,26 @@ class NoCredentials(Exception):
 
 
 def refusal(where: Path) -> str:
-    """What someone without a credential file is told, which is most people.
+    """What someone without a usable credential file is told.
 
-    Deliberately not phrased as a failure. Upload works only for a trial we
-    provisioned in advance; email works for anyone, needs nothing from us first,
-    and is what the receipt offers when this file is absent. Someone who typed
-    `upload` on a hunch should leave this message knowing the kit is fine and
-    the other path is open, not thinking they broke something.
+    Most people who reach this were never sent one, because the receipt now
+    offers upload to everyone and says who it is for. So this is deliberately
+    not phrased as a failure: it says what the file is, names the flag for
+    someone who has one somewhere else, and points at the path that works for
+    anyone. Someone who typed `upload` on a hunch should leave this message
+    knowing the kit is fine, not thinking they broke it.
     """
     return (
         f"there is no {where.name} beside kit.py, so there is nowhere for this to go.\n"
         "\n"
         "  `upload` sends your capture straight to a Baton workspace, and it only\n"
-        "  works if we created one for you and handed you the file — it holds the\n"
+        "  works if we created one for you and sent you the file — it holds the\n"
         "  console address, a key, and the workspace it belongs to. Nothing in the\n"
         "  kit can create one, and it will not invent a destination.\n"
+        "\n"
+        "  If we did send you one and it is somewhere else — your downloads folder,\n"
+        "  most likely — point at it and this keeps a copy for next time:\n"
+        "    python3 kit.py upload --credentials <path to that file>\n"
         "\n"
         "  If you did not get that file, nothing is wrong: run `receipt` and email\n"
         "  the capture instead. That path works for anyone and needs nothing from\n"
@@ -115,14 +121,13 @@ def refusal(where: Path) -> str:
     )
 
 
-def load_credentials(directory: Path) -> dict[str, str]:
-    """Read and validate the handed-over file.
+def read_credentials(path: Path) -> dict[str, str]:
+    """Read and validate one credential file, wherever it is.
 
-    Every failure here raises `NoCredentials`, including a malformed one — the
-    person cannot fix a schema they never wrote, and the useful thing to say is
-    the same in all three cases: this is not usable, use the other path.
+    Every failure raises `NoCredentials`, including a malformed one — the person
+    did not write this file and cannot fix its schema, so the useful answer is
+    the same in all three cases: this is not usable, here is what else you can do.
     """
-    path = directory / CREDENTIALS_NAME
     if not path.exists():
         raise NoCredentials(refusal(path))
     try:
@@ -137,6 +142,37 @@ def load_credentials(directory: Path) -> dict[str, str]:
         # follows for anything credential-shaped.
         raise NoCredentials(f"{path.name} is missing {', '.join(missing)}. {refusal(path)}")
     return {k: str(v) for k, v in data.items()}
+
+
+def load_credentials(directory: Path) -> dict[str, str]:
+    """The no-arguments case: the file in its canonical home beside `kit.py`."""
+    return read_credentials(directory / CREDENTIALS_NAME)
+
+
+def install_credentials(source: Path, dest: Path) -> bool:
+    """Copy a validated credential file to its canonical home, 0600.
+
+    Returns True if it wrote, False if source and dest are the same file.
+
+    **The mode is the whole reason this is not `shutil.copy`.** The file being
+    copied came out of a mail client or a browser, so it is 0644 — and this
+    writes a live API key into a checkout. Plain copying would republish it to
+    every account on a shared machine, which is the same slip `write_state_file`
+    documents at length for the state file and which §7 promises against. Callers
+    validate BEFORE calling this: installing an unusable file over the canonical
+    home would leave every later bare `upload` refusing for a reason the person
+    cannot see.
+    """
+    if source.resolve() == dest.resolve():
+        return False
+    payload = source.read_bytes()
+    # `os.open` sets the mode only on CREATE, so the chmod is not redundant: a
+    # file left by an earlier install, or by hand, keeps its old mode without it.
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(payload)
+    os.chmod(dest, 0o600)
+    return True
 
 
 def endpoint(console_url: str) -> str:

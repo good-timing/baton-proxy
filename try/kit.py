@@ -1737,19 +1737,29 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     print("file, so a second send adds only what is new. Use the server for another")
     print("week and send the whole file again if you like.")
 
-    # Gated on the handed-over file, which is why this is the last block rather
-    # than the first: email is the path that works for everyone and it stays the
-    # one every kit prints. A kit without `upload.json` never mentions uploading
-    # at all, so the offer cannot be read as an account we are asking them to
-    # make. No URL is printed even here — the receipt names an address and never
-    # an endpoint, and that property should not depend on who the kit went to.
-    if upload_credentials_path().exists():
-        print()
-        print("Or send it straight to the workspace we set up for you, without email:")
-        print("  python3 kit.py upload")
-        print(f"That reads {upload_credentials_path().name} — the file we handed you — and")
-        print("sends this same capture there. Same data and the same decision; it just")
-        print("skips the mail. Read the file first either way.")
+    # Printed for everyone, and it names its own precondition in the first
+    # clause. This was gated on the file existing for exactly one day: gating
+    # meant the option was invisible to the person it was FOR, because the file
+    # arrives by mail and sits in a downloads folder, so the one reader who
+    # could use it was the one reader who never saw it offered.
+    #
+    # The condition-first wording is what makes an ungated offer safe in prose
+    # every prospect reads. "If we set up a workspace for you" is false for
+    # almost everyone and obviously false to them — it reads as not-for-me
+    # rather than as a thing they were supposed to have arranged, which is the
+    # signup-shaped worry the kit exists to avoid. A bare `python3 kit.py upload`
+    # with no condition on it would read the other way.
+    #
+    # Still no URL, and that holds for every kit rather than depending on who
+    # this one went to: the receipt names an address and never an endpoint.
+    print()
+    print("If we set up a workspace for you and sent you an `upload.json`, you can")
+    print("send it straight there instead, without the mail:")
+    print("  python3 kit.py upload --credentials <path to that file>")
+    print("Same data and the same decision — it just skips the attachment. The kit")
+    print("keeps a copy after the first run, so `python3 kit.py upload` works alone")
+    print("from then on. If none of that means anything to you, the address above is")
+    print("your path and nothing is missing.")
     return 0
 
 
@@ -1824,8 +1834,24 @@ def cmd_upload(args: argparse.Namespace) -> int:
     # tell them to come back once they have data — sending them away to earn a
     # refusal they were always going to get. The permanent condition is reported
     # first, and it is the one with a working alternative attached.
+    #
+    # `--credentials` exists because the receipt offers upload to everyone and
+    # the file arrives by mail: it lands in a downloads folder, not beside
+    # `kit.py`, and telling someone to move a file into a directory their agent
+    # cloned five minutes ago is a step to get wrong. Validated BEFORE it is
+    # installed — a bad path copied over the canonical home would make every
+    # later bare `upload` refuse for a reason they cannot see.
+    explicit = getattr(args, "credentials", None)
     try:
-        creds = uploader.load_credentials(TRY_DIR)
+        if explicit:
+            source = Path(explicit).expanduser()
+            creds = uploader.read_credentials(source)
+            if uploader.install_credentials(source, upload_credentials_path()):
+                print(f"Kept a copy at {upload_credentials_path()} — `upload` alone works now.")
+                print("It is readable only by you. Delete the one you downloaded.")
+                print()
+        else:
+            creds = uploader.load_credentials(TRY_DIR)
     except uploader.NoCredentials as e:
         raise Refuse(str(e)) from e
 
@@ -1962,11 +1988,15 @@ def main(argv: list[str] | None = None) -> int:
     p_receipt = sub.add_parser("receipt", help="what has been captured so far")
     p_receipt.set_defaults(fn=cmd_receipt)
 
-    # Deliberately takes no arguments. Everything it needs — where to send, which
-    # workspace, which key — is in the file that was handed over, so there is no
-    # flag that could point it somewhere we did not provision, and nothing for a
-    # person to get wrong at the moment they decide to release their data.
+    # One optional flag, and it points at a file rather than at a destination:
+    # where to send is inside the file we sent, so this cannot aim the capture
+    # anywhere we did not provision. It exists for the ordinary case of a
+    # credential sitting in a downloads folder, and the first run that uses it
+    # installs a copy beside `kit.py`, so it is needed once and never again.
     p_upload = sub.add_parser("upload", help="send the capture to the workspace we made for you")
+    p_upload.add_argument(
+        "--credentials", help="path to the upload.json we sent you, if it is not in try/"
+    )
     p_upload.set_defaults(fn=cmd_upload)
 
     p_uninstall = sub.add_parser("uninstall", help="restore the original entry")

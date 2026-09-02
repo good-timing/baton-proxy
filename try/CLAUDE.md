@@ -23,10 +23,11 @@ python3 kit.py uninstall              # put the original entry back
 ```
 
 There is a fourth, `python3 kit.py upload`, and it is **not yours to run** — see
-*Rules that do not bend*. It sends the capture to a Baton workspace, exists only
-where we set one up in advance, and refuses everywhere else. Most kits do not
-have it available; the receipt says so itself by only mentioning it where it
-works, so let the receipt tell you rather than assuming either way.
+*Rules that do not bend*. It sends the capture to a Baton workspace and works
+only for someone we set one up for in advance, which is a small minority of the
+people running this. The receipt offers it to everyone and says who it is for in
+the same sentence, so read it out as printed and let them tell you whether they
+were sent a file. Do not try to work out which case they are in.
 
 Your job is everything the commands deliberately do not do: work out which
 server, explain what is about to happen before it happens, hand them a second
@@ -71,7 +72,11 @@ than a literal — and it does that because this conversation is not guaranteed 
 machine. `try/state.json`, the `config-backup.*` files and the MCP config itself
 all hold the real values, so opening one and quoting it puts back exactly what
 the redaction removed. Read them if a command tells you to; report what you
-found in terms of key names, never values. A `${VAR}` reference is not a
+found in terms of key names, never values. **`upload.json` is the strictest case
+and the newest: do not open it at all.** Where the others hold a copy of
+something the person already had, that file is a live key we issued, and the
+plausible reason to open it — checking they gave you the right path — is exactly
+how it ends up in a transcript. `upload` verifies it; you do not. A `${VAR}` reference is not a
 credential and is fine to quote — it is a pointer, and it is often the thing the
 person needs to see.
 
@@ -353,14 +358,30 @@ do not push:
   which loads it and sends back a link to their own sessions. If they want it
   sent, they send it. You do not — that is the rule, not a preference, and it
   holds even if they ask you to.
-- **Where the receipt also offers `python3 kit.py upload`, relay it as a second
-  option and nothing more.** It appears only for a trial we set up a workspace
-  for in advance, which is why the receipt is the thing that knows: if that
-  block is not in the output, the option does not exist and inventing it sends
-  someone to a command that will refuse. Where it is there, it is the same
-  decision as the email — their data, their call, their keystroke — and the
-  file is worth reading first either way. Do not present it as the recommended
-  one; it is shorter, not safer.
+- **The receipt also offers `python3 kit.py upload`, and it is conditional in
+  its own first clause** — "if we set up a workspace for you and sent you an
+  `upload.json`". Relay it with that clause intact. Dropping the condition and
+  offering the command bare is the one way to get this wrong: for most people it
+  is false, and a command they cannot run reads as a step they missed. It is the
+  same decision as the email either way — their data, their call, their
+  keystroke — and the file is worth reading first. Do not present it as the
+  recommended one; it is shorter, not safer.
+- **If they pick upload, ask where the file is — and only where.** It arrives by
+  mail, so it is usually still in a downloads folder rather than beside
+  `kit.py`. Take the path, put it in the command, and hand them the line to run —
+  `python3 kit.py upload --credentials <path>` with their path in place of
+  `<path>`. The kit installs a copy on that first run, so it is asked once.
+- **Never open that file.** Not to check it, not to confirm they gave you the
+  right path, not to read the workspace name back to them. It is a live
+  credential — the one thing in this trial that is — and *Do not read out a
+  credential* covers it by name. The command verifies it, and its output tells
+  you both whether it worked and where the capture went.
+- **If they picked upload and were never sent a file, that is the end of that
+  branch.** Say the email path is theirs, that nothing is missing, and stop.
+  Do not offer to get them provisioned, do not send them to a signup, and do not
+  suggest they ask us for a file — you do not know whether they are someone we
+  would set one up for, and guessing turns a finished trial into a sales step
+  they did not ask for.
 - Sending is repeatable — a second send of the whole file adds only the new
   events. So this is not a now-or-never decision, and someone who wants another
   week of data first can have it.

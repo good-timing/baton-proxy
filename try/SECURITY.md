@@ -367,6 +367,13 @@ promised:
 - **It refuses without `try/upload.json`**, a file we hand over by arrangement.
   A kit downloaded from the repository does not have one, cannot obtain one, and
   `upload` prints the email path instead rather than inventing a destination.
+  `--credentials <path>` points at that file where it landed — a downloads
+  folder, usually — and installs a copy beside `kit.py` at mode 0600 so it is
+  given once. **The receipt offers this command to everyone**, conditioned in
+  its own first clause on having been sent a file, so you will meet it at the
+  end of the trial whether or not it applies to you. It is named here for the
+  same reason the address is: meeting it unannounced would be a fair reason to
+  distrust the rest of this page.
 - **Its key lives in that file and never in your MCP config entry.** This is the
   point on which the check at the end of this section still holds: the wrapped
   server has no credential and no code path that would use one, so it cannot
