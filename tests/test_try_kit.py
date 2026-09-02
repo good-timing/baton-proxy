@@ -4701,6 +4701,60 @@ def test_the_remote_addendum_is_bounded_separately_rather_than_squeezed():
         assert fact in doc, f"the remote section lost a fact while being reshaped: {fact!r}"
 
 
+def test_the_ask_has_to_name_what_it_is_asking_about():
+    """The second dogfood run's first finding. The chooser read "Do you want to
+    go ahead, or see the detail first?" with the four labelled lines correctly
+    printed above it, and the reader's reaction was *go ahead with what?* — the
+    summary has scrolled by then, and the two labels are pinned short on
+    purpose, so the question is the only place left to carry the subject.
+
+    Both files are pinned because the paste is the one that wins: it is in the
+    person's own message, and `CLAUDE.md` is prose the agent read many turns
+    earlier ([[the four labels]] were pinned across both files for the same
+    reason). A rule that lives only in the doc is a rule the paste can quietly
+    redefine.
+    """
+    doc, prompt = _flat(_claude_md()), _flat(_prompt_text())
+    assert "name what it is asking about" in doc, (
+        "CLAUDE.md stopped requiring the question to name its subject"
+    )
+    assert "what happens immediately after they agree" in doc, (
+        "the stem rule lost its second half — an ask names the next step too"
+    )
+    assert "name in the question what I am confirming and what you will do" in prompt, (
+        "the paste went back to a bare 'ask me to confirm', which is what produced "
+        "an objectless chooser in the 2026-09-02 run"
+    )
+
+
+def test_the_remote_consent_is_reachable_under_the_order_the_paste_sets():
+    """The half of the same finding that is not cosmetic.
+
+    `CLAUDE.md` hangs the remote disclosure off step 2 as "a fifth label", and
+    tells the agent to read the kind off the row the person picked. But the
+    paste orders it the other way — confirm the four lines, THEN list the
+    servers — so a summary written to the paste's order runs before any row
+    exists, and the one consent in this kit that the stdio story does not cover
+    can never be reached at the moment it is specified for.
+
+    The fork order is deliberately NOT changed (2026-09-02): the fix is where
+    the three lines are told to appear, so `CLAUDE.md` is true under either
+    order. This pins the placement, not the sequence.
+    """
+    doc = _flat(_claude_md())
+    assert "said once they have picked" in doc, (
+        "the remote consent lost the placement that makes it reachable"
+    )
+    assert "after the pick and before `setup` runs" in doc, (
+        "the remote consent no longer names the window it has to land in"
+    )
+    # The reason, not just the instruction: a rule whose cause is dropped is a
+    # rule the next rewrite deletes as redundant.
+    assert "A consent that cannot be reached is not a consent" in doc, (
+        "the placement rule kept the instruction and lost why it exists"
+    )
+
+
 def test_the_prompt_leaves_the_ending_to_the_kit():
     """`TEAM_EMAIL` is pinned across kit.py, CLAUDE.md and SECURITY.md §4, and
     the send offer is gated on there being something to send. The prompt runs

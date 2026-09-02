@@ -117,6 +117,18 @@ fact goes to get skimmed. If something is only stated inside an option, it has
 not been disclosed. Trading a wall of text for compressed consent is worse than
 the wall of text.
 
+**The question itself has to name what it is asking about.** The labels are
+fixed and the facts are in the prose above, which leaves the question — and an
+unnamed question is where this fell over in a real run: *"Do you want to go
+ahead, or see the detail first?"* reads back as **go ahead with what?**, because
+by then the summary has scrolled and nothing in the ask names its subject. So
+the stem carries two things the labels cannot: what they are agreeing to, and
+what happens immediately after they agree. "Do you want to go ahead and set this
+up? Next I would show you your servers and you pick one — nothing changes until
+you do" is an ask; "do you want to go ahead" is a prompt to guess. The test is
+whether the question would still make sense pasted into someone else's trial —
+if it would, it is not naming anything.
+
 **If the client has no chooser, ask in text and lose nothing.** Same prose, same
 facts, the question alone on the last line, the options named in a sentence. The
 text form is the one that has to be complete; the chooser is presentation. Not
@@ -246,6 +258,15 @@ inside `env`, which is measured behaviour on one client version rather than a
 guarantee. Third: tell them to run `receipt` on the first day — an empty file is
 how a wrap that cannot authenticate gets found in an hour instead of at the end
 of the trial. `SECURITY.md` §2 carries all of this if they want it in writing.
+
+**These three are said once they have picked, whatever order the rest of the
+summary ran in.** The paste (`PROMPT.md`) has the person confirm the four lines
+*before* the server list, so a summary following that order cannot know the kind
+yet — the row does not exist to read it off. Wherever the other four landed,
+these go after the pick and before `setup` runs. A consent that cannot be
+reached is not a consent, and this is the one in the kit a person can be walked
+past without either of you noticing: everything about the stdio story sounds
+complete on its own.
 
 **If their server signs them in to something — Notion, Google, a ticketing
 system — say so before you run setup, not after.** One line, under the same

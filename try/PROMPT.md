@@ -23,9 +23,10 @@ rather than after I have approved things.
    your agent sees, what is captured, what leaves. One line each, not a section
    each — and where the honest answer will not fit in a line, give me the worst
    of it rather than the shortest of it. Then offer me the detail and ask me to
-   confirm, with the question on the last line and nothing after it. Do not
-   touch my config until you have. If I say I do not need the detail, skip
-   ahead — it is my call, not yours.
+   confirm — name in the question what I am confirming and what you will do
+   next, because "go ahead" on its own tells me nothing — with the question on
+   the last line and nothing after it. Do not touch my config until you have.
+   If I say I do not need the detail, skip ahead — it is my call, not yours.
 
 3. List the MCP servers you could wrap and let me choose one. Do not choose for
    me, and do not wrap anything before I have said which.
