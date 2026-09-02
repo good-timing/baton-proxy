@@ -4584,6 +4584,29 @@ def test_the_prompt_does_not_send_them_hunting_for_a_checkout():
         )
 
 
+def test_the_prompt_survives_arriving_as_a_file():
+    """The paste now travels two ways. A provisioned handover goes out as two
+    attachments — this file and their `upload.json` — so it gets opened from a
+    downloads folder, and step 1's "the current directory" quietly means
+    exactly there.
+
+    We cannot detect which route it took, so the text carries the check itself.
+    Pinned because the clone is the first thing it costs them and a kit in
+    `~/Downloads` is a kit they will not find again.
+    """
+    prompt = _flat(_prompt_text())
+    assert "ask me where the kit should live first" in prompt, (
+        "the paste no longer checks where it is before cloning, so an attachment "
+        "route lands the kit in a downloads folder"
+    )
+    assert "downloads folder" in prompt, "the check stopped naming the case it is for"
+    # It must remain a question, not a relocation: hunting or moving files on
+    # someone's machine is the behaviour finding 3 took out of this file.
+    assert "search my machine" in prompt, (
+        "the no-hunting clause was lost while adding the where-to-clone check"
+    )
+
+
 def test_the_prompt_says_which_client_before_it_asks_for_anything():
     """Spec §7's second half names the paste as the site for this, and the paste
     is the only surface that is read before a clone is approved. The reason has

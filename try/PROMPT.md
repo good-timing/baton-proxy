@@ -4,9 +4,14 @@ This is the paste. It is the first thing a prospect sees, it runs before
 anything is on their disk, and it is the only part of the kit that is not
 already in the kit — so it lives here rather than in an email thread.
 
-Everything below the rule is the text. It assumes nothing has been cloned yet
-and that the person is talking to a Claude Code session started wherever they
-want the kit to land.
+Everything below the rule is the text. It assumes nothing has been cloned yet.
+
+It travels two ways now, and the second one is why step 1 asks where to clone.
+Pasted into a session, the person chose the directory by starting the session
+there. Sent as a file — which is how a provisioned handover goes out, alongside
+their `upload.json` — it is opened from wherever it was downloaded, and "the
+current directory" silently means the downloads folder. The text has to work
+either way, because we do not get to know which one happened.
 
 ---
 
@@ -16,7 +21,9 @@ rather than after I have approved things.
 
 1. Clone https://github.com/good-timing/baton-proxy into the current directory.
    Do not search my machine for an existing copy — if I already had one, I would
-   have told you.
+   have told you. If you are reading this out of a file I downloaded rather than
+   a message I typed, ask me where the kit should live first: this session may
+   be running in my downloads folder, and that is not where I want it.
 
 2. Read `baton-proxy/try/SECURITY.md` and `baton-proxy/try/CLAUDE.md`, then tell
    me in your own words, one line each and in this order: what changes, what
