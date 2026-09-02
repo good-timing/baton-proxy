@@ -7,6 +7,9 @@ server with NO env vars set should produce a working multi-sink install
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 import pytest
 
 from baton_proxy.config import (
@@ -217,11 +220,63 @@ def test_intent_param_off_is_ignored_with_a_warning_and_the_proxy_starts(
     with caplog.at_level("WARNING", logger="baton_proxy"):
         cfg = Config.from_env()
     assert cfg.intent_param_mode == "required"
+    # HELD, not logged — `from_env` runs before `_configure_logging`, so a
+    # warning emitted here would go out through `logging.lastResort` (stderr
+    # only, no formatter, never teed to BATON_PROXY_LOG_FILE) and the operator
+    # who checks the log file would find nothing. `_bootstrap` drains it after
+    # logging exists.
+    #
+    # This assertion is the reason the fix is visible at all: `caplog` attaches
+    # its own handler, so the ORIGINAL code passed a `caplog.text` check while
+    # the real deployment logged into the void. Asserting caplog is EMPTY and
+    # the field is populated is the only shape of this test that can tell the
+    # two apart.
+    assert caplog.text == ""
+    text = "\n".join(cfg.startup_warnings)
     # The warning has to say the thing a reviewer actually needs: their server
     # is unaffected, and here is the real way to turn it off.
-    assert "no longer supported" in caplog.text
-    assert "stripped from every call" in caplog.text
-    assert "remove the proxy from the server's config entry" in caplog.text
+    assert "no longer supported" in text
+    assert "stripped from every call" in text
+    assert "remove the proxy from the server's config entry" in text
+
+
+def test_the_bootstrap_drains_startup_warnings_into_the_configured_log_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The other half, and the half that was broken: a warning is only a
+    warning if it reaches where the operator looks.
+
+    Drives the REAL `_bootstrap` rather than re-performing its two steps,
+    because the defect was the ORDER of those steps — `from_env()` logged
+    before `_configure_logging` existed, so the message went out through
+    `logging.lastResort` (stderr, unformatted) and never reached
+    BATON_PROXY_LOG_FILE. A test that calls configure-then-drain itself would
+    pass against the broken bootstrap, which is exactly how the original
+    caplog test passed."""
+    from baton_proxy.proxy import _bootstrap, logger
+
+    log_file = tmp_path / "proxy.log"
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("BATON_INTENT_PARAM", "off")
+    monkeypatch.setenv("BATON_PROXY_LOG_FILE", str(log_file))
+    monkeypatch.setenv("BATON_EVENT_SINK", f"file://{tmp_path / 'events.jsonl'}")
+    root_handlers = list(logging.getLogger().handlers)
+    baton_handlers = list(logger.handlers)
+    try:
+        _config, _injection, emitter, _processor = _bootstrap()
+        emitter.stop()
+        for handler in logger.handlers:
+            handler.flush()
+        contents = log_file.read_text()
+    finally:
+        for handler in logger.handlers:
+            handler.close()
+        logging.getLogger().handlers[:] = root_handlers
+        logger.handlers[:] = baton_handlers
+    assert "no longer supported" in contents
+    assert "remove the proxy from the server's config entry" in contents
 
 
 def test_a_value_that_was_never_valid_still_raises(monkeypatch: pytest.MonkeyPatch) -> None:

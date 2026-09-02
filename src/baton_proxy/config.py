@@ -20,7 +20,6 @@ placeholder-tagged events must never leak to a remote collector.
 
 from __future__ import annotations
 
-import logging
 import os
 import uuid
 from dataclasses import dataclass
@@ -187,6 +186,19 @@ class Config:
     # See DEFAULT_PROACTIVE_MODE above.
     proactive_mode: str = DEFAULT_PROACTIVE_MODE
 
+    # Warnings raised while READING the environment, held here instead of
+    # logged. ``from_env`` runs BEFORE ``_configure_logging`` (proxy.py
+    # ``_bootstrap``), so anything logged from it goes out through
+    # ``logging.lastResort``: stderr only, unformatted, and never teed to
+    # BATON_PROXY_LOG_FILE. That silently voided the one guarantee the
+    # coerce-don't-raise decision rests on — the operator is told. The
+    # bootstrap drains this after logging is configured.
+    #
+    # A test cannot catch the original bug with ``caplog``, which attaches its
+    # own handler and so passes whether or not a real one exists; the pin is on
+    # this field being populated and the bootstrap emitting it.
+    startup_warnings: tuple[str, ...] = ()
+
     # Per-tenant secret keying the end-user ``user_id`` HMAC (identity.py).
     # Raw identity is hashed at the edge with this key before an event reaches
     # any console-bound sink (residency contract). None → user_id capture is
@@ -224,6 +236,7 @@ class Config:
             raise ValueError(
                 f"BATON_TENANT_TYPE must be one of {sorted(_TENANT_TYPES)}; got {tenant_type!r}."
             )
+        warnings: list[str] = []
         intent_param_mode = _env("BATON_INTENT_PARAM") or DEFAULT_INTENT_PARAM_MODE
         if intent_param_mode == "off":
             # RETIRED 2026-09-01. The injected params are the intent channel,
@@ -240,13 +253,13 @@ class Config:
             # page. Raising would mean their MCP server stops starting because
             # they did what we told them to. Nothing is hidden — the params
             # never reach their server either way, and the warning says so.
-            logging.getLogger("baton_proxy").warning(
+            warnings.append(
                 "baton-proxy: BATON_INTENT_PARAM='off' is no longer supported and has "
-                "been ignored; the intent params are injected as %r. They are stripped "
-                "from every call before it is forwarded, so your server still receives "
-                "exactly the arguments it would receive unwrapped. To stop the "
-                "injection entirely, remove the proxy from the server's config entry.",
-                DEFAULT_INTENT_PARAM_MODE,
+                f"been ignored; the intent params are injected as "
+                f"{DEFAULT_INTENT_PARAM_MODE!r}. They are stripped from every call "
+                "before it is forwarded, so your server still receives exactly the "
+                "arguments it would receive unwrapped. To stop the injection entirely, "
+                "remove the proxy from the server's config entry."
             )
             intent_param_mode = DEFAULT_INTENT_PARAM_MODE
         if intent_param_mode not in _INTENT_PARAM_MODES:
@@ -273,6 +286,7 @@ class Config:
             proactive_mode=proactive_mode,
             user_id_hmac_key=hmac_key.encode("utf-8") if hmac_key else None,
             log_file=_env("BATON_PROXY_LOG_FILE"),
+            startup_warnings=tuple(warnings),
         )
 
 

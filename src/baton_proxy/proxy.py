@@ -1380,6 +1380,14 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     """
     config = Config.from_env()
     _configure_logging(config.log_file)
+    # Drained here, not logged where they were raised: `from_env` runs before
+    # this line, so a warning emitted there goes out through
+    # `logging.lastResort` — stderr only, no formatter, never teed to
+    # BATON_PROXY_LOG_FILE. The retired-`off` coercion is only defensible
+    # because the operator is told; that told them nothing an operator who
+    # checks the log file could find.
+    for warning in config.startup_warnings:
+        logger.warning("%s", warning)
     injection = _Injection.create(
         config.event_sink,
         tenant_type=config.tenant_type,
