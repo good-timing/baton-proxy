@@ -7,7 +7,7 @@ handshake, and emits friction events to a baton-console.
 See README.md for usage.
 """
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 
 # The product/version token, single-sourced here so the emitter's `sdk_version`
 # field and the HTTP bridge's outbound `User-Agent` header can never drift.
