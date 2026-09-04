@@ -24,15 +24,15 @@ understand what data is captured and the insights Baton generates. Nothing
 leaves my machine unless I choose to send the capture at the end.
 
 Clone https://github.com/good-timing/baton-proxy into the directory I'm in,
-then stop and wait for me. Don't read it yet, don't change my config, don't do
-anything else. This message is not my approval. I'll approve in a separate
-message, or I won't.
+check out its latest release tag, and tell me which one. Then stop and wait for
+me. Don't read it yet, don't change my config, don't do anything else. This
+message is not my approval. I'll approve in a separate message, or I won't.
 
 After cloning, ask me if I want details on security. If I say yes, read the
 repo and tell me in full what it changes, what it captures, what is saved on my
 disk, and what leaves my machine. If I say no or tell you to proceed after
-reviewing the security details, proceed with the install. The steps of the
-install are:
+reviewing the security details, proceed with the install: read
+`baton-proxy/try/CLAUDE.md` and follow it. The steps of the install are:
 
 1. Show me my MCP servers and let me pick one. Don't pick for me.
 2. Set it up and tell me what changed.
@@ -40,13 +40,14 @@ install are:
    window open.
 4. I'll do a few real things with it, then come back here and tell you I'm
    done.
-5. After I tell you I'm done, tell me what Baton captured and offer to send it
-   so I can see the session summarized in Baton, but don't send it until I tell
-   you to proceed.
+5. After I tell you I'm done, tell me what Baton captured and give me the
+   command to send it, so I can see the session summarized in Baton. Sending is
+   mine to do, not yours.
 6. Whenever I ask, tell me how to take it back off.
 
 Details:
 
 A. This kit only works with Claude Code and works by editing `~/.claude.json`.
+
 B. If you are reading this from a file rather than a message I typed, ask me
    where the kit should live before you clone.
