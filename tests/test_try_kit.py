@@ -4427,22 +4427,35 @@ def test_the_single_client_assumption_is_stated_before_it_bites(rel):
 # rewrite would retire silently.
 # ---------------------------------------------------------------------------
 
-# The receipt command as `_unwrapped` sees it: a fenced block with no blank
-# lines is one paragraph, joined on spaces. Not the cheat-sheet block at the top
-# of the file, which carries all three commands and their `#` comments.
-_THE_RECEIPT_BLOCK = "``` python3 kit.py receipt ```"
+# The section whose whole job is telling the agent where to start. Its heading,
+# not a sentence inside it: until 2026-09-04 the lead was found as "the
+# paragraph above the fenced `python3 kit.py receipt` block", and the rewrite
+# moved that command inline into the lead itself and dropped the fence — which
+# is exactly the reformatting a marker made of our own prose cannot survive,
+# and why this one is made of the document's structure instead.
+_THE_START_HERE_HEADING = "## Start by finding out where you are"
 
 
 def _first_run_lead(text: str) -> tuple[int, str]:
-    """The paragraph immediately above the receipt command — the sentence that
-    tells the agent where to start."""
+    """The paragraph that opens the where-to-start section.
+
+    Whatever it is next reworded to. The cheat-sheet block at the top of the
+    file also carries `python3 kit.py receipt`, so the lead cannot be found by
+    the command alone; the section it opens is what identifies it.
+    """
     paras = list(_unwrapped(text))
-    at = [i for i, (_n, p) in enumerate(paras) if p == _THE_RECEIPT_BLOCK]
+    at = [i for i, (_n, p) in enumerate(paras) if p == _THE_START_HERE_HEADING]
     assert at, (
-        "the receipt command this ordering is measured against is gone or "
-        "reformatted — re-point the marker rather than deleting the check"
+        "the section this ordering is measured against is gone or renamed — "
+        "re-point the marker rather than deleting the check"
     )
-    return paras[at[0] - 1]
+    after = [p for _n, p in paras[at[0] + 1 :]]
+    end = next((i for i, p in enumerate(after) if p.startswith("## ")), len(after))
+    assert any("python3 kit.py receipt" in p for p in after[:end]), (
+        "the where-to-start section no longer runs the receipt, so its first "
+        "paragraph is not the lead this is measuring"
+    )
+    return paras[at[0] + 1]
 
 
 def _competing_first_offenders(text: str) -> list[str]:
@@ -4455,14 +4468,14 @@ def _competing_first_offenders(text: str) -> list[str]:
 def test_claude_md_gives_one_answer_for_what_comes_first():
     md = _claude_md()
     paras = list(_unwrapped(md))
-    opening = [i for i, (_n, p) in enumerate(paras) if "before you do anything else" in p]
+    opening = [i for i, (_n, p) in enumerate(paras) if "before anything else" in p]
     assert opening, (
         "the opening no longer claims an absolute first — if that claim moved, "
         "re-point this check; if it went away, the deferral below is now dangling"
     )
     assert "SECURITY.md" in paras[opening[0]][1], "the absolute first names no document"
 
-    lead_at = next(i for i, (_n, p) in enumerate(paras) if p == _THE_RECEIPT_BLOCK)
+    lead_at = next(i for i, (_n, p) in enumerate(paras) if p == _THE_START_HERE_HEADING)
     assert opening[0] < lead_at, "the document tells the agent to run before it tells it to read"
     assert not _competing_first_offenders(md), (
         "two sections claim to be first and neither yields:\n"
@@ -4470,10 +4483,14 @@ def test_claude_md_gives_one_answer_for_what_comes_first():
     )
 
 
-# Verbatim as it sat in CLAUDE.md at `cccc383`, wrapped exactly as it was — so
-# the check is graded on the shape it actually has to catch
+# Verbatim as it sat in CLAUDE.md at `cccc383`, wrapped exactly as it was and
+# under the heading it sat under, which is unchanged since — so the check is
+# graded on the shape it actually has to catch, INCLUDING the fenced-block shape
+# the finder no longer keys on
 # ([[feedback_control_condition_must_be_able_to_fail]]).
-_THE_LEAD_AS_IT_WAS_WRITTEN = """The person may be at any point in the trial — the session that set this up is
+_THE_LEAD_AS_IT_WAS_WRITTEN = """## Start by finding out where you are
+
+The person may be at any point in the trial — the session that set this up is
 probably long gone. So begin with:
 
 ```
@@ -4609,25 +4626,6 @@ def test_the_prompt_survives_arriving_as_a_file():
     assert "downloads folder" in prompt, "the check stopped naming the case it is for"
 
 
-def test_the_prompt_says_which_client_before_it_asks_for_anything():
-    """Spec §7's second half names the paste as the site for this, and the paste
-    is the only surface that is read before a clone is approved. The reason has
-    to travel with the claim — `~/.claude.json` is what makes it checkable
-    rather than a thing we assert about ourselves."""
-    paras = list(_unwrapped(_prompt_text()))
-    said = [i for i, (_n, p) in enumerate(paras) if "works with Claude Code" in p]
-    assert said, "the prompt never says which client the kit is for"
-    assert "~/.claude.json" in paras[said[0]][1], (
-        "the reason is what makes the claim checkable, not the claim"
-    )
-    # The clone is the first thing it costs them. A missing marker FAILS rather
-    # than defaulting to the end of the file, so a reworded step 1 cannot retire
-    # this ordering silently ([[feedback_control_condition_must_be_able_to_fail]]).
-    costs = [i for i, (_n, p) in enumerate(paras) if "Clone https://" in p]
-    assert costs, "the paragraph this ordering is measured against is gone — re-point it"
-    assert said[0] < costs[0], "the prompt discloses the client assumption after the clone"
-
-
 def _flat(text: str) -> str:
     """Hard-wrapped markdown with the newlines collapsed. Every phrase worth
     pinning in these two files is longer than the distance to the next line
@@ -4716,6 +4714,32 @@ def test_the_remote_consent_is_reachable_under_the_order_the_paste_sets():
     # about formatting.
     for fact in ("bearer token", "${VAR}", "`receipt` on the first day"):
         assert fact in doc, f"the remote section lost a fact while being reshaped: {fact!r}"
+
+
+def test_the_prompt_hands_the_agent_the_doc_it_will_run_from():
+    """Restores the half of `test_the_prompt_hands_off_to_the_shipped_docs` that
+    survived the 2026-09-04 rewrite.
+
+    That test wanted both documents named and the paste now names one, on
+    purpose: the security detail is opt-in, so `SECURITY.md` is read only if
+    they ask for it. `CLAUDE.md` is different in kind — it is not reading, it is
+    the instructions the install runs on. The paste executes in a session
+    started OUTSIDE `try/`, so nothing loads that file the way a session started
+    inside it would; if the paste stops naming it, the agent drives the whole
+    install from these fifty lines and every rule that lives only there — never
+    edit a config by hand, never type `upload` — silently stops applying.
+
+    Anchored on the literal path because the path is the load-bearing part: the
+    session that just cloned is one level above `try/`, so a bare `CLAUDE.md` is
+    a file it will not find.
+    """
+    prompt = _flat(_prompt_text())
+    assert "`baton-proxy/try/CLAUDE.md`" in prompt, (
+        "the paste no longer names the document the agent runs the install from"
+    )
+    assert "read `baton-proxy/try/CLAUDE.md` and follow it" in prompt, (
+        "the paste names the document without telling the agent to follow it"
+    )
 
 
 def test_the_prompt_leaves_the_ending_to_the_kit():

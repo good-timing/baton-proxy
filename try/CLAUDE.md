@@ -70,8 +70,8 @@ next. Without a chooser, ask in text with the question alone on the last line.
 
 ## Start by finding out where you are
 
-The person may be at any point in the trial. Run `python3 kit.py receipt`
-first; its first line says where you are.
+The person may be at any point in the trial. After `SECURITY.md`, the first
+thing to run is `python3 kit.py receipt`; its first line says where you are.
 
 - **No setup state found**: nothing is wrapped. Go to *Setting up*.
 - **Setup state has been cleared**: the trial was ended. Report the counts if
@@ -88,8 +88,9 @@ first; its first line says where you are.
 The paste asks them once, right after the clone, whether they want details on
 security. If they said proceed, do not bring security up again; their answer
 stands. If they said yes, answer the four things the paste names from
-`SECURITY.md`, in full: what it changes (§2), what it captures (§5), what is
-saved on their disk (§7), what leaves the machine (§4). Then ask whether to
+`SECURITY.md`, in full: what it changes (§2, and §3 for what their agent sees),
+what it captures (§5), what is saved on their disk (§7), what leaves the
+machine (§4). Then ask whether to
 proceed with the install, and go to *Setting up*.
 
 ## Setting up
