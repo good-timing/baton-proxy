@@ -48,6 +48,5 @@ reviewing the security details, proceed with the install: read
 Details:
 
 A. This kit only works with Claude Code and works by editing `~/.claude.json`.
-
 B. If you are reading this from a file rather than a message I typed, ask me
    where the kit should live before you clone.
