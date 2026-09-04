@@ -359,9 +359,8 @@ numbers, and 13 to 19 digit strings that pass the Luhn checksum.
 
 The last rule is deliberately loose. Card numbers pass Luhn; so does roughly one
 in ten of every other long digit string (order numbers, epoch timestamps, record
-ids), and those are redacted too rather than risk missing a card. `receipt`
-reports them as `cc`; the count is of card-shaped numbers, not a finding that
-card numbers were present. The redaction keeps no copy of what it replaced.
+ids), and those are redacted too rather than risk missing a card. The redaction
+keeps no copy of what it replaced.
 
 **Redacted by field name**, regardless of value: `email`, `phone`, `ssn`,
 `api_key`, `token`, `secret`, `password`, `user_name`.
