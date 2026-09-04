@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -4917,6 +4918,60 @@ def _recording_opener(codes=None):
     return opener, sent
 
 
+def _a_person_typing(monkeypatch, answer):
+    """Put a terminal in front of `upload`, with `answer` waiting in it.
+
+    Returns the list of prompts `input()` was shown. The prompt is worth
+    capturing rather than reading off stdout: a patched `input` never writes it,
+    so a capsys assertion would pass whatever the question turned out to say —
+    and the question is the whole interface of this gate.
+
+    `answer` may be an exception instance, which is how Ctrl-D and Ctrl-C are
+    driven: both arrive at `input()` as a raise and neither is an answer the
+    keyboard can spell.
+    """
+    prompts: list[str] = []
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(kit, "_stdin_is_a_terminal", lambda: True)
+    monkeypatch.setattr("builtins.input", fake_input)
+    return prompts
+
+
+@pytest.fixture
+def at_a_terminal(monkeypatch):
+    """The ordinary run, for the tests that are about something else.
+
+    Every test that drives `cmd_upload` all the way to a POST needs a person in
+    front of it now, and none of the ones written before the gate existed were
+    about the person. They ask for this and go back to what they were pinning.
+    """
+    _a_person_typing(monkeypatch, "send")
+
+
+def _ready_to_send(kit_home, monkeypatch, *, events=1, creds=None):
+    """A kit with everything `upload` wants except someone typing at it.
+
+    A credential, a capture of `events` lines, and an opener that records
+    envelopes instead of opening a socket — so `sent == []` is a real assertion
+    that nothing left, not an assertion that the network happened to be down.
+    """
+    (kit_home / "events.jsonl").write_text(
+        "".join(f'{{"event_id":"e{i}","session_id":"s1"}}\n' for i in range(events)),
+        encoding="utf-8",
+    )
+    (kit_home / "upload.json").write_text(json.dumps(creds or CREDS), encoding="utf-8")
+    opener, sent = _recording_opener()
+    monkeypatch.setattr(upload_mod, "open_request", opener)
+    monkeypatch.setattr(kit, "load_uploader", lambda: upload_mod)
+    return sent
+
+
 def test_upload_refuses_without_the_handed_over_file(kit_home, capsys):
     """The ordinary case, and the one most people meet: every kit cloned from
     the repository is a kit with no `upload.json`.
@@ -5139,7 +5194,7 @@ def test_a_blocked_network_is_not_reported_as_a_credential_we_got_wrong(tmp_path
         assert retired not in message, f"the misdiagnosis is back: {retired!r}"
 
 
-def test_upload_names_the_key_and_never_prints_it(kit_home, monkeypatch, capsys):
+def test_upload_names_the_key_and_never_prints_it(kit_home, at_a_terminal, monkeypatch, capsys):
     """The same rule the entry printer follows, on the one file whose whole
     content is a credential. A person may paste this output into a thread with
     us, or into one with their own security team."""
@@ -5198,7 +5253,7 @@ def test_a_credential_from_anywhere_is_validated_the_same_way(kit_home, tmp_path
 
 
 def test_upload_reads_the_credential_and_never_makes_a_second_copy(
-    kit_home, tmp_path, monkeypatch, capsys
+    kit_home, at_a_terminal, tmp_path, monkeypatch, capsys
 ):
     """A first version installed the file beside `kit.py` so a second run could
     skip the flag. That optimised the wrong case.
@@ -5230,6 +5285,156 @@ def test_upload_reads_the_credential_and_never_makes_a_second_copy(
     strays = [f.name for f in kit_home.rglob("*") if f.is_file() and "upload" in f.name]
     assert strays == [], f"a credential-shaped file appeared in try/: {strays}"
     assert CREDS["api_key"] not in capsys.readouterr().out, "the key was printed"
+
+
+# ---------------------------------------------------------------------------
+# The terminal gate (2026-09-04). SECURITY.md §3a and §4 row 6 both tell a
+# reader that nothing runs `upload` on their behalf, and until now that was a
+# sentence in `CLAUDE.md` asking the agent not to. Everything else the agent
+# does in this trial is reversible or visible; this one is neither, so it is
+# checked in the process against the one thing an agent cannot claim to be.
+#
+# Three properties, and the third is the one that makes the first two mean
+# anything: it refuses without a terminal, it does nothing on any answer but
+# `send`, and it still sends when someone types it.
+# ---------------------------------------------------------------------------
+
+
+def test_upload_refuses_when_nobody_is_typing_at_it(kit_home, monkeypatch, capsys):
+    """A kit that has the credential AND the capture — every condition met but
+    the person — still sends nothing.
+
+    The seam is patched to False rather than leant on: under plain `pytest`
+    stdin is not a terminal, but under `pytest -s` in a developer's shell it is,
+    and a test that passes for that reason is testing the harness."""
+    sent = _ready_to_send(kit_home, monkeypatch)
+    monkeypatch.setattr(kit, "_stdin_is_a_terminal", lambda: False)
+
+    with pytest.raises(kit.Refuse) as e:
+        kit.cmd_upload(argparse.Namespace())
+
+    msg = str(e.value)
+    assert "terminal" in msg, "the refusal never names the thing it wants"
+    assert "python3 kit.py upload" in msg, "the refusal names no command to run there"
+    assert sent == [], "the capture went out on a run with nobody present"
+    assert capsys.readouterr().out == "", "a refused upload still printed a report"
+
+
+def test_the_refusal_hands_back_the_credential_path_they_passed(kit_home, monkeypatch, tmp_path):
+    """The half of the command they cannot reconstruct.
+
+    The file is in a downloads folder under a name we chose, and this refusal is
+    usually read as text an agent relayed rather than in the terminal that
+    produced it — so "run it yourself" has to be a line they can paste. Quoted,
+    because a downloads path with a space in it is the ordinary case on the
+    machines this kit is written for."""
+    downloaded = tmp_path / "my downloads" / "upload.json"
+    downloaded.parent.mkdir()
+    downloaded.write_text(json.dumps(CREDS), encoding="utf-8")
+    _ready_to_send(kit_home, monkeypatch)
+    monkeypatch.setattr(kit, "_stdin_is_a_terminal", lambda: False)
+
+    with pytest.raises(kit.Refuse) as e:
+        kit.cmd_upload(argparse.Namespace(credentials=str(downloaded)))
+
+    msg = str(e.value)
+    assert f"--credentials {shlex.quote(str(downloaded))}" in msg, (
+        "the command they are told to run drops the flag that makes it work"
+    )
+
+
+def test_the_capture_check_still_comes_before_the_terminal_check(kit_home, monkeypatch):
+    """Order, the second half. `test_upload_refuses_before_it_mentions_the_capture`
+    pins credentials ahead of capture; this pins capture ahead of the person.
+
+    Both of those are conditions that will not change by asking, and neither can
+    send anything — so making someone open a terminal, type `send`, and only
+    then be told there is nothing to send is a round trip for a refusal they
+    were always going to get."""
+    (kit_home / "upload.json").write_text(json.dumps(CREDS), encoding="utf-8")
+    monkeypatch.setattr(kit, "_stdin_is_a_terminal", lambda: False)
+
+    with pytest.raises(kit.Refuse) as e:
+        kit.cmd_upload(argparse.Namespace())
+
+    assert "nothing to send yet" in str(e.value)
+    assert "terminal" not in str(e.value), "the terminal check jumped the capture check"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["", "no", "n", "y", "yes", "Send", "SEND", "sent", "send it", EOFError(), KeyboardInterrupt()],
+    ids=lambda a: type(a).__name__ if isinstance(a, BaseException) else (a or "empty"),
+)
+def test_anything_but_send_sends_nothing_and_is_not_an_error(answer, kit_home, monkeypatch, capsys):
+    """Case-sensitive and exact, because the question is not "are you sure".
+
+    And a decline is not a refusal: they were asked and they answered, which is
+    the gate working. Exit 1 on stderr would have `CLAUDE.md`'s "a refusal is an
+    answer" rule make the agent relay a working kit as a broken one."""
+    sent = _ready_to_send(kit_home, monkeypatch)
+    _a_person_typing(monkeypatch, answer)
+
+    assert kit.cmd_upload(argparse.Namespace()) == 0, "a decline was reported as a failure"
+
+    out, err = capsys.readouterr()
+    assert sent == [], f"{answer!r} was read as consent"
+    assert "Nothing was sent." in out, "the decline was silent about what it did"
+    assert err == "", "a decline was written to stderr"
+
+
+@pytest.mark.parametrize("answer", ["send", "  send  "])
+def test_typing_send_is_what_releases_the_capture(answer, kit_home, monkeypatch, capsys):
+    """The other side of the gate, and the reason the seam exists at all: a
+    suite that could only ever be the not-a-terminal case would pin the refusal
+    and never the thing the refusal is standing in front of."""
+    sent = _ready_to_send(kit_home, monkeypatch, events=3)
+    prompts = _a_person_typing(monkeypatch, answer)
+
+    assert kit.cmd_upload(argparse.Namespace()) == 0
+    assert len(sent) == 3, "typing `send` did not send"
+    assert prompts == ["Type send to continue: "], f"the question was asked as {prompts}"
+    assert "Nothing was sent." not in capsys.readouterr().out
+
+
+def test_the_question_names_what_the_answer_is_about_and_still_never_the_key(
+    kit_home, monkeypatch, capsys
+):
+    """Consent to what, exactly: a count, a file, a destination and a workspace,
+    before the prompt rather than after it.
+
+    The destination is `safe_endpoint`'d like every other address this kit
+    prints. A console URL can carry its own credential in the path, and someone
+    deciding whether to send may paste this line into a thread with their
+    security team — which is the same reason the key is named and not shown."""
+    creds = dict(CREDS, console_url="https://console.example.test/s/tok_in_the_path")
+    _ready_to_send(kit_home, monkeypatch, events=2, creds=creds)
+    _a_person_typing(monkeypatch, "no")
+
+    kit.cmd_upload(argparse.Namespace())
+
+    line = capsys.readouterr().out.splitlines()[0]
+    assert "2 events" in line, "the count of what is about to go is missing"
+    assert str(kit_home / "events.jsonl") in line, "the file it would send is not named"
+    assert "https://console.example.test" in line, "the destination is not named"
+    assert creds["tenant_id"] in line, "the workspace it would land in is not named"
+    assert "tok_in_the_path" not in line, "the summary printed the console URL's path"
+    assert creds["api_key"] not in line, "the summary printed the key"
+
+
+def test_the_terminal_check_lives_in_the_kit_and_not_in_the_uploader():
+    """§3a hands a reviewer "all the network code is in `upload.py`" as a claim
+    they check by reading one short file. Consent is not network code, and a
+    gate added there would have given that file a second job — and the reviewer
+    a longer read — for nothing. Pinned as an absence on one side and a presence
+    on the other, which is the only way this regresses."""
+    uploader = (REPO_ROOT / "try" / "upload.py").read_text(encoding="utf-8")
+    kit_source = KIT_PATH.read_text(encoding="utf-8")
+    for borrowed in ("isatty", "input("):
+        assert borrowed not in uploader, f"the consent gate leaked into upload.py: {borrowed}"
+    assert kit_source.count("isatty()") == 1, (
+        "isatty is called somewhere other than the one seam the tests patch"
+    )
 
 
 def test_the_uploader_has_no_write_path_at_all():

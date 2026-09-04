@@ -1826,6 +1826,25 @@ def load_uploader() -> Any:
     return mod
 
 
+# The one fact an agent cannot fake about itself. `upload` is the only command
+# in this kit that cannot be undone — once a line is POSTed it is on our side,
+# and no later `uninstall` reaches it — and SECURITY.md §3a and §4 row 6 both
+# tell a reader that the sending is their own act: "nothing runs it on your
+# behalf". Until now that promise was carried entirely by a sentence in
+# `CLAUDE.md` asking the agent not to type the command. A sentence is the right
+# medium for most of what that file says, because breaking those rules is
+# visible in the transcript; it is the wrong medium for the one step that
+# cannot be reversed once taken.
+#
+# A seam rather than a call at the point of use so the tests can stand on both
+# sides of it: a suite that can only ever be the not-a-terminal case can pin the
+# refusal and never the thing the refusal is protecting. Nothing else in this
+# file calls `isatty`.
+def _stdin_is_a_terminal() -> bool:
+    """Is a person typing at this process?"""
+    return sys.stdin is not None and sys.stdin.isatty()
+
+
 def cmd_upload(args: argparse.Namespace) -> int:
     """Send the capture to the workspace named in `upload.json`.
 
@@ -1833,6 +1852,12 @@ def cmd_upload(args: argparse.Namespace) -> int:
     behalf and never as part of another command. That is the whole difference
     between this and a sink pointed at a URL: the wrap still opens no socket,
     and nothing moves until someone types this.
+
+    "By the person" is checked and not merely asked for: three gates before the
+    first POST, in this order — a credential we handed over, a capture to send,
+    and a terminal with someone at it who types `send`. The order is load-
+    bearing and the tests pin it; see each one below for why it sits where it
+    does.
     """
     uploader = load_uploader()
 
@@ -1872,6 +1897,54 @@ def cmd_upload(args: argparse.Namespace) -> int:
             f"no capture at {events_path} — there is nothing to send yet.\n"
             "  → run `python3 kit.py receipt` to see where the trial is."
         )
+
+    # Third, and last, because the two above are conditions and this one is a
+    # question: there is no point asking someone to confirm a send that was
+    # never going to happen. Both refusals above are reachable with no person
+    # present and neither of them sends anything, so they stay in front.
+    #
+    # Here rather than in `upload.py` deliberately. §3a hands a reviewer "all
+    # the network code is in `upload.py`" as something they check by reading one
+    # short file; consent is not network code, and putting it there would give
+    # that file a second job and the reviewer a longer read for no gain.
+    if not _stdin_is_a_terminal():
+        # `--credentials` is echoed back because it is the half of the command
+        # they cannot reconstruct: the file is in a downloads folder with a name
+        # they did not choose, and this refusal is most often read as relayed
+        # text rather than in the terminal that produced it.
+        retry = "python3 kit.py upload"
+        if explicit:
+            retry += f" --credentials {shlex.quote(str(explicit))}"
+        raise Refuse(
+            "upload runs only from a terminal a person is typing in, and nobody is\n"
+            "typing at this one — so an agent or a script is running the command on\n"
+            "your behalf. Sending the capture is the one step of this trial that\n"
+            "cannot be taken back, so it is yours to type. Nothing was sent.\n"
+            "  → run it yourself, in your own terminal, from this directory:\n"
+            f"      {retry}"
+        )
+
+    # Everything the answer is about, on one line, before the question. The key
+    # is the one field not named: `safe_endpoint` gives scheme and host and
+    # never the path, which on some consoles is itself the credential.
+    count = len(read_events(events_path))
+    print(
+        f"About to send {count} event{'' if count == 1 else 's'} from {events_path} "
+        f"to {safe_endpoint(creds['console_url'])}, into workspace {creds['tenant_id']}."
+    )
+    try:
+        answer = input("Type send to continue: ")
+    except (EOFError, KeyboardInterrupt):
+        # Ctrl-D and Ctrl-C are answers, and the answer is no. Both leave the
+        # cursor part-way along the prompt, hence the newline.
+        print()
+        answer = ""
+    if answer.strip() != "send":
+        # Not a refusal: they were asked and they declined, which is the feature
+        # working. So stdout and 0, not stderr and 1 — an agent relaying this
+        # must not report a working kit as a broken one.
+        print("Nothing was sent.")
+        return 0
 
     # Named, never quoted — the same rule the entry printer follows. `console`
     # and `workspace` are the two things a person needs to recognise as theirs;
