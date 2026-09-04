@@ -1917,9 +1917,9 @@ def cmd_upload(args: argparse.Namespace) -> int:
             retry += f" --credentials {shlex.quote(str(explicit))}"
         raise Refuse(
             "upload runs only from a terminal a person is typing in, and nobody is\n"
-            "typing at this one — so an agent or a script is running the command on\n"
-            "your behalf. Sending the capture is the one step of this trial that\n"
-            "cannot be taken back, so it is yours to type. Nothing was sent.\n"
+            "typing at this one. An agent or a script is running the command on your\n"
+            "behalf. Sending the capture is the one step of this trial that cannot be\n"
+            "taken back, so it is yours to type. Nothing was sent.\n"
             "  → run it yourself, in your own terminal, from this directory:\n"
             f"      {retry}"
         )

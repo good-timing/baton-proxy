@@ -741,17 +741,22 @@ def test_the_four_forks_are_asked_the_same_way_and_the_text_form_is_complete():
     carry the same facts. Pinned because the failure is silent — a fact that
     only ever appears inside an option label reads as disclosed to whoever
     wrote it and as never said to whoever skimmed it."""
-    doc = _claude_md()
-    assert "## The four times you ask" in doc, "the chooser rule has no section"
-    section = doc.split("## The four times you ask", 1)[1].split("\n## ", 1)[0]
+    assert "## How to ask" in _claude_md(), "the chooser rule has no section"
+    section = _flat(_doc_section("## How to ask", "## Start by finding out"))
     assert "AskUserQuestion" in section, "the section never names the client's chooser"
-    # The rule itself: prose above, choice below, and never a fact in a label.
-    assert "never the fact" in section
-    # The fallback, and that it is the complete one rather than the reduced one.
-    assert "no chooser" in section
-    # Step 2's ask is one of the four, so it has to route here rather than
-    # keeping a rule of its own that says something else.
-    assert "*The four times you ask*" in doc, "step 2 does not route to the rule"
+    # The rule itself: prose above, choice below. A fact that only ever appears
+    # inside an option label reads as disclosed to whoever wrote it.
+    assert "facts in prose above it" in section
+    # Absorbed 2026-09-04 from `test_the_ask_has_to_name_what_it_is_asking_about`,
+    # which pinned this in the paste as well. The paste no longer says how to
+    # ask anything, so the doc is the only sink left and the rule is checked
+    # where it now lives rather than deleted with the file that lost it.
+    assert "says what it is about and what happens next" in section
+    # The fallback, and that it is the complete one rather than the reduced
+    # one. The last-line ordering comes here from
+    # `test_the_ask_is_the_last_line_in_both_files` for the same reason.
+    assert "Without a chooser" in section
+    assert "the question alone on the last line" in section
 
 
 def test_claude_md_routes_on_both_intent_rows_by_name():
@@ -1608,9 +1613,15 @@ def test_section_8_names_the_two_tests_the_submodule_gates():
         f"§9's skip count both describe it: {sorted(live)}"
     )
     section_8 = (REPO_ROOT / "try" / "SECURITY.md").read_text(encoding="utf-8")
-    section_8 = section_8.split("## 8.")[1].split("## 9.")[0]
-    for name in SUBMODULE_SKIPPED_TESTS:
-        assert name in section_8, f"§8 does not name the test it makes skip: {name}"
+    section_8 = _flat(section_8.split("## 8.")[1].split("## 9.")[0])
+    # §8 named both tests until the 2026-09-04 rewrite and now states how many
+    # there are. That is the same promise one size down and it is still tied to
+    # the suite: a third test that needs the submodule leaves §8 saying "two",
+    # which is the drift this exists to catch. What it no longer promises is a
+    # name a reviewer can grep, which the docstring above says is the weaker of
+    # the two failures.
+    claim = f"{_COUNT_WORDS[len(SUBMODULE_SKIPPED_TESTS)].lower()} schema-conformance tests skip"
+    assert claim in section_8, f"§8 does not account for the tests it makes skip: {claim!r}"
 
 
 def test_one_of_the_six_is_a_comment_not_a_call_site():
@@ -2522,7 +2533,7 @@ def test_receipt_branch_one_no_state(kit_home, capsys):
     """No state file at all → *Setting up*. The string the doc quotes in bold is
     read OUT OF THE DOC, so a reword in either place fails here."""
     quoted = "No setup state found"
-    assert f'"{quoted}"' in _claude_md(), "CLAUDE.md no longer quotes this branch"
+    assert _routed(quoted), "CLAUDE.md no longer names this branch"
     assert quoted in _receipt_output(capsys)
 
 
@@ -2727,6 +2738,18 @@ def _fired(out: str) -> list[str]:
     ]
 
 
+def _routed(marker: str) -> bool:
+    """Does CLAUDE.md's routing list name the banner `marker`?
+
+    The doc quoted each banner verbatim until the 2026-09-04 rewrite, which
+    bolds them instead and prints one of them in sentence case (`connected but
+    nothing called it`). Case, commas and the quoting style are presentation;
+    the WORDS are the tie to what `kit.py` prints, and they are what this
+    normalises down to. A reworded banner on either side still fails.
+    """
+    return marker.lower().replace(",", "") in _flat(_claude_md()).lower()
+
+
 def _counts_shown(out: str) -> bool:
     """Branch four has no banner of its own, so it is read off its labels.
 
@@ -2786,7 +2809,7 @@ def test_an_ended_trial_is_its_own_branch_not_branch_one(kit_home, capsys):
     either place fails here rather than silently unrouting the branch."""
     _ended_trial(kit_home)
     assert STATE_CLEARED_MARKER in kit.STATE_CLEARED, "the module no longer says this"
-    assert f'"{STATE_CLEARED_MARKER}"' in _claude_md(), "CLAUDE.md no longer quotes this branch"
+    assert _routed(STATE_CLEARED_MARKER), "CLAUDE.md no longer names this branch"
     out = _receipt_output(capsys)
     assert _fired(out) == [STATE_CLEARED_MARKER], _fired(out)
     assert _counts_shown(out), "an ended trial still reports its numbers:\n" + out
@@ -2870,6 +2893,12 @@ def _injected_param_names() -> list[str]:
     return sorted(tool["inputSchema"]["properties"])
 
 
+# The disclosure's own words, so the anchor and the count claim below cannot
+# drift apart. "grafted onto" became "added to" in the 2026-09-04 rewrite; the
+# sentence is the same sentence and this is the one place that spelling lives.
+_INJECTION_CLAIM_TAIL = "parameters added to every upstream tool's schema"
+
+
 def _injection_disclosure() -> str:
     """§4's injection paragraph alone.
 
@@ -2878,7 +2907,7 @@ def _injection_disclosure() -> str:
     while the disclosure itself is missing one.
     """
     doc = (KIT_PATH.parent / "SECURITY.md").read_text()
-    start = doc.index("parameters grafted onto every upstream tool's schema")
+    start = doc.index(_INJECTION_CLAIM_TAIL)
     return doc[start : doc.index("\n\n", start)]
 
 
@@ -2904,7 +2933,7 @@ def test_security_md_injected_param_count_matches_the_code():
     """
     doc = (KIT_PATH.parent / "SECURITY.md").read_text()
     expected = _COUNT_WORDS[len(_injected_param_names())]
-    claim = f"**{expected} parameters grafted onto every upstream tool's schema**"
+    claim = f"**{expected} {_INJECTION_CLAIM_TAIL}:**"
     assert claim in doc, (
         f"SECURITY.md §4 does not say {expected!r} parameters; the proxy injects "
         f"{_injected_param_names()}"
@@ -2920,11 +2949,11 @@ def test_security_md_says_required_is_advertised_and_not_enforced():
     Both halves or neither. "Required" alone tells them the wrap can refuse
     their server's traffic, which is false and is the scariest possible false
     claim to make here; silence leaves the retired optional story standing."""
-    doc = (KIT_PATH.parent / "SECURITY.md").read_text()
-    assert "Nothing enforces it" in doc, (
+    doc = _flat((KIT_PATH.parent / "SECURITY.md").read_text())
+    assert "and nothing enforces it" in doc, (
         "SECURITY.md never says the advertised requirement is not enforced"
     )
-    assert "forwarded to your server exactly as it would have been" in doc, (
+    assert "forwarded exactly as it would have been unwrapped" in doc, (
         "the consequence a reviewer actually cares about — their own call still "
         "goes through — is not stated"
     )
@@ -3338,7 +3367,7 @@ def test_a_session_that_connected_and_called_nothing_is_its_own_branch(tmp_path,
     assert _fired(out) == [NOTHING_CALLED_MARKER], _fired(out)
     assert _counts_shown(out), "row 5 still reports its numbers:\n" + out
     assert "/mcp" in out, "the cause Dave's run hit is not named:\n" + out
-    assert f'"{NOTHING_CALLED_MARKER}"' in _claude_md(), "CLAUDE.md does not route on this row"
+    assert _routed(NOTHING_CALLED_MARKER), "CLAUDE.md does not route on this row"
 
 
 def test_an_ended_trial_that_captured_nothing_is_still_the_ended_trial_branch(kit_home, capsys):
@@ -3508,14 +3537,20 @@ def test_security_md_discloses_that_annotations_restate_the_results():
     for token in ("annotation", "`context`", "twice"):
         assert token in limit, f"§6's business-data limit never says {token!r}:\n{limit}"
     assert "model" in limit, "the disclosure does not say who wrote the prose"
-    assert "zero" in limit, "it does not say the scrubber found nothing in it"
+    # The claim, not the arithmetic: it said the scrubber found "zero" of them
+    # until 2026-09-04 and now says why there is nothing to find. Either way the
+    # limit has to close on the scrubber not catching this, or naming the second
+    # copy reads as naming something handled.
+    assert "not a pattern it matches" in _flat(limit), (
+        "it no longer says the scrubber does not catch the second copy"
+    )
 
 
 def test_section_5_says_the_same_thing_where_intent_is_listed():
     """The other sink. §5 is the field-by-field list, and someone auditing what
     is recorded reads it rather than §6's limits."""
     doc = (KIT_PATH.parent / "SECURITY.md").read_text()
-    start = doc.index("- **Intent** —")
+    start = doc.index("- **Intent**:")
     bullet = doc[start : doc.index("\n\n", start)]
     assert "restate" in bullet or "quote" in bullet, (
         f"§5's intent bullet does not say annotations can carry results:\n{bullet}"
@@ -3945,9 +3980,15 @@ def _doc_section(start: str, end: str) -> str:
 
 
 def _marker_row(marker: str) -> str:
-    """One bullet of the routing table, from its marker to the next bullet."""
-    table = _doc_section("Exactly one of these six lines", "## Setting up")
-    start = table.index(f'**"{marker}"**')
+    """One bullet of the routing list, from its marker to the next bullet.
+
+    Re-pointed 2026-09-04: the list lost its "exactly one of these six lines"
+    preamble and its quotes around each banner, and now runs to the end of the
+    section rather than to `## Setting up`. The bullet it returns is the same
+    bullet ([[the doc is the spec, so the marker moves, not the check]]).
+    """
+    table = _doc_section("## Start by finding out where you are", "## If they asked")
+    start = table.index(f"**{marker}**")
     nxt = table.find("\n- **", start)
     return table[start : nxt if nxt != -1 else len(table)]
 
@@ -3960,20 +4001,26 @@ def test_the_wrap_is_gone_row_does_not_deny_a_capture_that_happened():
     assert "nothing has been passing through" not in row, (
         f"the row states the empty reading as though it were the only one:\n{row}"
     )
-    assert "before" in row.lower(), f"the row never says a capture may predate the clobber:\n{row}"
+    assert "counts above the banner are real" in _flat(row).lower(), (
+        f"the row never says a capture may predate the clobber:\n{row}"
+    )
 
 
 def test_the_ending_splits_a_clobbered_capture_from_an_empty_one():
     """They print different things and want different answers. Grouping them
     sent a real capture to a checklist that row does not print, and dropped the
     offer the receipt did print."""
-    ending = _doc_section("## Ending it", "## Removing it")
-    assert "Nothing at all, or the wrap is gone" not in ending, (
-        "two rows with different output are still handled as one branch"
+    ending = _flat(_doc_section("## Ending it", "## Removing it"))
+    # 2026-09-04: the three quiet rows share one branch again, which is fine —
+    # they share an ANSWER (relay the banner) and the grouping was never the
+    # defect. What was, and what this still pins, is the exception travelling
+    # with them: a clobbered capture is real, so it gets the decision rather
+    # than a checklist the row does not print.
+    assert "when the wrap is gone the counts above the banner are real" in ending, (
+        f"the clobbered capture is handled as an empty one again:\n{ending}"
     )
-    gone = ending[ending.lower().index("wrap is gone") :]
-    assert "checklist" not in gone.split("**Nothing at all")[0], (
-        f"the wrap-gone branch routes to a checklist that row never prints:\n{gone}"
+    assert "hand over the decision" in ending, (
+        f"the wrap-gone case keeps the checklist and loses the offer:\n{ending}"
     )
 
 
@@ -4213,7 +4260,7 @@ def test_security_md_says_the_labels_authenticate_nothing():
     rather than disappearing with the step that used to carry it."""
     doc = (KIT_PATH.parent / "SECURITY.md").read_text(encoding="utf-8")
     section = doc[doc.index("## 5. What is recorded") : doc.index("## 6. What the scrubber")]
-    assert "authenticates anything" in section, (
+    assert "nothing checks them against anything" in _flat(section), (
         "§5 never says the tenant/vendor labels check nothing — and no other "
         "shipped file does either since the setup step was removed"
     )
@@ -4313,9 +4360,9 @@ def test_claude_md_tells_the_agent_to_say_it_before_setup_runs():
     the time the tab is open there is no good moment to explain it."""
     md = _claude_md()
     para = next(text for _n, text in _unwrapped(md) if "signs them in to something" in text)
-    assert "before you run setup" in para, "the warning is not tied to a moment"
-    assert "cannot tell from the config" in para, (
-        "the agent is not told this is undetectable, so it will infer and be wrong"
+    assert "say so before setup" in para, "the warning is not tied to a moment"
+    assert "Ask; if they do not know" in para, (
+        "the agent is not told to ask, so it will infer from the config and be wrong"
     )
     assert "may happen" in para, "an agent told to predict this will overstate it"
 
@@ -4342,7 +4389,7 @@ def test_claude_md_tells_the_agent_to_say_it_before_setup_runs():
 def test_the_single_client_assumption_is_stated_before_it_bites(rel):
     text = (REPO_ROOT / rel).read_text(encoding="utf-8")
     paras = list(_unwrapped(text))
-    hit = [(n, p) for n, p in paras if "written for Claude Code" in p]
+    hit = [(n, p) for n, p in paras if "works with Claude Code only" in p]
     assert hit, f"{rel} never says which client the kit is for"
     n, para = hit[0]
     assert "~/.claude.json" in para, "the reason is what makes it checkable, not the claim"
@@ -4445,6 +4492,13 @@ def test_the_competing_first_check_would_notice_the_lead_it_was_written_for():
 # TK-FL-2 — the pre-consent summary names the change they will notice
 # (followability run `follow-20260831-163630`, finding 2).
 #
+# The summary itself is gone: the 2026-09-04 rewrite made the security detail
+# opt-in and asked for by the paste, so CLAUDE.md no longer has a step 2 and the
+# two tests that read one were deleted with it. What survives here is the half
+# that was never about the doc — the code facts a summary of this shape has to
+# be true about, wherever it is next written, and which §3 of SECURITY.md still
+# states today. Read "step 2" below as "any summary we give before the wrap".
+#
 # Step 2's list covered the config entry, the credentials, the local file and
 # reversibility. It did not cover the two added tools or the three grafted
 # parameters — which is the addition a person is most likely to SEE, since it
@@ -4457,57 +4511,6 @@ def test_the_competing_first_check_would_notice_the_lead_it_was_written_for():
 # report tool is GATED — it appears only because the kit writes a file sink, so
 # a summary promising it is one config change away from being false.
 # ---------------------------------------------------------------------------
-
-
-def _step_two(text: str) -> str:
-    """Step 2 as a SPAN, from its own heading to step 3's, not as the one
-    paragraph that carries the heading. It was a single paragraph until the
-    2026-09-01 bound turned it into four labelled lines; scoping to the
-    paragraph then passed the facts to a bullet the check could not see, which
-    is a marker going stale rather than a rule being broken."""
-    flat = " ".join(text.split())
-    start = flat.find("**2. Say what will happen")
-    assert start != -1, "step 2 is gone or reworded — re-point the marker, do not delete the check"
-    end = flat.find("**3. Run it.**", start)
-    assert end != -1, "step 3's marker is gone — the span check cannot bound itself"
-    return flat[start:end]
-
-
-def test_step_2_names_the_addition_the_person_will_actually_see():
-    from baton_proxy.proxy import ANNOTATE_TOOL_NAME, REPORT_TOOL_NAME
-
-    para = _step_two(_claude_md())
-    for name in (ANNOTATE_TOOL_NAME, REPORT_TOOL_NAME):
-        assert f"`{name}`" in para, f"the pre-consent summary never names {name}"
-    assert "three parameters" in para, "the grafted parameters are still unmentioned"
-    # 2026-09-01: the default became `required`, so "three optional parameters"
-    # went false in the one summary a person approves the wrap from. The
-    # summary now has to carry BOTH halves — advertised required, never
-    # enforced — because either half alone misleads: "required" alone reads as
-    # a gate on their traffic, and silence reads as the old optional story.
-    assert "required" in para, "the summary hides that user_goal is advertised as required"
-    assert "never enforced" in para, (
-        "saying `required` without saying it is never enforced tells a reviewer "
-        "the wrap can refuse their own server's calls"
-    )
-    assert "strips" in para, (
-        "naming the parameters without saying they are removed before the call "
-        "is forwarded leaves the summary worse than silence"
-    )
-    assert "§3" in para, (
-        "the summary is deliberately short of §3's full list — so it has to say "
-        "where the rest is, or the omission reads as the whole story"
-    )
-
-
-def test_step_2_says_it_before_setup_runs():
-    """Disclosure after the config edit is not disclosure. The step numbers are
-    prose; the ordering is the thing that has to hold."""
-    paras = [p for _n, p in _unwrapped(_claude_md())]
-    said_at = next(i for i, p in enumerate(paras) if "Say what will happen" in p)
-    runs = [i for i, p in enumerate(paras) if "**3. Run it.**" in p]
-    assert runs, "the step this is measured against is gone — re-point the marker"
-    assert said_at < runs[0], "the summary comes after the wrap is written"
 
 
 def test_the_tool_names_step_2_promises_are_the_ones_the_proxy_grafts():
@@ -4575,9 +4578,12 @@ def test_the_prompt_does_not_send_them_hunting_for_a_checkout():
     (`trykit-findings-2026-08-28.md`), so it is pinned rather than paraphrased.
     """
     text = _prompt_text()
-    assert "into the current directory" in text, "the prompt stopped naming where to clone"
-    assert "Do not search my machine" in text, (
-        "the prompt no longer forbids the filesystem hunt that cost Dave's run four approvals"
+    assert "into the directory I'm in" in text, "the prompt stopped naming where to clone"
+    # The ban is now general rather than named: the paste stops the agent doing
+    # ANY work before the approval it says is not yet given, which covers the
+    # `~/Downloads` read that cost the run its fourth approval.
+    assert "don't do anything else" in text, (
+        "the prompt no longer forbids the work-before-approval that cost Dave's run four"
     )
     for retired in ("if it's already on this machine", "Ask me where to put it"):
         assert retired.lower() not in text.lower(), (
@@ -4596,16 +4602,11 @@ def test_the_prompt_survives_arriving_as_a_file():
     `~/Downloads` is a kit they will not find again.
     """
     prompt = _flat(_prompt_text())
-    assert "ask me where the kit should live first" in prompt, (
+    assert "ask me where the kit should live before you clone" in prompt, (
         "the paste no longer checks where it is before cloning, so an attachment "
         "route lands the kit in a downloads folder"
     )
     assert "downloads folder" in prompt, "the check stopped naming the case it is for"
-    # It must remain a question, not a relocation: hunting or moving files on
-    # someone's machine is the behaviour finding 3 took out of this file.
-    assert "search my machine" in prompt, (
-        "the no-hunting clause was lost while adding the where-to-clone check"
-    )
 
 
 def test_the_prompt_says_which_client_before_it_asks_for_anything():
@@ -4614,7 +4615,7 @@ def test_the_prompt_says_which_client_before_it_asks_for_anything():
     to travel with the claim — `~/.claude.json` is what makes it checkable
     rather than a thing we assert about ourselves."""
     paras = list(_unwrapped(_prompt_text()))
-    said = [i for i, (_n, p) in enumerate(paras) if "written for Claude Code" in p]
+    said = [i for i, (_n, p) in enumerate(paras) if "works with Claude Code" in p]
     assert said, "the prompt never says which client the kit is for"
     assert "~/.claude.json" in paras[said[0]][1], (
         "the reason is what makes the claim checkable, not the claim"
@@ -4627,102 +4628,12 @@ def test_the_prompt_says_which_client_before_it_asks_for_anything():
     assert said[0] < costs[0], "the prompt discloses the client assumption after the clone"
 
 
-def test_the_prompt_hands_off_to_the_shipped_docs_rather_than_restating_them():
-    """The paste runs in a session started OUTSIDE `try/`, so `try/CLAUDE.md`
-    is not loaded for it the way it is for a session started inside. The prompt
-    therefore has to name both documents; if it stops, the agent driving setup
-    is working from 25 lines instead of from the kit's own instructions, and
-    every rule that only exists in `CLAUDE.md` silently stops applying."""
-    text = _prompt_text()
-    for doc in ("SECURITY.md", "CLAUDE.md"):
-        assert doc in text, f"the prompt no longer points the agent at {doc}"
-
-
-# The four labels are the contract between the two files. The first human-led
-# run found them disagreeing — CLAUDE.md said explain "briefly" and point at
-# SECURITY.md, PROMPT.md asked for what changes / what is captured / what leaves
-# — and the paste won, because the paste is in the person's message and the doc
-# is prose the agent read many turns earlier. So the fix is literal agreement,
-# and a set is what makes it checkable: three of four matching is the same
-# silent drift with a smaller radius.
 def _flat(text: str) -> str:
     """Hard-wrapped markdown with the newlines collapsed. Every phrase worth
     pinning in these two files is longer than the distance to the next line
     break, so a literal `in` check against the raw text passes or fails on
     where the wrap happens to fall — which is not a property of the doc."""
     return " ".join(text.split())
-
-
-STEP_TWO_LABELS = (
-    "what changes",
-    "what your agent sees",
-    "what is captured",
-    "what leaves",
-)
-
-
-def test_the_paste_and_the_doc_ask_for_the_same_four_things():
-    """`briefly` is an adjective and it lost to "be thorough about security":
-    the run produced ~900 words in four sections with the ask on the last line.
-    An adjective cannot be graded and cannot be followed precisely, so the bound
-    is a shape — four named lines — and both files have to name the same four
-    or the paste silently redefines the doc."""
-    prompt, doc = _flat(_prompt_text()).lower(), _flat(_claude_md()).lower()
-    missing_doc = [lbl for lbl in STEP_TWO_LABELS if lbl not in doc]
-    missing_paste = [lbl for lbl in STEP_TWO_LABELS if lbl not in prompt]
-    assert not missing_doc, f"try/CLAUDE.md lost step 2 labels: {missing_doc}"
-    assert not missing_paste, f"try/PROMPT.md lost step 2 labels: {missing_paste}"
-
-
-def test_both_files_bound_the_summary_by_shape_rather_than_by_adjective():
-    """The specific regression this replaces. "Briefly, in your own words" is
-    the wording that produced the 900 words, so its return is the failure — and
-    the bound it was replaced with ("one line each") has to be present in the
-    file that actually wins, which is the paste."""
-    prompt, doc = _flat(_prompt_text()), _flat(_claude_md())
-    assert "one line each" in prompt.lower(), (
-        "the paste stopped bounding the summary; whatever CLAUDE.md says, this is the "
-        "instruction the person hands over"
-    )
-    assert "one line each" in doc.lower(), "try/CLAUDE.md stopped bounding step 2"
-    assert "briefly, in your own words" not in doc.lower(), (
-        'the adjective that lost to "be thorough about security" is back in step 2'
-    )
-
-
-def test_the_bound_does_not_licence_dropping_the_worst_fact():
-    """The failure mode a length bound introduces, named in both files so that
-    shortening never wins over honesty. `What is captured` is the line where it
-    bites: full arguments and full results, and business data is not redacted."""
-    doc = _flat(_claude_md())
-    assert "Business data is not redacted" in doc, "step 2 stopped naming the worst fact"
-    assert "the worst of it rather than the shortest" in _flat(_prompt_text()), (
-        "the paste asks for one line without saying which half to keep"
-    )
-
-
-def test_the_ask_is_the_last_line_in_both_files():
-    """The run put a ~900-word explanation above an ask on the last line, which
-    is the right ordering and was the one thing about it that held. Pinned so
-    the rewrite that bounds the length does not lose it: an ask buried above a
-    paragraph is how someone approves a summary they were still reading."""
-    assert "alone on the last line" in _flat(_claude_md())
-    assert "on the last line and nothing after it" in _flat(_prompt_text())
-
-
-def test_the_remote_addendum_is_bounded_separately_rather_than_squeezed():
-    """One line per section and the remote disclosure are in direct conflict:
-    it is three facts, one of them a consent the stdio summary did not cover.
-    Compressing it to fit would recreate, inside the fix, exactly the failure
-    the fix is for — so it is its own labelled section with its own bound."""
-    doc = _flat(_claude_md())
-    assert "If your server is remote" in doc, "the remote disclosure lost its own label"
-    assert "three lines rather than one" in doc, (
-        "the remote section is being held to the one-line bound it cannot meet"
-    )
-    # The three facts themselves, unchanged by the reshaping.
-    for fact in ("bearer token in its environment", "${VAR}", "`receipt` on the first day"):
-        assert fact in doc, f"the remote section lost a fact while being reshaped: {fact!r}"
 
 
 def test_the_ending_fork_names_its_option_set_rather_than_leaving_it_to_the_agent():
@@ -4740,15 +4651,18 @@ def test_the_ending_fork_names_its_option_set_rather_than_leaving_it_to_the_agen
     shape" is what let three options look correct.
     """
     doc = _flat(_claude_md())
-    assert "An option that exists in prose but not in the chooser has not been offered" in doc, (
+    assert "every option a section names even if you expect it to be false" in doc, (
         "the presentation-layer rule is gone; a chooser can silently drop an option again"
     )
-    assert "This fork has three options and they are named here" in doc, (
+    assert "Three options, all shown every time" in doc, (
         "the ending fork went back to leaving its option set to the agent"
     )
-    assert "Reading the file first is not a fourth option" in doc, (
-        "the deferral is back in the option list, where it competes with two decisions"
-    )
+    for option in (
+        "*Send it to my Baton workspace*",
+        "*Email it myself*",
+        "*Not sending anything*",
+    ):
+        assert option in doc, f"the ending fork stopped naming one of its three options: {option}"
 
 
 def test_upload_leads_only_when_the_person_was_handed_the_file():
@@ -4763,13 +4677,13 @@ def test_upload_leads_only_when_the_person_was_handed_the_file():
     and the fact that position carries no endorsement.
     """
     doc = _flat(_claude_md())
-    assert "whether you were handed an `upload.json`" in doc, (
+    assert "Leads if they were handed an `upload.json`" in doc, (
         "the ordering rule lost the signal it keys on"
     )
-    assert "not a reason to go looking" in doc, (
+    assert "Never open the file or hunt for it" in doc, (
         "nothing now stops the agent hunting the filesystem for a credential"
     )
-    assert "Position is not a recommendation" in doc, (
+    assert "never call upload easier or recommended" in doc, (
         "ordering upload first now reads as us recommending it"
     )
     # The bullet this replaced said "do not present it as the recommended one",
@@ -4778,61 +4692,30 @@ def test_upload_leads_only_when_the_person_was_handed_the_file():
     assert "Do not present it as the recommended one" not in doc, (
         "the absolute wording is back and now contradicts the conditional ordering"
     )
-    assert "shorter, not safer" in doc, "the reason the position means nothing is gone"
-
-
-def test_the_ask_has_to_name_what_it_is_asking_about():
-    """The second dogfood run's first finding. The chooser read "Do you want to
-    go ahead, or see the detail first?" with the four labelled lines correctly
-    printed above it, and the reader's reaction was *go ahead with what?* — the
-    summary has scrolled by then, and the two labels are pinned short on
-    purpose, so the question is the only place left to carry the subject.
-
-    Both files are pinned because the paste is the one that wins: it is in the
-    person's own message, and `CLAUDE.md` is prose the agent read many turns
-    earlier ([[the four labels]] were pinned across both files for the same
-    reason). A rule that lives only in the doc is a rule the paste can quietly
-    redefine.
-    """
-    doc, prompt = _flat(_claude_md()), _flat(_prompt_text())
-    assert "name what it is asking about" in doc, (
-        "CLAUDE.md stopped requiring the question to name its subject"
-    )
-    assert "what happens immediately after they agree" in doc, (
-        "the stem rule lost its second half — an ask names the next step too"
-    )
-    assert "name in the question what I am confirming and what you will do" in prompt, (
-        "the paste went back to a bare 'ask me to confirm', which is what produced "
-        "an objectless chooser in the 2026-09-02 run"
-    )
 
 
 def test_the_remote_consent_is_reachable_under_the_order_the_paste_sets():
     """The half of the same finding that is not cosmetic.
 
-    `CLAUDE.md` hangs the remote disclosure off step 2 as "a fifth label", and
-    tells the agent to read the kind off the row the person picked. But the
-    paste orders it the other way — confirm the four lines, THEN list the
-    servers — so a summary written to the paste's order runs before any row
-    exists, and the one consent in this kit that the stdio story does not cover
-    can never be reached at the moment it is specified for.
-
-    The fork order is deliberately NOT changed (2026-09-02): the fix is where
-    the three lines are told to appear, so `CLAUDE.md` is true under either
-    order. This pins the placement, not the sequence.
+    The remote disclosure once hung off a pre-consent summary the paste ran
+    BEFORE listing the servers, so the consent was specified for a moment at
+    which no row existed and it could never be reached. The summary is gone
+    (2026-09-04) and the disclosure now hangs off the pick itself, which is the
+    fix rather than a consequence of the rewrite: this pins the window it has to
+    land in — after the row exists, before the config is written — and the three
+    facts it carries, not the order of the forks around it.
     """
     doc = _flat(_claude_md())
-    assert "said once they have picked" in doc, (
+    # One sentence now carries both halves of the window: "if they picked" is
+    # after the row exists, "before `setup` runs" is before the edit.
+    assert "If they picked a remote server, say three things before `setup` runs" in doc, (
         "the remote consent lost the placement that makes it reachable"
     )
-    assert "after the pick and before `setup` runs" in doc, (
-        "the remote consent no longer names the window it has to land in"
-    )
-    # The reason, not just the instruction: a rule whose cause is dropped is a
-    # rule the next rewrite deletes as redundant.
-    assert "A consent that cannot be reached is not a consent" in doc, (
-        "the placement rule kept the instruction and lost why it exists"
-    )
+    # The three facts, absorbed 2026-09-04 from the bound test that used to
+    # hold them. The bound is gone; the facts are the part that was never
+    # about formatting.
+    for fact in ("bearer token", "${VAR}", "`receipt` on the first day"):
+        assert fact in doc, f"the remote section lost a fact while being reshaped: {fact!r}"
 
 
 def test_the_prompt_leaves_the_ending_to_the_kit():
@@ -5471,8 +5354,8 @@ def test_claude_md_forbids_the_agent_from_running_upload():
     exists."""
     doc = _flat(_claude_md())
     assert "kit.py upload" in doc, "the doc does not mention the command it must forbid"
-    assert "not yours to run" in doc, "the command list does not mark it off-limits"
-    assert "even if they ask you to" in doc or "do not run it when asked to" in doc, (
+    assert "the person runs this, never you" in doc, "the command list does not mark it off-limits"
+    assert "if they ask you to run it, say this one is theirs to type" in doc, (
         "the rule does not survive the person asking, which is when it is needed"
     )
 
@@ -5489,7 +5372,7 @@ def test_security_md_keeps_the_config_entry_check_that_upload_could_have_broken(
     assert "absence of `BATON_API_KEY` in the config entry as sufficient" in _flat(security), (
         "§4's closing check is gone; upload must not have taken it with it"
     )
-    assert "never in your MCP config entry" in _flat(security), (
+    assert "never in your config entry" in _flat(security), (
         "§4 stopped saying where upload's key does NOT live"
     )
 
