@@ -40,9 +40,9 @@ reviewing the security details, proceed with the install: read
    window open.
 4. I'll do a few real things with it, then come back here and tell you I'm
    done.
-5. After I tell you I'm done, tell me what Baton captured and give me the
-   command to send it, so I can see the session summarized in Baton. Sending is
-   mine to do, not yours.
+5. After I tell you I'm done, tell me what Baton captured and what I need to
+   do to send it, so I can see the session summarized in Baton. Don't send it
+   until I tell you to.
 6. Whenever I ask, tell me how to take it back off.
 
 Details:

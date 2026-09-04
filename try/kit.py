@@ -18,8 +18,9 @@ else in the flow — choosing a server, explaining what is about to happen,
 handing over to a second terminal, deciding whether the file may leave — fails
 loudly and immediately, so an agent narrating from ``CLAUDE.md`` is the right
 medium. ``upload`` is in the file for a different reason: not because it could
-fail silently, but because a person typing a command is the only form of consent
-that cannot be inferred on their behalf.
+fail silently, but because the credential it needs is what makes the send the
+person's own act. The file arrives by mail, the kit cannot obtain one, and until
+someone saves it nothing here can send anything.
 
 The rule this file exists to enforce: **the same code writes the wrap and
 reverses it**, so the removal promise in SECURITY.md §7 is keepable rather than
@@ -154,16 +155,16 @@ def come_back() -> str:
     )
 
 
+# Printed by setup, and the only part of the trial that survives the handoff:
+# once they are working in the other terminal, no session there knows this kit
+# exists. It says how the trial ends WITHOUT naming a send path, because which
+# one applies is not known here and is the receipt's to state at the moment
+# there is something to send.
 ENDING_NOTE = (
-    "How the trial ends, while you still have this window:\n\n"
-    "  `receipt` prints what landed. If there is something in it and you decide\n"
-    "  it may go, compress the event file and email it to\n"
-    f"    {TEAM_EMAIL}\n"
-    "  and we load it and send you back a link to your own sessions. You send it.\n"
-    "  Nothing in this kit sends anything, and there is nothing to sign up for.\n\n"
-    "Telling us you are done is about the data, not the machine — nothing is\n"
-    "switched off, and you can do it again later. The wrap stays in place until\n"
-    "you run `python3 kit.py uninstall`."
+    "How the trial ends: use the server, then come back to the window you\n"
+    "started from and say you are done. `python3 kit.py receipt` prints what\n"
+    "landed and how to send it. Nothing is switched off until you run\n"
+    "`python3 kit.py uninstall`."
 )
 
 
@@ -178,21 +179,6 @@ RESTART_NOTE = (
     "enough — nothing needs to be closed, because each client process reads the\n"
     "config when it launches. The session running now keeps the server it already\n"
     "launched, and nothing is captured through it."
-)
-
-# Printed under the redaction line whenever `cc` is non-zero. It is not a
-# caveat about the scrubber — the scrubber did exactly what it says — it is the
-# kit declining to let a number be read as a fact it cannot support. The
-# redaction is irreversible by design, so nobody, including us, can go back and
-# say whether any of them was a card.
-CC_IS_A_CHECKSUM = (
-    "                     `cc` counts 13-19 digit strings that pass the Luhn\n"
-    "                     checksum. Real card numbers pass it, and so does about\n"
-    "                     1 in 10 long numeric ids — order numbers, timestamps,\n"
-    "                     record ids. The scrubber redacted them all and kept no\n"
-    "                     copy, so this is a count of card-SHAPED numbers. It is\n"
-    "                     not evidence that any card number was in the file, and\n"
-    "                     nothing here can tell you which it was."
 )
 
 # The proxy's provenance marker, copied rather than imported: `try/` runs from a
@@ -1650,22 +1636,6 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     print(f"span                 {s['first']} → {s['last']}")
     print(f"events               {s['events']}")
     print(f"file size            {human_size(s['size_bytes'])}")
-    if s["redactions"]:
-        detail = ", ".join(f"{k}×{v}" for k, v in sorted(s["redactions"].items()))
-        print(f"secrets redacted     {sum(s['redactions'].values())} ({detail})")
-        # `cc` is the one category whose count reads as a finding and is not
-        # one. The rule is a checksum over any 13-19 digit string, and about
-        # one in ten long numeric ids satisfies it by chance — measured, not
-        # estimated: 9.9-10.4% across every length in the range, and the same
-        # rate for epoch millis, order numbers and snowflake ids. In the first
-        # human-led run the kit reported 9 of these and the agent explained
-        # them as the person's searches "returning payment-shaped content",
-        # which is a cause nothing here can see. So the count is printed and
-        # the meaning is not asserted.
-        if s["redactions"].get("cc"):
-            print(CC_IS_A_CHECKSUM)
-    else:
-        print("secrets redacted     0 — no credential or PII patterns matched")
     # Both of these need state: on a trial that has already ended the header
     # says so, and telling someone to go fix a wrap they removed is dead advice.
     # One banner per output is what makes CLAUDE.md's table a table.
@@ -1680,18 +1650,6 @@ def cmd_receipt(args: argparse.Namespace) -> int:
         print()
         print(DEAD_SESSION_NOTE, end="")
 
-    print()
-    # This sentence used to read "and nothing here sends it", which was exactly
-    # true while the kit had no network call in it. `upload.py` is one, so the
-    # sentence changed the day the command landed rather than being left to age
-    # into a lie a reviewer would catch with the §9 grep. What survives is the
-    # part that was ever load-bearing: nothing moves unless a person moves it.
-    print("This file has not left your machine. One command here can send it —")
-    print("`python3 kit.py upload` — and only if you run it yourself (SECURITY.md §4).")
-    print("Read it before you decide whether it may: it contains the full arguments")
-    print("and full results of every tool call, which the scrubber does not redact")
-    print("(see SECURITY.md §6).")
-
     # Gated on whether anything actually reached the server, and gated on the
     # same count the diagnosis above uses — a resource read is a call, so a
     # session that only read resources produced a capture worth sending.
@@ -1702,64 +1660,40 @@ def cmd_receipt(args: argparse.Namespace) -> int:
     if not (s["tool_calls"] or s["other_calls"]):
         return 0
 
-    # An address, not an endpoint — and still not one, now that `upload` exists.
-    # Nothing in this block names a URL, on purpose: the receipt tells a person
-    # where their file may go and never shows them a place a machine could POST
-    # to, which stays true whether or not this kit was provisioned.
-    # What it removes is the older ending, which read "arrange it with whoever
-    # you are talking to at Baton" — an instruction with no address in it,
-    # handed to someone who by construction may not be talking to anyone.
+    # Upload first, because the credential is now what decides the ending: the
+    # people we provisioned are the ones this trial was arranged for, and the
+    # mail path is the fallback for everyone else. It is still an ungated
+    # offer conditioned in its own first clause, which is what makes it safe to
+    # print to a kit that has no credential: "if we emailed you" is false for
+    # most readers and obviously false to them, where a bare command would read
+    # as a step they had missed.
+    #
+    # No URL in either branch, on purpose and for every kit rather than for the
+    # provisioned ones: the receipt names an address a person can write to and
+    # never an endpoint a machine could POST to.
     print()
-    print("If you decide it may go, compress it first — this format is mostly")
-    print("repeated keys, so it usually shrinks by around 10x:")
+    print("If we emailed you an `upload.json`, save it (it lands in your Downloads")
+    print("folder) and run, from this directory:")
+    print("  python3 kit.py upload --credentials ~/Downloads/upload.json")
+    # Where they sign in is the uploader's to print: it reads `sign_in_email`
+    # off the credential, which the receipt has never opened and must not.
+    print("It prints where to sign in. Sending again later is safe: we key on the")
+    # Cited rather than assumed, because it asserts behaviour that lives in
+    # another repo: baton-console `ingest/app.py` inserts events
+    # `ON CONFLICT (event_id) DO NOTHING`, and its `tests/test_ingest.py` holds
+    # a re-POST at one row. Nothing here can keep that true, and if ingest ever
+    # stops deduping this is a false promise made to someone who resent a week
+    # of data.
+    print("event ids already in the file, so a second run adds only what is new.")
+
+    print()
+    print(f"If you were not sent one, compress the file and email it to {TEAM_EMAIL};")
+    print("we load it and reply with a link:")
     # `gzip -c … > …` rather than `gzip file`, which REPLACES the original. The
     # trial data is not reproducible, and a command in a document a stranger
     # pastes without reading is not the place to find that out. `-k` would also
     # do it, but it is missing from older gzip builds.
     print(f"  gzip -c {events_path} > {events_path}.gz")
-    print(f"Then email the .gz to {TEAM_EMAIL}, by whatever channel your company")
-    print("already allows, and we will load it and send back a link to your own")
-    print("sessions. You do not need an account, and there is nothing to sign up for.")
-    # Said here because it is what makes a multi-day trial work without either
-    # side tracking what was already sent: console ingest keys on `event_id` and
-    # ignores one it has seen, so the whole file can go again and only the new
-    # events land. Someone who does not know that either sends once and stops,
-    # or hand-splits the file, which is where the real mistakes live.
-    #
-    # This is the one sentence here that asserts behaviour living in another
-    # repo, so it is cited rather than assumed: baton-console
-    # `ingest/app.py` inserts events `ON CONFLICT (event_id) DO NOTHING`, and
-    # `tests/test_ingest.py` holds the re-POST at one row. Nothing in THIS repo
-    # can keep that true — if ingest ever stops deduping, this line is a false
-    # promise made to someone who resent a week of data.
-    print()
-    print("Sending it again later is safe — we key on the event ids already in the")
-    print("file, so a second send adds only what is new. Use the server for another")
-    print("week and send the whole file again if you like.")
-
-    # Printed for everyone, and it names its own precondition in the first
-    # clause. This was gated on the file existing for exactly one day: gating
-    # meant the option was invisible to the person it was FOR, because the file
-    # arrives by mail and sits in a downloads folder, so the one reader who
-    # could use it was the one reader who never saw it offered.
-    #
-    # The condition-first wording is what makes an ungated offer safe in prose
-    # every prospect reads. "If we set up a workspace for you" is false for
-    # almost everyone and obviously false to them — it reads as not-for-me
-    # rather than as a thing they were supposed to have arranged, which is the
-    # signup-shaped worry the kit exists to avoid. A bare `python3 kit.py upload`
-    # with no condition on it would read the other way.
-    #
-    # Still no URL, and that holds for every kit rather than depending on who
-    # this one went to: the receipt names an address and never an endpoint.
-    print()
-    print("If we set up a workspace for you and sent you an `upload.json`, you can")
-    print("send it straight there instead, without the mail:")
-    print("  python3 kit.py upload --credentials <path to that file>")
-    print("Same data and the same decision — it just skips the attachment. It reads")
-    print("that file and does not copy it, so the one you downloaded stays your only")
-    print("copy. If none of that means anything to you, the address above is your")
-    print("path and nothing is missing.")
     return 0
 
 
@@ -1826,25 +1760,6 @@ def load_uploader() -> Any:
     return mod
 
 
-# The one fact an agent cannot fake about itself. `upload` is the only command
-# in this kit that cannot be undone — once a line is POSTed it is on our side,
-# and no later `uninstall` reaches it — and SECURITY.md §3a and §4 row 6 both
-# tell a reader that the sending is their own act: "nothing runs it on your
-# behalf". Until now that promise was carried entirely by a sentence in
-# `CLAUDE.md` asking the agent not to type the command. A sentence is the right
-# medium for most of what that file says, because breaking those rules is
-# visible in the transcript; it is the wrong medium for the one step that
-# cannot be reversed once taken.
-#
-# A seam rather than a call at the point of use so the tests can stand on both
-# sides of it: a suite that can only ever be the not-a-terminal case can pin the
-# refusal and never the thing the refusal is protecting. Nothing else in this
-# file calls `isatty`.
-def _stdin_is_a_terminal() -> bool:
-    """Is a person typing at this process?"""
-    return sys.stdin is not None and sys.stdin.isatty()
-
-
 def cmd_upload(args: argparse.Namespace) -> int:
     """Send the capture to the workspace named in `upload.json`.
 
@@ -1853,11 +1768,11 @@ def cmd_upload(args: argparse.Namespace) -> int:
     between this and a sink pointed at a URL: the wrap still opens no socket,
     and nothing moves until someone types this.
 
-    "By the person" is checked and not merely asked for: three gates before the
-    first POST, in this order — a credential we handed over, a capture to send,
-    and a terminal with someone at it who types `send`. The order is load-
-    bearing and the tests pin it; see each one below for why it sits where it
-    does.
+    What stands between the capture and the wire is the credential file, and it
+    is a real gate rather than a stated one: it arrives by mail, the kit cannot
+    obtain one, and a person has to save it before this command can do anything
+    at all. Two checks before the first POST, in this order: that credential,
+    then a capture to send. The order is load-bearing and the tests pin it.
     """
     uploader = load_uploader()
 
@@ -1898,53 +1813,18 @@ def cmd_upload(args: argparse.Namespace) -> int:
             "  → run `python3 kit.py receipt` to see where the trial is."
         )
 
-    # Third, and last, because the two above are conditions and this one is a
-    # question: there is no point asking someone to confirm a send that was
-    # never going to happen. Both refusals above are reachable with no person
-    # present and neither of them sends anything, so they stay in front.
-    #
-    # Here rather than in `upload.py` deliberately. §3a hands a reviewer "all
-    # the network code is in `upload.py`" as something they check by reading one
-    # short file; consent is not network code, and putting it there would give
-    # that file a second job and the reviewer a longer read for no gain.
-    if not _stdin_is_a_terminal():
-        # `--credentials` is echoed back because it is the half of the command
-        # they cannot reconstruct: the file is in a downloads folder with a name
-        # they did not choose, and this refusal is most often read as relayed
-        # text rather than in the terminal that produced it.
-        retry = "python3 kit.py upload"
-        if explicit:
-            retry += f" --credentials {shlex.quote(str(explicit))}"
-        raise Refuse(
-            "upload runs only from a terminal a person is typing in, and nobody is\n"
-            "typing at this one. An agent or a script is running the command on your\n"
-            "behalf. Sending the capture is the one step of this trial that cannot be\n"
-            "taken back, so it is yours to type. Nothing was sent.\n"
-            "  → run it yourself, in your own terminal, from this directory:\n"
-            f"      {retry}"
-        )
-
-    # Everything the answer is about, on one line, before the question. The key
-    # is the one field not named: `safe_endpoint` gives scheme and host and
-    # never the path, which on some consoles is itself the credential.
+    # What is about to go, on one line, before it goes. It is not a question:
+    # the person decided when they saved the credential, and asking again from
+    # a shell they are not watching would be a prompt nobody answers. It is
+    # here so the line an agent relays says what left, in the terms the person
+    # would recognise. The key is the one field not named: `safe_endpoint`
+    # gives scheme and host and never the path, which on some consoles is
+    # itself the credential.
     count = len(read_events(events_path))
     print(
         f"About to send {count} event{'' if count == 1 else 's'} from {events_path} "
         f"to {safe_endpoint(creds['console_url'])}, into workspace {creds['tenant_id']}."
     )
-    try:
-        answer = input("Type send to continue: ")
-    except (EOFError, KeyboardInterrupt):
-        # Ctrl-D and Ctrl-C are answers, and the answer is no. Both leave the
-        # cursor part-way along the prompt, hence the newline.
-        print()
-        answer = ""
-    if answer.strip() != "send":
-        # Not a refusal: they were asked and they declined, which is the feature
-        # working. So stdout and 0, not stderr and 1 — an agent relaying this
-        # must not report a working kit as a broken one.
-        print("Nothing was sent.")
-        return 0
 
     # Named, never quoted — the same rule the entry printer follows. `console`
     # and `workspace` are the two things a person needs to recognise as theirs;

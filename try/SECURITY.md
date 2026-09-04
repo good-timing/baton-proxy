@@ -28,9 +28,9 @@ The kit works with Claude Code only. It edits `~/.claude.json`, which no other
 client uses. Where this document says "your client" it means Claude Code.
 
 **Nothing Baton records leaves your machine unless you send it.** Events are
-written to a local file. Two commands can send that file, and you run both
-yourself. Section 4 explains this in detail, including every code path that
-could send data and why each one is inert here.
+written to a local file. One command can send that file, and it works only
+after you place a credential we email you. Section 4 explains this in detail,
+including every code path that could send data and why each one is inert here.
 
 ## 2. What changes on your machine
 
@@ -236,11 +236,9 @@ reads that one file.
 `try/CLAUDE.md` is a plain-text instruction file for the agent. It grants no
 capability. It tells the agent to use the commands above and what not to do:
 never edit an MCP config by hand, never work around a command that refused,
-never quote the captured events into the conversation, and never send the file.
-When the person decides to send, the agent hands them the command to run; it
-does not run it. That rule is also enforced in code: `upload` refuses to run
-unless a person is typing at a terminal, and asks them to type `send` before
-the first request, so an agent's shell cannot run it.
+never quote the captured events into the conversation, and never send the file
+except through `upload`, after you have placed the credential file we emailed
+you. The agent never opens that file.
 
 The kit refuses rather than guesses when the named server appears in more than
 one config scope, when the entry is already wrapped by something other than this
@@ -253,18 +251,17 @@ config shapes, `uninstall(setup(x))` returns the original bytes.
 
 **Nothing, unless you send it.** Events are appended to a local JSONL file.
 
-Two things can send that file, and you run both:
-
-- `receipt` ends by printing a `gzip` command and an address,
-  **team@goodtiming.ai**. If the file goes there, it is because you attached it
-  to an email yourself.
-- `kit.py upload` POSTs the capture to a Baton workspace. It refuses to run
-  unless a person is typing at a terminal, and asks them to type `send` first.
-  It refuses without `try/upload.json`, a file we hand over by arrangement; a kit cloned from this
-  repository does not have one and cannot obtain one. Its key lives in that file
-  and never in your config entry, so the wrapped server has no credential and no
-  code path that would use one. The proxy is not involved: `upload` reads a file
-  that already exists, and the wrap opens no socket because of it.
+- `kit.py upload` POSTs the capture to a Baton workspace. It refuses without
+  `upload.json`, a credential file we email you when we set up a workspace for
+  you; it is read from wherever you saved it, and nothing in the kit can send
+  until you have placed it. A kit cloned from this repository does not have
+  one and cannot obtain one. Its key lives in that file and never in your
+  config entry, so the wrapped server has no credential and no code path that
+  would use one. The proxy is not involved: `upload` reads a file that already
+  exists, and the wrap opens no socket because of it.
+- For a kit without a credential file, `receipt` prints a `gzip` command and an
+  address, **team@goodtiming.ai**. If the file goes there, it is because you
+  attached it to an email yourself.
 
 One qualification, only if you wrapped a remote entry: that server's traffic was
 already leaving your machine, because your client was dialling the endpoint
@@ -283,7 +280,7 @@ the only one that exists to send your data.
 | 3 | `transport_http.py` · `StreamableHttpClient.post` | Speaks MCP over HTTPS to an upstream server | Only in `--url` mode. For a stdio wrap this is unreachable. For a remote wrap it is the path in use, and it connects to the URL your own config already named. Never to us. |
 | 4 | `proxy.py` · `subprocess.Popen` | Starts the upstream MCP server | Runs exactly the command your config already contained. Not reached for a remote wrap. |
 | 5 | `scan.py` · `subprocess.run` | Runs `claude -p` headlessly for a preflight report | Only under the `baton-proxy scan` subcommand. The try flow never invokes it. |
-| 6 | `try/upload.py` · `open_request` | POSTs your captured events to `{console}/v0/events` | The kit's own, and the one thing here that can send your data. Reached only from `kit.py upload`, which refuses without an interactive terminal, a typed `send`, and `try/upload.json`. `setup`, `receipt` and `uninstall` do not load this module. |
+| 6 | `try/upload.py` · `open_request` | POSTs your captured events to `{console}/v0/events` | The kit's own, and the one thing here that can send your data. Reached only from `kit.py upload`, which refuses without `upload.json`. `setup`, `receipt` and `uninstall` do not load this module. |
 
 There is no telemetry, no version check, no crash reporting, no auto-update. The
 proxy does not phone home on startup, on failure, or on exit.

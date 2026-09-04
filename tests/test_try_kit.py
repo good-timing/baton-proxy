@@ -17,7 +17,6 @@ import importlib.util
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 import threading
@@ -757,6 +756,11 @@ def test_the_four_forks_are_asked_the_same_way_and_the_text_form_is_complete():
     # `test_the_ask_is_the_last_line_in_both_files` for the same reason.
     assert "Without a chooser" in section
     assert "the question alone on the last line" in section
+    # Absorbed 2026-09-04 from the ending-fork test, which was deleted with the
+    # three-option fork it pinned. The general rule outlived that fork and is
+    # where the next surface will look for it: an option that exists in prose
+    # and not in the chooser has not been offered.
+    assert "every option a section names even if you expect it to be false" in section
 
 
 def test_claude_md_routes_on_both_intent_rows_by_name():
@@ -875,7 +879,6 @@ def test_the_receipt_names_an_address_but_never_a_place_to_upload_to(tmp_path, m
     assert kit.TEAM_EMAIL in out, f"the receipt still ends with nowhere to send it:\n{out}"
     for scheme in ("http://", "https://"):
         assert scheme not in out, f"the receipt offered an endpoint ({scheme})"
-    assert "only if you run it yourself" in out, "the receipt stopped saying who does the sending"
     assert "nothing here sends it" not in out, (
         "a sentence that is no longer true came back: `upload.py` sends it"
     )
@@ -2638,55 +2641,15 @@ def _receipt_with_events(tmp_path, kit_home, capsys, events: list[dict]) -> str:
     return _receipt_output(capsys)
 
 
-def _receipt_with_redactions(tmp_path, kit_home, capsys, marker_text: str) -> str:
-    return _receipt_with_events(
-        tmp_path,
-        kit_home,
-        capsys,
-        [
-            {
-                "event_type": "tool_call_end",
-                "session_id": "s1",
-                "captured_at": "2026-08-30T10:00:01Z",
-                "payload": {"tool_name": "echo", "result": marker_text, "duration_ms": 3},
-            }
-        ],
-    )
+def test_the_luhn_false_positive_rate_security_md_quotes_is_the_real_one():
+    """ "Roughly one in ten" is a measured claim shown to a prospect, so it is
+    pinned to the scrubber it describes rather than to a comment. Seeded, so a
+    drift in `_luhn_valid` or the candidate regex fails here instead of quietly
+    making the sentence false.
 
-
-def test_a_cc_count_is_printed_with_what_it_cannot_mean(tmp_path, kit_home, capsys):
-    """The count is a Luhn checksum over long digit strings, and about 1 in 10
-    non-card ids passes it. The first human-led run printed 9 of these and the
-    agent explained them as the person's searches returning payment-shaped
-    content — a cause nothing in the kit can see. So the number stays and the
-    meaning is stated by the kit rather than invented downstream."""
-    out = _receipt_with_redactions(
-        tmp_path, kit_home, capsys, "order [REDACTED:cc] and [REDACTED:cc]"
-    )
-    assert "cc×2" in out
-    assert "1 in 10 long numeric ids" in out, f"the false-positive rate is not stated:\n{out}"
-    assert "not evidence that any card number was in the file" in out
-    # The evidence is destroyed at redaction time, so the kit must not offer a
-    # way to look: no "check the file" advice can answer this one.
-    assert "kept no\n" in out or "kept no copy" in out
-
-
-def test_the_cc_note_is_not_printed_when_no_cc_matched(tmp_path, kit_home, capsys):
-    """It is gated on the category, not on redactions in general. Printing a
-    paragraph about card-shaped numbers under a line reporting two emails
-    answers a question nobody asked and reads as a hedge on the whole count."""
-    out = _receipt_with_redactions(
-        tmp_path, kit_home, capsys, "mail [REDACTED:email] and [REDACTED:email]"
-    )
-    assert "email×2" in out
-    assert "Luhn" not in out, f"the cc note fired without a cc match:\n{out}"
-
-
-def test_the_luhn_false_positive_rate_the_receipt_quotes_is_the_real_one():
-    """`1 in 10` is a measured claim printed to a prospect, so it is pinned to
-    the scrubber it describes rather than to a comment. Seeded, so a drift in
-    `_luhn_valid` or the candidate regex fails here instead of quietly making
-    the receipt's sentence false."""
+    It was the receipt that quoted it until 2026-09-04, when the `secrets
+    redacted` row and its note came out; §6 of `SECURITY.md` still does, so the
+    claim is still shipped and this still guards a live sentence."""
     import random
 
     from baton_proxy.scrub import _CC_CANDIDATE, _luhn_valid
@@ -3894,7 +3857,12 @@ def test_setup_hands_over_the_ending_before_the_window_goes_quiet(tmp_path, kit_
     assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     assert "kit.py receipt" in out, f"setup never says how to come back:\n{out}"
-    assert kit.TEAM_EMAIL in out, f"setup never says how the trial ends:\n{out}"
+    # The address left this note on 2026-09-04, because which send path applies
+    # is not knowable at setup time and the receipt states it at the moment
+    # there is something to send. What setup still owes them is the SHAPE of
+    # the ending, which is what this asserts.
+    assert "How the trial ends" in out, f"setup never says how the trial ends:\n{out}"
+    assert "kit.py uninstall" in out, f"setup's ending never says how to switch it off:\n{out}"
 
 
 def test_the_ending_setup_hands_over_does_not_claim_a_file_exists_yet(tmp_path, kit_home, capsys):
@@ -3905,10 +3873,17 @@ def test_the_ending_setup_hands_over_does_not_claim_a_file_exists_yet(tmp_path, 
     path = _project_config(tmp_path, "/Users/someone/work/app")
     assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
-    tail = out[out.index("kit.py receipt") :]
-    assert "if there is something in it" in tail.lower(), (
-        f"setup's ending reads as though a capture already exists:\n{tail}"
+    tail = out[out.index("How the trial ends") :]
+    # It used to carry the send path under an "if there is something in it"
+    # conditional. It now carries no send path at all, which satisfies the same
+    # property harder: the offer belongs to `receipt`, which runs when the
+    # answer is known. So the pin is the deferral, and the absence of an offer
+    # made before there is anything to offer.
+    assert "kit.py receipt" in tail, f"setup's ending defers the send to nothing:\n{tail}"
+    assert kit.TEAM_EMAIL not in tail, (
+        f"setup offers a send path before there is anything to send:\n{tail}"
     )
+    assert "gzip" not in tail, f"setup tells them to compress a file that may stay empty:\n{tail}"
 
 
 def test_the_already_wrapped_path_hands_over_the_ending_too(tmp_path, kit_home, capsys):
@@ -3920,7 +3895,7 @@ def test_the_already_wrapped_path_hands_over_the_ending_too(tmp_path, kit_home, 
     assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
     out, _err = capsys.readouterr()
     assert "Already wrapped" in out
-    assert kit.TEAM_EMAIL in out, f"the re-entry hands over no ending:\n{out}"
+    assert "How the trial ends" in out, f"the re-entry hands over no ending:\n{out}"
 
 
 def test_the_doc_and_the_kit_name_the_same_address():
@@ -3928,7 +3903,13 @@ def test_the_doc_and_the_kit_name_the_same_address():
     document naming a different address than the code prints is wrong in the one
     place a person acts on it, and every test stays green."""
     doc = _claude_md()
-    assert kit.TEAM_EMAIL in doc, f"CLAUDE.md never names {kit.TEAM_EMAIL}"
+    # The doc stopped naming the address on 2026-09-04 and routes to the line
+    # the receipt prints instead, which is the same pin one level better: there
+    # is now one site to keep in step rather than two. So what is checked is the
+    # routing, and that no OTHER address has appeared in its place.
+    assert "the receipt prints a `gzip` command and an address" in _flat(doc), (
+        "CLAUDE.md neither names the address nor routes to the line that does"
+    )
     others = set(re.findall(r"[\w.+-]+@[\w-]+\.[\w.]+", doc)) - {kit.TEAM_EMAIL}
     assert others <= {"security@goodtiming.ai"}, f"CLAUDE.md names another address: {others}"
 
@@ -4060,7 +4041,7 @@ def test_security_md_says_the_file_can_leave_and_who_makes_it_leave():
     # address got, for the same reason: a reviewer who meets it at the end of a
     # trial this page never described re-reads the whole page as a setup.
     assert "kit.py upload" in section, "§4 never mentions the command that sends the file"
-    assert "refuses without `try/upload.json`" in section, (
+    assert "refuses without\n  `upload.json`" in section, (
         "§4 does not say what stops `upload` on a kit we handed to nobody"
     )
 
@@ -4634,64 +4615,6 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
-def test_the_ending_fork_names_its_option_set_rather_than_leaving_it_to_the_agent():
-    """The second dogfood run's second finding, and the same failure mode as
-    `fc7bf82` one layer up.
-
-    The receipt printed the `upload` offer to a kit that had one; the agent
-    relayed a three-option chooser of read-it / email-it / send-nothing, and
-    upload survived only as prose. So the one reader the offer was ungated FOR
-    could reach it only by rejecting the menu — a gate removed from the
-    filesystem and put back in the presentation.
-
-    Two things are pinned: the general rule, which is where the next surface
-    will look for it, and this fork's set, because "two options is the usual
-    shape" is what let three options look correct.
-    """
-    doc = _flat(_claude_md())
-    assert "every option a section names even if you expect it to be false" in doc, (
-        "the presentation-layer rule is gone; a chooser can silently drop an option again"
-    )
-    assert "Three options, all shown every time" in doc, (
-        "the ending fork went back to leaving its option set to the agent"
-    )
-    for option in (
-        "*Send it to my Baton workspace*",
-        "*Email it myself*",
-        "*Not sending anything*",
-    ):
-        assert option in doc, f"the ending fork stopped naming one of its three options: {option}"
-
-
-def test_upload_leads_only_when_the_person_was_handed_the_file():
-    """Ordering is conditional (Ujwal, 2026-09-02): provisioned → upload first,
-    otherwise email first, both always shown.
-
-    The signal is that someone TOLD the agent where the file is, not a
-    filesystem check — the check is what `fc7bf82` removed, and it failed
-    because the file lands in a downloads folder and never beside `kit.py`.
-    Three things have to survive together or the rule turns into either the old
-    gate or a recommendation: the condition, the ban on hunting for the file,
-    and the fact that position carries no endorsement.
-    """
-    doc = _flat(_claude_md())
-    assert "Leads if they were handed an `upload.json`" in doc, (
-        "the ordering rule lost the signal it keys on"
-    )
-    assert "Never open the file or hunt for it" in doc, (
-        "nothing now stops the agent hunting the filesystem for a credential"
-    )
-    assert "never call upload easier or recommended" in doc, (
-        "ordering upload first now reads as us recommending it"
-    )
-    # The bullet this replaced said "do not present it as the recommended one",
-    # full stop, which directly contradicts an ordering rule that sometimes puts
-    # it first. A contradiction left in place is what §13 cost us on 09-01.
-    assert "Do not present it as the recommended one" not in doc, (
-        "the absolute wording is back and now contradicts the conditional ordering"
-    )
-
-
 def test_the_remote_consent_is_reachable_under_the_order_the_paste_sets():
     """The half of the same finding that is not cosmetic.
 
@@ -4823,60 +4746,6 @@ def _recording_opener(codes=None):
         return _FakeResponse()
 
     return opener, sent
-
-
-def _a_person_typing(monkeypatch, answer):
-    """Put a terminal in front of `upload`, with `answer` waiting in it.
-
-    Returns the list of prompts `input()` was shown. The prompt is worth
-    capturing rather than reading off stdout: a patched `input` never writes it,
-    so a capsys assertion would pass whatever the question turned out to say —
-    and the question is the whole interface of this gate.
-
-    `answer` may be an exception instance, which is how Ctrl-D and Ctrl-C are
-    driven: both arrive at `input()` as a raise and neither is an answer the
-    keyboard can spell.
-    """
-    prompts: list[str] = []
-
-    def fake_input(prompt=""):
-        prompts.append(prompt)
-        if isinstance(answer, BaseException):
-            raise answer
-        return answer
-
-    monkeypatch.setattr(kit, "_stdin_is_a_terminal", lambda: True)
-    monkeypatch.setattr("builtins.input", fake_input)
-    return prompts
-
-
-@pytest.fixture
-def at_a_terminal(monkeypatch):
-    """The ordinary run, for the tests that are about something else.
-
-    Every test that drives `cmd_upload` all the way to a POST needs a person in
-    front of it now, and none of the ones written before the gate existed were
-    about the person. They ask for this and go back to what they were pinning.
-    """
-    _a_person_typing(monkeypatch, "send")
-
-
-def _ready_to_send(kit_home, monkeypatch, *, events=1, creds=None):
-    """A kit with everything `upload` wants except someone typing at it.
-
-    A credential, a capture of `events` lines, and an opener that records
-    envelopes instead of opening a socket — so `sent == []` is a real assertion
-    that nothing left, not an assertion that the network happened to be down.
-    """
-    (kit_home / "events.jsonl").write_text(
-        "".join(f'{{"event_id":"e{i}","session_id":"s1"}}\n' for i in range(events)),
-        encoding="utf-8",
-    )
-    (kit_home / "upload.json").write_text(json.dumps(creds or CREDS), encoding="utf-8")
-    opener, sent = _recording_opener()
-    monkeypatch.setattr(upload_mod, "open_request", opener)
-    monkeypatch.setattr(kit, "load_uploader", lambda: upload_mod)
-    return sent
 
 
 def test_upload_refuses_without_the_handed_over_file(kit_home, capsys):
@@ -5101,7 +4970,7 @@ def test_a_blocked_network_is_not_reported_as_a_credential_we_got_wrong(tmp_path
         assert retired not in message, f"the misdiagnosis is back: {retired!r}"
 
 
-def test_upload_names_the_key_and_never_prints_it(kit_home, at_a_terminal, monkeypatch, capsys):
+def test_upload_names_the_key_and_never_prints_it(kit_home, monkeypatch, capsys):
     """The same rule the entry printer follows, on the one file whose whole
     content is a credential. A person may paste this output into a thread with
     us, or into one with their own security team."""
@@ -5137,7 +5006,7 @@ def test_the_receipt_offers_upload_to_everyone_with_its_condition_attached(kit_h
     )
     kit.cmd_receipt(argparse.Namespace())
     out = capsys.readouterr().out
-    assert "If we set up a workspace for you and sent you an `upload.json`" in out, (
+    assert "If we emailed you an `upload.json`" in out, (
         "the upload offer lost the condition that tells most readers it is not for them"
     )
     assert "python3 kit.py upload --credentials" in out, "the offer names no command"
@@ -5160,7 +5029,7 @@ def test_a_credential_from_anywhere_is_validated_the_same_way(kit_home, tmp_path
 
 
 def test_upload_reads_the_credential_and_never_makes_a_second_copy(
-    kit_home, at_a_terminal, tmp_path, monkeypatch, capsys
+    kit_home, tmp_path, monkeypatch, capsys
 ):
     """A first version installed the file beside `kit.py` so a second run could
     skip the flag. That optimised the wrong case.
@@ -5207,143 +5076,6 @@ def test_upload_reads_the_credential_and_never_makes_a_second_copy(
 # ---------------------------------------------------------------------------
 
 
-def test_upload_refuses_when_nobody_is_typing_at_it(kit_home, monkeypatch, capsys):
-    """A kit that has the credential AND the capture — every condition met but
-    the person — still sends nothing.
-
-    The seam is patched to False rather than leant on: under plain `pytest`
-    stdin is not a terminal, but under `pytest -s` in a developer's shell it is,
-    and a test that passes for that reason is testing the harness."""
-    sent = _ready_to_send(kit_home, monkeypatch)
-    monkeypatch.setattr(kit, "_stdin_is_a_terminal", lambda: False)
-
-    with pytest.raises(kit.Refuse) as e:
-        kit.cmd_upload(argparse.Namespace())
-
-    msg = str(e.value)
-    assert "terminal" in msg, "the refusal never names the thing it wants"
-    assert "python3 kit.py upload" in msg, "the refusal names no command to run there"
-    assert sent == [], "the capture went out on a run with nobody present"
-    assert capsys.readouterr().out == "", "a refused upload still printed a report"
-
-
-def test_the_refusal_hands_back_the_credential_path_they_passed(kit_home, monkeypatch, tmp_path):
-    """The half of the command they cannot reconstruct.
-
-    The file is in a downloads folder under a name we chose, and this refusal is
-    usually read as text an agent relayed rather than in the terminal that
-    produced it — so "run it yourself" has to be a line they can paste. Quoted,
-    because a downloads path with a space in it is the ordinary case on the
-    machines this kit is written for."""
-    downloaded = tmp_path / "my downloads" / "upload.json"
-    downloaded.parent.mkdir()
-    downloaded.write_text(json.dumps(CREDS), encoding="utf-8")
-    _ready_to_send(kit_home, monkeypatch)
-    monkeypatch.setattr(kit, "_stdin_is_a_terminal", lambda: False)
-
-    with pytest.raises(kit.Refuse) as e:
-        kit.cmd_upload(argparse.Namespace(credentials=str(downloaded)))
-
-    msg = str(e.value)
-    assert f"--credentials {shlex.quote(str(downloaded))}" in msg, (
-        "the command they are told to run drops the flag that makes it work"
-    )
-
-
-def test_the_capture_check_still_comes_before_the_terminal_check(kit_home, monkeypatch):
-    """Order, the second half. `test_upload_refuses_before_it_mentions_the_capture`
-    pins credentials ahead of capture; this pins capture ahead of the person.
-
-    Both of those are conditions that will not change by asking, and neither can
-    send anything — so making someone open a terminal, type `send`, and only
-    then be told there is nothing to send is a round trip for a refusal they
-    were always going to get."""
-    (kit_home / "upload.json").write_text(json.dumps(CREDS), encoding="utf-8")
-    monkeypatch.setattr(kit, "_stdin_is_a_terminal", lambda: False)
-
-    with pytest.raises(kit.Refuse) as e:
-        kit.cmd_upload(argparse.Namespace())
-
-    assert "nothing to send yet" in str(e.value)
-    assert "terminal" not in str(e.value), "the terminal check jumped the capture check"
-
-
-@pytest.mark.parametrize(
-    "answer",
-    ["", "no", "n", "y", "yes", "Send", "SEND", "sent", "send it", EOFError(), KeyboardInterrupt()],
-    ids=lambda a: type(a).__name__ if isinstance(a, BaseException) else (a or "empty"),
-)
-def test_anything_but_send_sends_nothing_and_is_not_an_error(answer, kit_home, monkeypatch, capsys):
-    """Case-sensitive and exact, because the question is not "are you sure".
-
-    And a decline is not a refusal: they were asked and they answered, which is
-    the gate working. Exit 1 on stderr would have `CLAUDE.md`'s "a refusal is an
-    answer" rule make the agent relay a working kit as a broken one."""
-    sent = _ready_to_send(kit_home, monkeypatch)
-    _a_person_typing(monkeypatch, answer)
-
-    assert kit.cmd_upload(argparse.Namespace()) == 0, "a decline was reported as a failure"
-
-    out, err = capsys.readouterr()
-    assert sent == [], f"{answer!r} was read as consent"
-    assert "Nothing was sent." in out, "the decline was silent about what it did"
-    assert err == "", "a decline was written to stderr"
-
-
-@pytest.mark.parametrize("answer", ["send", "  send  "])
-def test_typing_send_is_what_releases_the_capture(answer, kit_home, monkeypatch, capsys):
-    """The other side of the gate, and the reason the seam exists at all: a
-    suite that could only ever be the not-a-terminal case would pin the refusal
-    and never the thing the refusal is standing in front of."""
-    sent = _ready_to_send(kit_home, monkeypatch, events=3)
-    prompts = _a_person_typing(monkeypatch, answer)
-
-    assert kit.cmd_upload(argparse.Namespace()) == 0
-    assert len(sent) == 3, "typing `send` did not send"
-    assert prompts == ["Type send to continue: "], f"the question was asked as {prompts}"
-    assert "Nothing was sent." not in capsys.readouterr().out
-
-
-def test_the_question_names_what_the_answer_is_about_and_still_never_the_key(
-    kit_home, monkeypatch, capsys
-):
-    """Consent to what, exactly: a count, a file, a destination and a workspace,
-    before the prompt rather than after it.
-
-    The destination is `safe_endpoint`'d like every other address this kit
-    prints. A console URL can carry its own credential in the path, and someone
-    deciding whether to send may paste this line into a thread with their
-    security team — which is the same reason the key is named and not shown."""
-    creds = dict(CREDS, console_url="https://console.example.test/s/tok_in_the_path")
-    _ready_to_send(kit_home, monkeypatch, events=2, creds=creds)
-    _a_person_typing(monkeypatch, "no")
-
-    kit.cmd_upload(argparse.Namespace())
-
-    line = capsys.readouterr().out.splitlines()[0]
-    assert "2 events" in line, "the count of what is about to go is missing"
-    assert str(kit_home / "events.jsonl") in line, "the file it would send is not named"
-    assert "https://console.example.test" in line, "the destination is not named"
-    assert creds["tenant_id"] in line, "the workspace it would land in is not named"
-    assert "tok_in_the_path" not in line, "the summary printed the console URL's path"
-    assert creds["api_key"] not in line, "the summary printed the key"
-
-
-def test_the_terminal_check_lives_in_the_kit_and_not_in_the_uploader():
-    """§3a hands a reviewer "all the network code is in `upload.py`" as a claim
-    they check by reading one short file. Consent is not network code, and a
-    gate added there would have given that file a second job — and the reviewer
-    a longer read — for nothing. Pinned as an absence on one side and a presence
-    on the other, which is the only way this regresses."""
-    uploader = (REPO_ROOT / "try" / "upload.py").read_text(encoding="utf-8")
-    kit_source = KIT_PATH.read_text(encoding="utf-8")
-    for borrowed in ("isatty", "input("):
-        assert borrowed not in uploader, f"the consent gate leaked into upload.py: {borrowed}"
-    assert kit_source.count("isatty()") == 1, (
-        "isatty is called somewhere other than the one seam the tests patch"
-    )
-
-
 def test_the_uploader_has_no_write_path_at_all():
     """The narrower form of the rule above, read off the module. `upload.py`
     reads a capture and sends it; the moment it can write, "your download stays
@@ -5370,17 +5102,33 @@ def test_the_uploader_is_not_on_the_import_graph_of_the_other_commands():
     assert "def load_uploader" in source, "the by-path loader is gone"
 
 
-def test_claude_md_forbids_the_agent_from_running_upload():
-    """The rule that had to move when the button appeared. "Never send the file
-    anywhere" was written when no command in the kit could send it — the agent
-    had nothing to send it WITH. It now has a shell and a one-line command, so
-    the prohibition has to name it or it is a rule about a thing that no longer
-    exists."""
+def test_claude_md_gates_upload_on_the_person_placing_the_credential():
+    """The rule reversed on 2026-09-04, so it is rewritten rather than dropped.
+
+    `upload` used to be the one command the agent was told never to type, and
+    the terminal check in `kit.py` enforced it. The gate is now the credential
+    file: it arrives by mail, only the person can put it on the disk, and the
+    agent runs the command afterwards. The send is still theirs; what makes it
+    theirs moved from the keyboard to the file.
+
+    What did NOT change is the half that was never about who types. `upload.json`
+    is a live key we issued, and an agent that opens it, copies it, or goes
+    hunting for it has put a credential into a transcript. That is the half a
+    rewrite of this section loses most easily, because it lived in the sentence
+    that got reversed."""
     doc = _flat(_claude_md())
-    assert "kit.py upload" in doc, "the doc does not mention the command it must forbid"
-    assert "the person runs this, never you" in doc, "the command list does not mark it off-limits"
-    assert "if they ask you to run it, say this one is theirs to type" in doc, (
-        "the rule does not survive the person asking, which is when it is needed"
+    assert "kit.py upload" in doc, "the doc does not mention the command it governs"
+    assert "only after the person places upload.json" in doc, (
+        "the command list no longer says what has to be true before the agent runs it"
+    )
+    assert "only after the person tells you the credential file is in place" in doc, (
+        "the rule that keeps the send the person's stopped naming its condition"
+    )
+    assert "run `python3 kit.py upload --credentials ~/Downloads/upload.json`" in doc, (
+        "the doc no longer tells the agent to run the send once the file is placed"
+    )
+    assert "you never open it, copy it, or search for it" in doc, (
+        "nothing stops the agent reading or hunting for a live key"
     )
 
 
