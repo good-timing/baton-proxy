@@ -4390,103 +4390,6 @@ def test_the_single_client_assumption_is_stated_before_it_bites(rel):
 
 
 # ---------------------------------------------------------------------------
-# TK-FL-1 — one answer for what comes first (followability run
-# `follow-20260831-163630`, finding 1).
-#
-# The opening says read `SECURITY.md` "before you do anything else". Two
-# sections later, *Start by finding out where you are* said "begin with
-# `python3 kit.py receipt`". Both were "first", and the model resolved it
-# differently across samples of the same run — `a2` ran `receipt` before
-# `SECURITY.md` in one and after it in the other. Nothing broke either way, but
-# an instruction two runs of one model order differently is not an instruction,
-# it is a coin flip, and the next reader may resolve it somewhere worse.
-#
-# The order is now total and stated at the site that created the collision: the
-# lead into `receipt` defers to `SECURITY.md` rather than competing with it. So
-# the check is structural — the paragraph ABOVE the receipt command, whatever it
-# is reworded to — rather than a marker my own sentence supplies, which a
-# rewrite would retire silently.
-# ---------------------------------------------------------------------------
-
-# The section whose whole job is telling the agent where to start. Its heading,
-# not a sentence inside it: until 2026-09-04 the lead was found as "the
-# paragraph above the fenced `python3 kit.py receipt` block", and the rewrite
-# moved that command inline into the lead itself and dropped the fence — which
-# is exactly the reformatting a marker made of our own prose cannot survive,
-# and why this one is made of the document's structure instead.
-_THE_START_HERE_HEADING = "## Start by finding out where you are"
-
-
-def _first_run_lead(text: str) -> tuple[int, str]:
-    """The paragraph that opens the where-to-start section.
-
-    Whatever it is next reworded to. The cheat-sheet block at the top of the
-    file also carries `python3 kit.py receipt`, so the lead cannot be found by
-    the command alone; the section it opens is what identifies it.
-    """
-    paras = list(_unwrapped(text))
-    at = [i for i, (_n, p) in enumerate(paras) if p == _THE_START_HERE_HEADING]
-    assert at, (
-        "the section this ordering is measured against is gone or renamed — "
-        "re-point the marker rather than deleting the check"
-    )
-    after = [p for _n, p in paras[at[0] + 1 :]]
-    end = next((i for i, p in enumerate(after) if p.startswith("## ")), len(after))
-    assert any("python3 kit.py receipt" in p for p in after[:end]), (
-        "the where-to-start section no longer runs the receipt, so its first "
-        "paragraph is not the lead this is measuring"
-    )
-    return paras[at[0] + 1]
-
-
-def _competing_first_offenders(text: str) -> list[str]:
-    n, lead = _first_run_lead(text)
-    if "SECURITY.md" not in lead:
-        return [f"try/CLAUDE.md:{n}: {lead[:120]}"]
-    return []
-
-
-def test_claude_md_gives_one_answer_for_what_comes_first():
-    md = _claude_md()
-    paras = list(_unwrapped(md))
-    opening = [i for i, (_n, p) in enumerate(paras) if "before anything else" in p]
-    assert opening, (
-        "the opening no longer claims an absolute first — if that claim moved, "
-        "re-point this check; if it went away, the deferral below is now dangling"
-    )
-    assert "SECURITY.md" in paras[opening[0]][1], "the absolute first names no document"
-
-    lead_at = next(i for i, (_n, p) in enumerate(paras) if p == _THE_START_HERE_HEADING)
-    assert opening[0] < lead_at, "the document tells the agent to run before it tells it to read"
-    assert not _competing_first_offenders(md), (
-        "two sections claim to be first and neither yields:\n"
-        + "\n".join(_competing_first_offenders(md))
-    )
-
-
-# Verbatim as it sat in CLAUDE.md at `cccc383`, wrapped exactly as it was and
-# under the heading it sat under, which is unchanged since — so the check is
-# graded on the shape it actually has to catch, INCLUDING the fenced-block shape
-# the finder no longer keys on
-# ([[feedback_control_condition_must_be_able_to_fail]]).
-_THE_LEAD_AS_IT_WAS_WRITTEN = """## Start by finding out where you are
-
-The person may be at any point in the trial — the session that set this up is
-probably long gone. So begin with:
-
-```
-python3 kit.py receipt
-```
-"""
-
-
-def test_the_competing_first_check_would_notice_the_lead_it_was_written_for():
-    assert _competing_first_offenders(_THE_LEAD_AS_IT_WAS_WRITTEN), (
-        "the check would have passed on the prose it exists to catch"
-    )
-
-
-# ---------------------------------------------------------------------------
 # TK-FL-2 — the pre-consent summary names the change they will notice
 # (followability run `follow-20260831-163630`, finding 2).
 #
@@ -4986,9 +4889,55 @@ def test_upload_names_the_key_and_never_prints_it(kit_home, monkeypatch, capsys)
     assert CREDS["api_key"] not in out, "the upload printed the key it was handed"
     assert "not shown" in out, "the key was dropped silently rather than named"
     assert CREDS["tenant_id"] in out, "the person cannot see which workspace this went to"
-    assert "Delivered is not the same as stored" in out, (
-        "the receipt-side honesty about 201 went missing"
+
+
+def test_the_tail_says_where_to_sign_in_and_what_will_arrive(kit_home, monkeypatch, capsys):
+    """The last thing a person reads after a send, and the only part of it they
+    act on.
+
+    Both branches, because `sign_in_email` is a field of `upload.json` and the
+    kit cannot assume a workspace was set up with one. Without it the line still
+    has to name the console: "sign in" with nowhere to sign in is a dead end at
+    the one moment the trial has finally produced something.
+
+    Two absences are pinned with it, and both are things the tail used to say.
+    It explained that a 201 is not a row in a database, which is a fact about
+    our ingest and not about their capture, printed at the moment they wanted to
+    know where to look. And it named the identity provider, which is ours to
+    change and not theirs to depend on: the console asks for whatever it asks
+    for, and what reaches them is a code in an email.
+    """
+    (kit_home / "events.jsonl").write_text(
+        '{"event_id":"e1","session_id":"s1"}\n', encoding="utf-8"
     )
+    # A console URL with a path, so the scheme-and-host rule is exercised here
+    # too: this line is the one a person is most likely to paste to a colleague.
+    creds = dict(CREDS, console_url="https://console.example.test/s/tok_in_the_path")
+    monkeypatch.setattr(kit, "load_uploader", lambda: upload_mod)
+
+    for sign_in, expected in (
+        ("dana@acme.test", "Sign in at https://console.example.test with dana@acme.test;"),
+        (None, "Sign in at https://console.example.test;"),
+    ):
+        payload = dict(creds, sign_in_email=sign_in) if sign_in else creds
+        (kit_home / "upload.json").write_text(json.dumps(payload), encoding="utf-8")
+        opener, _sent = _recording_opener()
+        monkeypatch.setattr(upload_mod, "open_request", opener)
+        kit.cmd_upload(argparse.Namespace())
+        out = capsys.readouterr().out
+
+        assert expected in out, f"the sign-in line is wrong for sign_in_email={sign_in!r}:\n{out}"
+        assert "a six-digit code comes\nby email, and your session is there." in out, (
+            "the tail no longer says what will actually arrive"
+        )
+        assert "Sending again later is safe: it adds only the new events." in out
+        assert "tok_in_the_path" not in out, "the tail printed the console URL's path"
+        assert "Google" not in out, "the tail names an identity provider again"
+        assert "delivered" not in out.lower(), (
+            "`delivered` is back in the output; a 201 is not a row in the console, "
+            "and the word says it is"
+        )
+        assert "sent       : 1 events" in out, "the count of what went is gone or relabelled"
 
 
 def test_the_receipt_offers_upload_to_everyone_with_its_condition_attached(kit_home, capsys):
@@ -5100,6 +5049,38 @@ def test_the_uploader_is_not_on_the_import_graph_of_the_other_commands():
     ]
     assert not module_level, f"kit.py imports the uploader at module level: {module_level}"
     assert "def load_uploader" in source, "the by-path loader is gone"
+
+
+def test_the_ending_asks_twice_and_relays_the_two_lines_the_kit_prints():
+    """The *Calls landed* fork is scripted, so what it scripts is pinned.
+
+    Two questions, not one. The first gets the credential onto the disk; the
+    second is the send itself, offered with the file's own path so "look at it
+    first" is a thing they can actually do rather than advice. Collapsing them
+    into one ask is how a person ends up having consented to a send while they
+    were answering about a download.
+
+    And the two lines the agent relays are named in the doc, which makes this a
+    tie to `kit.py` rather than a style note: the row is labelled `sent` since
+    the day "delivered" stopped being printed, and the sign-in line is the one
+    thing in the tail they act on. A doc asking for a `delivered` count would be
+    asking for a line the command no longer prints."""
+    doc = _flat(_claude_md())
+    assert "tell me when it's there" in doc, "the first ask, for the credential, is gone"
+    # Two assertions and not one phrase: the quoted block is hard-wrapped, and
+    # `_flat` keeps the `>` that opens its second line.
+    assert "if you want to look at it first" in doc, (
+        "the send ask no longer hands them the file before asking about it"
+    )
+    assert "Send it now?" in doc, (
+        "the send is no longer its own question, so a download answer carries it"
+    )
+    assert "ask with a chooser (Send / Not yet)" in doc, (
+        "the send fork lost the two options it is asked with"
+    )
+    assert "the sent count and the sign-in line" in doc, (
+        "the doc asks the agent to relay lines the command does not print"
+    )
 
 
 def test_claude_md_gates_upload_on_the_person_placing_the_credential():

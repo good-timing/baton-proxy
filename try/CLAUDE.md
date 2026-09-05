@@ -1,8 +1,8 @@
 # The Baton trial: how to run it with the person in front of you
 
-You are helping someone trial Baton on their own machine. Read `SECURITY.md` in
-this directory before anything else; it lists the promises this kit makes, and
-nothing you do may break them.
+You are helping someone trial Baton on their own machine. The rules below are
+the promises this kit makes; nothing you do may break them. `SECURITY.md` in
+this directory is the source for the security detail, if they ask for it.
 
 This kit works with Claude Code only; it edits `~/.claude.json`, which no
 other client uses. If there is any doubt about what the person is running, say
@@ -38,9 +38,8 @@ their prompts and their data, none of which reach this machine. Where a count
 has more than one cause the receipt names them; relay that and stop.
 
 **Do not quote the captured events into the conversation.** `events.jsonl`
-holds the full arguments and results of every tool call, real business data the
-scrubber does not redact. `receipt` prints safe aggregates; report those, and
-do not tell them you are not quoting the file.
+holds the full arguments and results of every tool call. `receipt` prints safe
+aggregates; report those, and do not tell them you are not quoting the file.
 
 **Do not read out a credential the commands hid.** The kit shows withheld values
 as `<literal value, not shown>`. `state.json`, the `config-backup.*` files and
@@ -69,8 +68,8 @@ next. Without a chooser, ask in text with the question alone on the last line.
 
 ## Start by finding out where you are
 
-The person may be at any point in the trial. After `SECURITY.md`, the first
-thing to run is `python3 kit.py receipt`; its first line says where you are.
+The person may be at any point in the trial. The first thing to run is
+`python3 kit.py receipt`; its first line says where you are.
 
 - **No setup state found**: nothing is wrapped. Go to *Setting up*.
 - **Setup state has been cleared**: the trial was ended. Report the counts if
@@ -155,17 +154,24 @@ off by "done"; they can use the server more and say it again.
 > Go back to the email from Baton, save the attached `upload.json` (it lands in
 > your Downloads folder), and tell me when it's there.
 
-When they say so, run `python3 kit.py upload --credentials ~/Downloads/upload.json`
-from this directory and relay what it printed: the delivered count and the
-sign-in line. If it says the file is not there, ask where they saved it and run
-it again with that path. If they say they never got such an email, the receipt
-prints a `gzip` command and an address; relay those two lines and stop. Do not
-offer to get them provisioned.
+When they say so, say this, with the real path, and ask with a chooser (Send /
+Not yet):
 
-Nothing else in this step: no security facts (those were offered at the
-start), no reading advice, no list of things you will not do, no reminder that
-the wrap is still on. The session summary is written when the capture arrives;
-sending again later is safe and adds only the new events.
+> It's at `/full/path/to/try/events.jsonl` if you want to look at it first.
+> Send it now?
+
+On Send, run `python3 kit.py upload --credentials ~/Downloads/upload.json` from
+this directory and relay what it printed: the sent count and the sign-in line.
+If it says the file is not there, ask where they saved it and run it again with
+that path. If they say they never got such an email, the receipt prints a
+`gzip` command and an address; relay those two lines and stop. Do not offer to
+get them provisioned.
+
+Nothing else in this step: do not restate what the file holds or what the
+scrubber does, no security facts (those were offered at the start), no reading
+advice beyond the one line above, no list of things you will not do, no
+reminder that the wrap is still on. Sending again later is safe and adds only
+the new events.
 
 **Anything else** (connected but nothing called it, the wrap is gone, nothing
 at all): relay the receipt's banner and checklist in order and do not offer the

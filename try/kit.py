@@ -1237,9 +1237,9 @@ def is_global_config(config_path: str | Path) -> bool:
 
 
 def _cd_to(where: str) -> str:
-    """A `cd` a person can paste. Quoted, because `/Users/x/Google Drive/app` is
-    an ordinary macOS path and an unquoted one silently cds to `/Users/x/Google`
-    — which loads global scope and captures nothing, the failure this whole line
+    """A `cd` a person can paste. Quoted, because `/Users/x/Client Work/app` is
+    an ordinary macOS path and an unquoted one silently cds to `/Users/x/Client`,
+    which loads global scope and captures nothing: the failure this whole line
     exists to prevent."""
     return f"    cd {shlex.quote(where)} && claude"
 
@@ -1843,7 +1843,13 @@ def cmd_upload(args: argparse.Namespace) -> int:
         raise Refuse(str(e)) from e
 
     print()
-    print(f"delivered  : {result['delivered']} events in {result['sessions']} sessions")
+    # "sent", not "delivered". The uploader's own key stays `delivered`, which
+    # is what it means to it: a 201 came back. To the person reading this it
+    # read as "it is in the console", which a 201 does not say — ingest answers
+    # the same way for an event it already had. The label is the honest half of
+    # a sentence that used to be printed underneath and then argued with the
+    # link we send them.
+    print(f"sent       : {result['delivered']} events in {result['sessions']} sessions")
     if result["failed"]:
         print(f"failed     : {result['failed']} events the console would not take")
     if result["oversized_lines"]:
@@ -1855,19 +1861,19 @@ def cmd_upload(args: argparse.Namespace) -> int:
     if result["skipped"]:
         print(f"skipped    : {result['skipped']} unreadable lines")
     print()
-    # The honest limit, stated rather than smoothed over. A 201 is the console
-    # accepting delivery; whether a row was written is a query against its
-    # database, which this cannot run from here.
-    print("Delivered is not the same as stored — the console answers the same way")
-    print("for an event it already had. We check on our side and reply with a link.")
+    # What they do next, and nothing about how ingest works. The sign-in
+    # address is the one field of `upload.json` the kit echoes: it is theirs,
+    # they gave it to us, and without it the line names a console they cannot
+    # tell whether they can open. The console names the sign-in method, so this
+    # says what arrives rather than naming an identity provider that is ours to
+    # change and not theirs to care about.
+    console = safe_endpoint(creds["console_url"])
     if creds.get("sign_in_email"):
-        print()
-        print(f"When it is ready, sign in at {safe_endpoint(creds['console_url'])} with")
-        print(f"Google, using {creds['sign_in_email']} — that address is what opens the")
-        print("workspace on your own sessions.")
-    print()
-    print("Sending again later is safe: we key on the event ids already in the file,")
-    print("so a second run adds only what is new.")
+        print(f"Sign in at {console} with {creds['sign_in_email']}; a six-digit code comes")
+    else:
+        print(f"Sign in at {console}; a six-digit code comes")
+    print("by email, and your session is there.")
+    print("Sending again later is safe: it adds only the new events.")
     return 0
 
 
