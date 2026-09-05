@@ -4931,8 +4931,8 @@ def test_the_tail_says_where_to_sign_in_and_what_will_arrive(kit_home, monkeypat
 
     door = "https://console.example.test/auth/email"
     for sign_in, expected in (
-        ("dana@acme.test", f"Sign in at {door} with dana@acme.test;"),
-        (None, f"Sign in at {door};"),
+        ("dana@acme.test", f"Sign in at {door} with dana@acme.test."),
+        (None, f"Sign in at {door}."),
     ):
         payload = dict(creds, sign_in_email=sign_in) if sign_in else creds
         (kit_home / "upload.json").write_text(json.dumps(payload), encoding="utf-8")
@@ -4943,8 +4943,18 @@ def test_the_tail_says_where_to_sign_in_and_what_will_arrive(kit_home, monkeypat
 
         assert expected in out, f"the sign-in line is wrong for sign_in_email={sign_in!r}:\n{out}"
         assert "//auth/email" not in out, "the trailing slash survived the join"
-        assert "a six-digit code comes\nby email, and your session is there." in out, (
+        # One thought per physical line. The address plus a work email reaches
+        # 79 columns, so a clause carried past it soft-wraps in an ordinary
+        # terminal and strands half a sentence under the tail of a URL.
+        assert "A six-digit code comes by email, and your session is there." in out, (
             "the tail no longer says what will actually arrive"
+        )
+        # A whole line and not a substring: the address line ending where the
+        # address ends is the property. A width bound is not, because the length
+        # is the caller's console URL and work email rather than anything the
+        # kit chooses.
+        assert expected in out.splitlines(), (
+            f"the sign-in address shares its line with something else:\n{out}"
         )
         assert "Sending again later is safe: it adds only the new events." in out
         assert "Google" not in out, "the tail names an identity provider again"

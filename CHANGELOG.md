@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.5] — 2026-09-05
+
+### Changed
+- **`kit.py upload` is gated on the credential file rather than on who types it.** In 0.5.4 the agent was told never to run it and the person typed it themselves; it now refuses without `upload.json`, which we email and only the person can save, and the agent runs the command once they say it is in place.
+- **The upload tail says where to sign in and what will arrive there.** It prints the `console_url` from the credential file with `/auth/email` appended, because the console's front page offers only Google sign-in, and it names the address the workspace was set up with.
+- **The `delivered` row is now labelled `sent`.** A 201 says the console accepted the request, not that a row exists, and the old word said the second thing.
+- **`receipt` offers upload first with the email path under it**, instead of two send paths of equal weight, and states the offer only when something was captured.
+- **The note `setup` prints about how the trial ends no longer names a send path.** Which path applies is not known at setup time, so `receipt` states it when there is something to send.
+- **`try/PROMPT.md`, `try/CLAUDE.md` and `try/SECURITY.md` were rewritten.** The security detail is opt-in and asked once by the paste, the paste checks out the latest release tag, and the trial is stated as one to run against a non-production server.
+- **`try/SECURITY.md` §4 names `console_url`** as the destination of the POST, so a reviewer can read the host off the file they were sent.
+- **`try/CLAUDE.md` tells the agent to open the capture with `less`** and to relay the `tool calls` and `tool definitions` rows apart. macOS has no handler for `.jsonl`, and an agent that joined the two rows reported calls to tools that were never called.
+
+### Removed
+- **The `secrets redacted` row and its Luhn note left `receipt`.** The count was card-shaped numbers rather than findings. `try/SECURITY.md` §6 still carries the measurement, for the reader it was written for.
+- **The paragraph telling a person their file had not left the machine left `receipt`.**
+- **"Delivered is not the same as stored" left the upload output and `try/upload.py`'s docstring.** The same fact is stated as "a 201 is not a row" where a reviewer looks for it.
+- **The upload output no longer names an identity provider.** What reaches the person is a six-digit code either way, and the console names its own sign-in method.
+
+### Fixed
+- **`__version__` was 0.5.4 in a checkout tagged v0.5.5**, so captured events carried `sdk_version: baton-proxy/0.5.4` under that tag. `pyproject.toml` reads the version from that file, so the bump is the whole change.
+
 ## [0.5.4] — 2026-09-03
 
 ### Added

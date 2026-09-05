@@ -1877,12 +1877,18 @@ def cmd_upload(args: argparse.Namespace) -> int:
     # through `safe_endpoint`, which is deliberate: a path is what makes the
     # link work. The two lines above it, the summary and the `console` row, are
     # still scheme and host only.
+    #
+    # Broken after the address, and not at the width the sentence happened to
+    # reach. The address plus a work email is 79 columns, so a clause carried
+    # past it soft-wrapped in an ordinary terminal and put half of one sentence
+    # under the tail of a URL. Each physical line is now a whole thought: where
+    # to go, then what arrives when you do.
     door = creds["console_url"].rstrip("/") + "/auth/email"
     if creds.get("sign_in_email"):
-        print(f"Sign in at {door} with {creds['sign_in_email']}; a six-digit code comes")
+        print(f"Sign in at {door} with {creds['sign_in_email']}.")
     else:
-        print(f"Sign in at {door}; a six-digit code comes")
-    print("by email, and your session is there.")
+        print(f"Sign in at {door}.")
+    print("A six-digit code comes by email, and your session is there.")
     print("Sending again later is safe: it adds only the new events.")
     return 0
 
