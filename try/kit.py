@@ -1867,11 +1867,21 @@ def cmd_upload(args: argparse.Namespace) -> int:
     # tell whether they can open. The console names the sign-in method, so this
     # says what arrives rather than naming an identity provider that is ours to
     # change and not theirs to care about.
-    console = safe_endpoint(creds["console_url"])
+    #
+    # `/auth/email`, and not the bare host: a signed-out visitor to the host is
+    # shown one button, and it is not the door this line is about. Sending
+    # someone to a page whose only visible option is the wrong one is worse than
+    # sending them nowhere, because they conclude the address was wrong.
+    #
+    # This is the one place the kit prints the console URL in full rather than
+    # through `safe_endpoint`, which is deliberate: a path is what makes the
+    # link work. The two lines above it, the summary and the `console` row, are
+    # still scheme and host only.
+    door = creds["console_url"].rstrip("/") + "/auth/email"
     if creds.get("sign_in_email"):
-        print(f"Sign in at {console} with {creds['sign_in_email']}; a six-digit code comes")
+        print(f"Sign in at {door} with {creds['sign_in_email']}; a six-digit code comes")
     else:
-        print(f"Sign in at {console}; a six-digit code comes")
+        print(f"Sign in at {door}; a six-digit code comes")
     print("by email, and your session is there.")
     print("Sending again later is safe: it adds only the new events.")
     return 0

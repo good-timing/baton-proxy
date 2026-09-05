@@ -149,7 +149,9 @@ Run `receipt` and let it decide which of these you are in. Nothing is switched
 off by "done"; they can use the server more and say it again.
 
 **Calls landed.** Say what was captured in two or three lines from the receipt
-(sessions, tool calls, annotations). Then say this, and nothing else:
+(sessions, tool calls, annotations). Relay the rows as printed: `tool calls` is
+how many landed, `tool definitions` is what the server offers. Never join them
+into one sentence. Then say this, and nothing else:
 
 > Go back to the email from Baton, save the attached `upload.json` (it lands in
 > your Downloads folder), and tell me when it's there.
@@ -157,8 +159,8 @@ off by "done"; they can use the server more and say it again.
 When they say so, say this, with the real path, and ask with a chooser (Send /
 Not yet):
 
-> It's at `/full/path/to/try/events.jsonl` if you want to look at it first.
-> Send it now?
+> It's at `/full/path/to/try/events.jsonl` if you want to look at it first
+> (`less /full/path/to/try/events.jsonl` in a terminal). Send it now?
 
 On Send, run `python3 kit.py upload --credentials ~/Downloads/upload.json` from
 this directory and relay what it printed: the sent count and the sign-in line.

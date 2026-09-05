@@ -22,9 +22,9 @@ proxy has no access to it and no code path that would use it.
 Three things this cannot tell you, all of them worth knowing before trusting a
 run, and all of them stated to the person rather than swallowed:
 
-  - **Delivered is not stored.** Ingest answers 201 whether it inserted the row
-    or dropped it under `ON CONFLICT (event_id) DO NOTHING`, and `event_id` is a
-    global primary key — so a file already loaded under a different tenant lands
+  - **A 201 is not a row.** Ingest answers 201 whether it inserted the row or
+    dropped it under `ON CONFLICT (event_id) DO NOTHING`, and `event_id` is a
+    global primary key, so a file already loaded under a different tenant lands
     nothing here and still reports a clean run. Knowing takes a row count bound
     to the tenant, which is a database query on our side. This prints what it
     sent, never what is in the console.

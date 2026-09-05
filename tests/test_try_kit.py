@@ -4044,6 +4044,14 @@ def test_security_md_says_the_file_can_leave_and_who_makes_it_leave():
     assert "refuses without\n  `upload.json`" in section, (
         "§4 does not say what stops `upload` on a kit we handed to nobody"
     )
+    # Run 5: the bullet named the command and the credential and never the
+    # destination, so "a Baton workspace" was the whole answer to where the
+    # capture goes. The reviewer can settle it from the file they were sent,
+    # which is the same kind of answer as the rest of this document: check it
+    # rather than believe it.
+    assert "`console_url`" in section, (
+        "§4 says the capture is POSTed somewhere and never says where to look it up"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -4900,6 +4908,13 @@ def test_the_tail_says_where_to_sign_in_and_what_will_arrive(kit_home, monkeypat
     has to name the console: "sign in" with nowhere to sign in is a dead end at
     the one moment the trial has finally produced something.
 
+    The address is `/auth/email` and not the bare host (run 5). Signed out, the
+    host shows one button and it is not this door, so a line naming the host
+    sends someone to a page whose only visible option is the wrong one, and
+    they conclude the address was wrong rather than that they were on the wrong
+    page. The trailing slash is stripped first, because a `console_url` we
+    provision may carry one and `//auth/email` is a different path.
+
     Two absences are pinned with it, and both are things the tail used to say.
     It explained that a 201 is not a row in a database, which is a fact about
     our ingest and not about their capture, printed at the moment they wanted to
@@ -4910,14 +4925,14 @@ def test_the_tail_says_where_to_sign_in_and_what_will_arrive(kit_home, monkeypat
     (kit_home / "events.jsonl").write_text(
         '{"event_id":"e1","session_id":"s1"}\n', encoding="utf-8"
     )
-    # A console URL with a path, so the scheme-and-host rule is exercised here
-    # too: this line is the one a person is most likely to paste to a colleague.
-    creds = dict(CREDS, console_url="https://console.example.test/s/tok_in_the_path")
+    # Trailing slash on purpose: the join has to produce one separator.
+    creds = dict(CREDS, console_url="https://console.example.test/")
     monkeypatch.setattr(kit, "load_uploader", lambda: upload_mod)
 
+    door = "https://console.example.test/auth/email"
     for sign_in, expected in (
-        ("dana@acme.test", "Sign in at https://console.example.test with dana@acme.test;"),
-        (None, "Sign in at https://console.example.test;"),
+        ("dana@acme.test", f"Sign in at {door} with dana@acme.test;"),
+        (None, f"Sign in at {door};"),
     ):
         payload = dict(creds, sign_in_email=sign_in) if sign_in else creds
         (kit_home / "upload.json").write_text(json.dumps(payload), encoding="utf-8")
@@ -4927,17 +4942,51 @@ def test_the_tail_says_where_to_sign_in_and_what_will_arrive(kit_home, monkeypat
         out = capsys.readouterr().out
 
         assert expected in out, f"the sign-in line is wrong for sign_in_email={sign_in!r}:\n{out}"
+        assert "//auth/email" not in out, "the trailing slash survived the join"
         assert "a six-digit code comes\nby email, and your session is there." in out, (
             "the tail no longer says what will actually arrive"
         )
         assert "Sending again later is safe: it adds only the new events." in out
-        assert "tok_in_the_path" not in out, "the tail printed the console URL's path"
         assert "Google" not in out, "the tail names an identity provider again"
         assert "delivered" not in out.lower(), (
             "`delivered` is back in the output; a 201 is not a row in the console, "
             "and the word says it is"
         )
         assert "sent       : 1 events" in out, "the count of what went is gone or relabelled"
+
+
+def test_only_the_sign_in_line_carries_the_console_path(kit_home, monkeypatch, capsys):
+    """The sign-in address is the one place the kit prints a console URL whole.
+
+    That is the point of it: a path is what makes the link land on the right
+    page. Everything else in the output still goes through `safe_endpoint`,
+    which is the rule that survives from before there was a link to print, and
+    the two lines above the send are where it still bites. A `console_url` that
+    carries a secret in its path would now leak it here and nowhere else, which
+    is a real narrowing of a promise this file used to make whole, so it is
+    pinned as the boundary it now is rather than left to be discovered.
+    """
+    (kit_home / "events.jsonl").write_text(
+        '{"event_id":"e1","session_id":"s1"}\n', encoding="utf-8"
+    )
+    creds = dict(CREDS, console_url="https://console.example.test/s/tok_in_the_path")
+    (kit_home / "upload.json").write_text(json.dumps(creds), encoding="utf-8")
+    opener, _sent = _recording_opener()
+    monkeypatch.setattr(upload_mod, "open_request", opener)
+    monkeypatch.setattr(kit, "load_uploader", lambda: upload_mod)
+
+    kit.cmd_upload(argparse.Namespace())
+    out = capsys.readouterr().out
+
+    summary, header = (
+        next(ln for ln in out.splitlines() if ln.startswith("About to send")),
+        next(ln for ln in out.splitlines() if ln.startswith("console    :")),
+    )
+    for line in (summary, header):
+        assert "tok_in_the_path" not in line, f"a scheme-and-host line printed the path:\n{line}"
+    assert "Sign in at https://console.example.test/s/tok_in_the_path/auth/email" in out, (
+        "the sign-in line no longer builds on the console_url it was given"
+    )
 
 
 def test_the_receipt_offers_upload_to_everyone_with_its_condition_attached(kit_home, capsys):
@@ -5025,6 +5074,37 @@ def test_upload_reads_the_credential_and_never_makes_a_second_copy(
 # ---------------------------------------------------------------------------
 
 
+def test_the_retired_delivery_claim_is_gone_from_every_shipped_surface():
+    """ "Delivered is not the same as stored" left the output when the row was
+    relabelled `sent`, and it has to leave the prose with it: a kit that prints
+    one account of what a 201 means and ships another in the file a reviewer
+    reads is telling two stories about the same request.
+
+    `upload.py`'s module docstring is the surface that kept it, and the reason
+    is worth naming. It is written for someone auditing egress rather than for
+    the person sending, so nothing anybody reads day to day pointed at it. Swept
+    across every file a stranger opens rather than asserted on that one, because
+    a sentence like this comes back by being pasted in from an older draft.
+
+    What replaced it says the same true thing without the word the output no
+    longer uses: a 201 is not a row.
+    """
+    for rel in (
+        "try/kit.py",
+        "try/upload.py",
+        "try/CLAUDE.md",
+        "try/SECURITY.md",
+        "try/PROMPT.md",
+    ):
+        text = _flat((REPO_ROOT / rel).read_text(encoding="utf-8"))
+        assert "Delivered is not" not in text, f"{rel} still carries the retired claim"
+    # The control: the fact itself is still disclosed where a reviewer looks for
+    # it, so this is a rewording and not a deletion.
+    assert "A 201 is not a row" in (REPO_ROOT / "try" / "upload.py").read_text(encoding="utf-8"), (
+        "the honest half went with the retired sentence"
+    )
+
+
 def test_the_uploader_has_no_write_path_at_all():
     """The narrower form of the rule above, read off the module. `upload.py`
     reads a capture and sends it; the moment it can write, "your download stays
@@ -5080,6 +5160,40 @@ def test_the_ending_asks_twice_and_relays_the_two_lines_the_kit_prints():
     )
     assert "the sent count and the sign-in line" in doc, (
         "the doc asks the agent to relay lines the command does not print"
+    )
+    # Run 5: `open` has no handler for `.jsonl` on macOS, so "look at it first"
+    # with a path and nothing else produced kLSApplicationNotFoundErr and a
+    # person who could not read their own capture. The offer names the command
+    # that works.
+    assert "in a terminal). Send it now?" in doc, (
+        "the look-at-it-first offer no longer says how to open a `.jsonl`"
+    )
+    assert "`less /full/path/to/try/events.jsonl`" in doc, (
+        "the reader named in the offer is gone or is not a reader"
+    )
+
+
+def test_the_two_receipt_rows_are_relayed_apart():
+    """Run 5, and the second time this doc has had to say do not explain a
+    number: the agent read `tool calls 4` next to a `tool definitions` list of
+    four names and reported "4 tool calls across list_items, get_item,
+    find_expiring and add_item". Two of those were never called. One row counts
+    what landed and the other lists what the server offers, and joining them
+    invents a per-tool breakdown the receipt does not have and the file does not
+    support.
+
+    Pinned on the words rather than the sentiment: the rule has to name both
+    rows, or the next rewrite compresses it into "relay the receipt" and the
+    join comes back."""
+    doc = _flat(_claude_md())
+    assert "`tool calls` is how many landed" in doc, (
+        "the doc no longer says what the `tool calls` row counts"
+    )
+    assert "`tool definitions` is what the server offers" in doc, (
+        "the doc no longer says what the `tool definitions` row lists"
+    )
+    assert "Never join them into one sentence" in doc, (
+        "nothing stops the agent merging the two rows into a per-tool breakdown"
     )
 
 

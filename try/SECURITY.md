@@ -254,11 +254,12 @@ config shapes, `uninstall(setup(x))` returns the original bytes.
 - `kit.py upload` POSTs the capture to a Baton workspace. It refuses without
   `upload.json`, a credential file we email you when we set up a workspace for
   you; it is read from wherever you saved it, and nothing in the kit can send
-  until you have placed it. A kit cloned from this repository does not have
-  one and cannot obtain one. Its key lives in that file and never in your
-  config entry, so the wrapped server has no credential and no code path that
-  would use one. The proxy is not involved: `upload` reads a file that already
-  exists, and the wrap opens no socket because of it.
+  until you have placed it. It sends to the `console_url` named in that file;
+  open the file and you will see the host. A kit cloned from this repository
+  does not have one and cannot obtain one. Its key lives in that file and never
+  in your config entry, so the wrapped server has no credential and no code path
+  that would use one. The proxy is not involved: `upload` reads a file that
+  already exists, and the wrap opens no socket because of it.
 - For a kit without a credential file, `receipt` prints a `gzip` command and an
   address, **team@goodtiming.ai**. If the file goes there, it is because you
   attached it to an email yourself.
