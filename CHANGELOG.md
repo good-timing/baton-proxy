@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - **The trial ends on Baton's Setup page.** `receipt` and `try/CLAUDE.md` now name the capture file and the page the person signs in to and uploads it on, `try/PROMPT.md` step 5 asks for what was captured and how to see it in Baton, and `try/SECURITY.md` says that nothing in the kit sends.
+- **The last step reveals the capture in Finder on macOS.** The agent was given `open -R` to run before it hands the file over, and `receipt` gained one line printing the same command, because the upload box takes a drag and a path in a terminal cannot be dragged. Linux was left as it was: there is no portable reveal, and the commands that come closest open the capture in an editor.
+- **`try/SECURITY.md` §5 and §6 state that `runtime_meta` bypasses the scrubber.** The client's request `_meta`, which for Claude Code is its tool-use id and progress token, was always recorded as it arrived and only the payload ever passed through `Scrubber`. The document described the redaction for the payload alone, so a reader could take it for the whole event.
 
 ### Removed
 - **`kit.py upload`, `try/upload.py` and the emailed `upload.json` credential are gone.** Nothing in the checkout opens a network connection of its own, so the capture moves only when the person uploads it themselves in a browser.
