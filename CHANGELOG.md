@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-08
+
+### Changed
+- **The trial ends on Baton's Setup page.** `receipt` and `try/CLAUDE.md` now name the capture file and the page the person signs in to and uploads it on, `try/PROMPT.md` step 5 asks for what was captured and how to see it in Baton, and `try/SECURITY.md` says that nothing in the kit sends.
+
+### Removed
+- **`kit.py upload`, `try/upload.py` and the emailed `upload.json` credential are gone.** Nothing in the checkout opens a network connection of its own, so the capture moves only when the person uploads it themselves in a browser.
+
 ## [0.5.5] — 2026-09-05
 
 ### Changed

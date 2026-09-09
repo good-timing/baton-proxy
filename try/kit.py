@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""The Baton try kit — setup, receipt, upload, uninstall.
+"""The Baton try kit: setup, receipt, uninstall.
 
-Four commands, and nothing else. Everything they do is described in
+Three commands, and nothing else. Everything they do is described in
 ``SECURITY.md`` beside this file; if the two ever disagree, the document is the
 one that is wrong, because a stranger approved the trial by reading it.
 
-``upload`` is the fourth and the only one that sends anything. Its code is not in
-this file: it lives in ``upload.py`` and is loaded by path from inside the
-command, so the three commands that touch only local files never import it. That
-is a claim a reviewer checks with §9's grep rather than by believing this
-docstring.
+None of the three opens a network connection. The capture is a file on the
+person's own disk, and it moves only when they upload it themselves in a
+browser, signed in to Baton. That is a claim a reviewer checks with §9's grep
+rather than by believing this docstring.
 
 Why setup and receipt are code and the rest of the trial is prose: a bad config
 edit is silent for days, and a wrong receipt is a claim we repeat to someone
@@ -17,10 +16,7 @@ else. Those are the only two steps whose failure nobody witnesses. Everything
 else in the flow — choosing a server, explaining what is about to happen,
 handing over to a second terminal, deciding whether the file may leave — fails
 loudly and immediately, so an agent narrating from ``CLAUDE.md`` is the right
-medium. ``upload`` is in the file for a different reason: not because it could
-fail silently, but because the credential it needs is what makes the send the
-person's own act. The file arrives by mail, the kit cannot obtain one, and until
-someone saves it nothing here can send anything.
+medium.
 
 The rule this file exists to enforce: **the same code writes the wrap and
 reverses it**, so the removal promise in SECURITY.md §7 is keepable rather than
@@ -81,20 +77,6 @@ EVENTS_PATH = TRY_DIR / "events.jsonl"
 STATE_PATH = TRY_DIR / "state.json"
 
 
-# Handed over out of band, and only to someone we provisioned a workspace for.
-# Its absence is the ordinary case: every kit downloaded from the repository is
-# a kit without this file, and `upload` refuses cleanly rather than inventing a
-# destination. The receipt's upload offer is gated on it existing, so a kit that
-# cannot upload never mentions uploading.
-#
-# A function and not a module constant, for the same reason `come_back()` is one:
-# `TRY_DIR / "upload.json"` evaluated at import freezes the real `try/` directory
-# into the module, and every test that redirects TRY_DIR would then be checking
-# for a file beside the live kit rather than beside its own fixture.
-def upload_credentials_path() -> Path:
-    return TRY_DIR / "upload.json"
-
-
 STATE_VERSION = 1
 
 # Names a baton-proxy invocation can appear under in someone's config.
@@ -114,18 +96,30 @@ STATE_POINTER = (
     "  exactly as it was is in try/state.json under `original_entry`."
 )
 
-# The one address this kit names, and the only one it ever will. Pinned as a
+# The one place this kit names, and the only one it ever will. Pinned as a
 # constant because CLAUDE.md says it too, and a document that names a different
-# address than the code prints is wrong in the single place a person acts on it
+# page than the code prints is wrong in the single place a person acts on it
 # — the failure shape §4's injected-param pins were written for.
 #
-# Naming it costs nothing from the security posture, because THEY send the file:
-# no network call is added anywhere by knowing where a file may go. That was once
-# the whole argument, back when it also let "nothing here sends it" stay literally
-# true and left §9.1's grep untouched. `upload` spends both of those, and spends
-# them deliberately — see SECURITY.md §4. The address survives it unchanged and is
-# still the path that works for a kit we handed to nobody in particular.
-TEAM_EMAIL = "team@goodtiming.ai"
+# Naming it costs nothing from the security posture, because THEY do the
+# uploading: no network call is added anywhere by knowing where a file may go.
+# Nothing in this checkout opens a connection of its own, so "nothing here sends
+# it" is literally true and §9.1's grep sees no call site in `try/`.
+SETUP_URL = "https://baton.goodtiming.ai/setup/agent"
+
+# The paste on Baton's Setup page is a copy of PROMPT.md's text below the rule,
+# pinned there to a named kit version rather than fetched when the page renders.
+# So the console holds one of these strings and this file holds the other, and
+# nothing in either repository can notice them drifting apart.
+#
+# This pair is what notices. PASTE_SHA256 is the sha256 of everything below the
+# `---` in `try/PROMPT.md`, stripped of surrounding blank lines and ending in one
+# newline; PASTE_VERSION is the release that paste ships in, and the test holds
+# it equal to `baton_proxy.__version__`. Editing the paste breaks the hash;
+# re-pinning the hash without bumping the version breaks the pair. The release
+# then carries a version the console can be updated to and named by.
+PASTE_VERSION = "0.6.0"
+PASTE_SHA256 = "398443eac2f789c0fa930112ddd5f41b1605b46d4d24d50b609d568f3b0f07e1"
 
 
 # Setup is the last thing that speaks before the kit goes quiet. Once they walk
@@ -135,7 +129,7 @@ TEAM_EMAIL = "team@goodtiming.ai"
 #
 # Future-conditional throughout. Nothing has been captured at setup time and
 # nothing may ever be, so this says what they will find, never that there is
-# something to send.
+# already something to hand over.
 def come_back() -> str:
     """Where to run `receipt` from, and when.
 
@@ -157,15 +151,37 @@ def come_back() -> str:
 
 # Printed by setup, and the only part of the trial that survives the handoff:
 # once they are working in the other terminal, no session there knows this kit
-# exists. It says how the trial ends WITHOUT naming a send path, because which
-# one applies is not known here and is the receipt's to state at the moment
-# there is something to send.
+# exists. It says how the trial ends without naming the file or the page: at
+# setup time nothing has been captured and nothing may ever be, and the receipt
+# states the ending at the moment there is something to state.
 ENDING_NOTE = (
     "How the trial ends: use the server, then come back to the window you\n"
     "started from and say you are done. `python3 kit.py receipt` prints what\n"
-    "landed and how to send it. Nothing is switched off until you run\n"
+    "landed and how to see it in Baton. Nothing is switched off until you run\n"
     "`python3 kit.py uninstall`."
 )
+
+
+# The ending, and the only place in the kit that names a destination. Named
+# rather than sent: no code here opens a connection, and the person is the one
+# who signs in and uploads. Two ways to reach a reader and one sentence behind
+# both. The receipt prints it with the path filled in, and CLAUDE.md quotes it
+# for the agent to say, so it is written once here and pinned by the tests.
+#
+# A function and not a module constant for the same reason `come_back()` is one:
+# a module-level f-string freezes the developer's own `TRY_DIR` into the string
+# at import, and every test that redirects it would then be reading an assertion
+# about the wrong directory.
+#
+# The path is on its own line because it is interpolated and can be long: a
+# sentence carried past it wraps past 80 columns in an ordinary terminal and
+# puts half a thought under the tail of a path.
+def setup_note(events_path: Path) -> str:
+    return (
+        f"It's at {events_path}\n"
+        "(less that path to read it). Upload it on Baton's Setup page,\n"
+        f"{SETUP_URL}, and your session is there."
+    )
 
 
 # Not "fully quit and reopen", which was false and was verified false: a second
@@ -1652,48 +1668,16 @@ def cmd_receipt(args: argparse.Namespace) -> int:
 
     # Gated on whether anything actually reached the server, and gated on the
     # same count the diagnosis above uses — a resource read is a call, so a
-    # session that only read resources produced a capture worth sending.
+    # session that only read resources produced a capture worth uploading.
     #
-    # Asking someone to gzip and mail a handshake-only file wastes the one send
-    # most people will make, and it argues with the banner printed a few lines
-    # up, which just told them nothing came down the pipe.
+    # Handing someone a handshake-only file to upload wastes the one trip most
+    # people will make, and it argues with the banner printed a few lines up,
+    # which just told them nothing came down the pipe.
     if not (s["tool_calls"] or s["other_calls"]):
         return 0
 
-    # Upload first, because the credential is now what decides the ending: the
-    # people we provisioned are the ones this trial was arranged for, and the
-    # mail path is the fallback for everyone else. It is still an ungated
-    # offer conditioned in its own first clause, which is what makes it safe to
-    # print to a kit that has no credential: "if we emailed you" is false for
-    # most readers and obviously false to them, where a bare command would read
-    # as a step they had missed.
-    #
-    # No URL in either branch, on purpose and for every kit rather than for the
-    # provisioned ones: the receipt names an address a person can write to and
-    # never an endpoint a machine could POST to.
     print()
-    print("If we emailed you an `upload.json`, save it (it lands in your Downloads")
-    print("folder) and run, from this directory:")
-    print("  python3 kit.py upload --credentials ~/Downloads/upload.json")
-    # Where they sign in is the uploader's to print: it reads `sign_in_email`
-    # off the credential, which the receipt has never opened and must not.
-    print("It prints where to sign in. Sending again later is safe: we key on the")
-    # Cited rather than assumed, because it asserts behaviour that lives in
-    # another repo: baton-console `ingest/app.py` inserts events
-    # `ON CONFLICT (event_id) DO NOTHING`, and its `tests/test_ingest.py` holds
-    # a re-POST at one row. Nothing here can keep that true, and if ingest ever
-    # stops deduping this is a false promise made to someone who resent a week
-    # of data.
-    print("event ids already in the file, so a second run adds only what is new.")
-
-    print()
-    print(f"If you were not sent one, compress the file and email it to {TEAM_EMAIL};")
-    print("we load it and reply with a link:")
-    # `gzip -c … > …` rather than `gzip file`, which REPLACES the original. The
-    # trial data is not reproducible, and a command in a document a stranger
-    # pastes without reading is not the place to find that out. `-k` would also
-    # do it, but it is missing from older gzip builds.
-    print(f"  gzip -c {events_path} > {events_path}.gz")
+    print(setup_note(events_path))
     return 0
 
 
@@ -1727,170 +1711,6 @@ def checkout_note(verified: bool) -> str:
         f"not verify, and {STATE_PATH} is the only record of what your entry\n"
         "said before setup. Settle the config first, then delete the folder."
     )
-
-
-def load_uploader() -> Any:
-    """Load `upload.py` by path, here rather than at module import.
-
-    Two reasons, and the second is the one that matters. `kit.py` is run as a
-    bare script by people and loaded by path in the tests, so a plain
-    `import upload` resolves in one and not the other. And a module-level import
-    would put the kit's one network-capable file on the import graph of `setup`,
-    `receipt` and `uninstall`, none of which send anything: keeping it here means
-    the only command that even loads the sending code is the one that was typed.
-    """
-    import importlib.util
-
-    # `__file__` and not `TRY_DIR`: the uploader ships beside this file, while
-    # TRY_DIR is where the trial's DATA lives and is redirected under test. The
-    # two are the same directory in every real run and must not be assumed to be.
-    path = Path(__file__).resolve().parent / "upload.py"
-    spec = importlib.util.spec_from_file_location("try_kit_upload", path)
-    if spec is None or spec.loader is None:  # pragma: no cover — a broken checkout
-        raise Refuse(f"{path} is missing or unreadable; re-clone the kit.")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    # The address is defined once, here, and handed over rather than copied.
-    # `upload.py` cannot import it — a module-level import back into `kit.py`
-    # is exactly the import-graph edge the docstring above refuses — and a
-    # second literal would be a fourth site to keep in step with the three
-    # already pinned. So it is injected, and the uploader's own fallback text
-    # is built at call time from whatever it was given.
-    mod.TEAM_EMAIL = TEAM_EMAIL
-    return mod
-
-
-def cmd_upload(args: argparse.Namespace) -> int:
-    """Send the capture to the workspace named in `upload.json`.
-
-    Run by hand, by the person, after they have read the file — never on their
-    behalf and never as part of another command. That is the whole difference
-    between this and a sink pointed at a URL: the wrap still opens no socket,
-    and nothing moves until someone types this.
-
-    What stands between the capture and the wire is the credential file, and it
-    is a real gate rather than a stated one: it arrives by mail, the kit cannot
-    obtain one, and a person has to save it before this command can do anything
-    at all. Two checks before the first POST, in this order: that credential,
-    then a capture to send. The order is load-bearing and the tests pin it.
-    """
-    uploader = load_uploader()
-
-    # Credentials before capture, deliberately. Someone without `upload.json`
-    # will never be able to run this, and "there is nothing to send yet" would
-    # tell them to come back once they have data — sending them away to earn a
-    # refusal they were always going to get. The permanent condition is reported
-    # first, and it is the one with a working alternative attached.
-    #
-    # `--credentials` exists because the file arrives by mail: it lands in a
-    # downloads folder, not beside `kit.py`, and telling someone to move a file
-    # into a directory their agent cloned five minutes ago is a step to get
-    # wrong.
-    #
-    # It READS the file and does not copy it. A first version installed it here
-    # so a second run could be typed without the flag, which was optimising the
-    # wrong case: this is a prospect proving the thing works, and most of them
-    # will send once. That bought a shorter second command that usually never
-    # happens, and paid for it by leaving a live API key inside a checkout
-    # permanently — a copy nobody asked for, in a place they were not the ones
-    # to choose. Their download stays their only copy, and deleting it is the
-    # whole of the cleanup.
-    explicit = getattr(args, "credentials", None)
-    try:
-        if explicit:
-            creds = uploader.read_credentials(Path(explicit).expanduser())
-        else:
-            creds = uploader.load_credentials(TRY_DIR)
-    except uploader.NoCredentials as e:
-        raise Refuse(str(e)) from e
-
-    events_path = EVENTS_PATH
-    if STATE_PATH.exists():
-        events_path = Path(load_state().get("events_path", EVENTS_PATH))
-    if not events_path.exists():
-        raise Refuse(
-            f"no capture at {events_path} — there is nothing to send yet.\n"
-            "  → run `python3 kit.py receipt` to see where the trial is."
-        )
-
-    # What is about to go, on one line, before it goes. It is not a question:
-    # the person decided when they saved the credential, and asking again from
-    # a shell they are not watching would be a prompt nobody answers. It is
-    # here so the line an agent relays says what left, in the terms the person
-    # would recognise. The key is the one field not named: `safe_endpoint`
-    # gives scheme and host and never the path, which on some consoles is
-    # itself the credential.
-    count = len(read_events(events_path))
-    print(
-        f"About to send {count} event{'' if count == 1 else 's'} from {events_path} "
-        f"to {safe_endpoint(creds['console_url'])}, into workspace {creds['tenant_id']}."
-    )
-
-    # Named, never quoted — the same rule the entry printer follows. `console`
-    # and `workspace` are the two things a person needs to recognise as theirs;
-    # the key is the one field that is deliberately not echoed.
-    print("Baton upload")
-    print("=" * 60)
-    print(f"file       : {events_path}  ({human_size(events_path.stat().st_size)})")
-    print(f"console    : {safe_endpoint(creds['console_url'])}")
-    print(f"workspace  : {creds['tenant_id']}")
-    print("key        : <from upload.json, not shown>")
-    print()
-
-    try:
-        result = uploader.send(events_path, creds)
-    except uploader.Terminal as e:
-        raise Refuse(str(e)) from e
-
-    print()
-    # "sent", not "delivered". The uploader's own key stays `delivered`, which
-    # is what it means to it: a 201 came back. To the person reading this it
-    # read as "it is in the console", which a 201 does not say — ingest answers
-    # the same way for an event it already had. The label is the honest half of
-    # a sentence that used to be printed underneath and then argued with the
-    # link we send them.
-    print(f"sent       : {result['delivered']} events in {result['sessions']} sessions")
-    if result["failed"]:
-        print(f"failed     : {result['failed']} events the console would not take")
-    if result["oversized_lines"]:
-        # Per-event and permanent: the body is over the limit and a re-send
-        # sends the same body. Saying "try again" here would be false comfort.
-        lines = ", ".join(str(n) for n in result["oversized_lines"][:5])
-        more = "…" if len(result["oversized_lines"]) > 5 else ""
-        print(f"too large  : lines {lines}{more} — these will not fit on a retry either")
-    if result["skipped"]:
-        print(f"skipped    : {result['skipped']} unreadable lines")
-    print()
-    # What they do next, and nothing about how ingest works. The sign-in
-    # address is the one field of `upload.json` the kit echoes: it is theirs,
-    # they gave it to us, and without it the line names a console they cannot
-    # tell whether they can open. The console names the sign-in method, so this
-    # says what arrives rather than naming an identity provider that is ours to
-    # change and not theirs to care about.
-    #
-    # `/auth/email`, and not the bare host: a signed-out visitor to the host is
-    # shown one button, and it is not the door this line is about. Sending
-    # someone to a page whose only visible option is the wrong one is worse than
-    # sending them nowhere, because they conclude the address was wrong.
-    #
-    # This is the one place the kit prints the console URL in full rather than
-    # through `safe_endpoint`, which is deliberate: a path is what makes the
-    # link work. The two lines above it, the summary and the `console` row, are
-    # still scheme and host only.
-    #
-    # Broken after the address, and not at the width the sentence happened to
-    # reach. The address plus a work email is 79 columns, so a clause carried
-    # past it soft-wrapped in an ordinary terminal and put half of one sentence
-    # under the tail of a URL. Each physical line is now a whole thought: where
-    # to go, then what arrives when you do.
-    door = creds["console_url"].rstrip("/") + "/auth/email"
-    if creds.get("sign_in_email"):
-        print(f"Sign in at {door} with {creds['sign_in_email']}.")
-    else:
-        print(f"Sign in at {door}.")
-    print("A six-digit code comes by email, and your session is there.")
-    print("Sending again later is safe: it adds only the new events.")
-    return 0
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -1939,15 +1759,6 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         left.append(f"  {EVENTS_PATH}  ({human_size(EVENTS_PATH.stat().st_size)})")
     for b in sorted(TRY_DIR.glob("config-backup.*.json")):
         left.append(f"  {b}")
-    # The kit never puts the credential here — `upload` reads it wherever they
-    # saved it — so this fires only when someone chose to keep it beside
-    # `kit.py`. Named anyway when it is: it is a live key, and the moment the
-    # trial is declared over is the last moment anyone will think to look. Left
-    # rather than deleted for the same reason the events are: removing the wrap
-    # and disposing of data are separate decisions, and this command owns one.
-    creds = upload_credentials_path()
-    if creds.exists():
-        left.append(f"  {creds}  (the API key we gave you — deleting it disables `upload`)")
     if left:
         print("\nDeliberately left in place, for you to read or delete:")
         print("\n".join(left))
@@ -1959,7 +1770,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="kit.py",
-        description="Baton try kit — set up, receipt, send, remove. See SECURITY.md beside this file.",
+        description="Baton try kit: set up, receipt, remove. See SECURITY.md beside this file.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -1972,17 +1783,6 @@ def main(argv: list[str] | None = None) -> int:
 
     p_receipt = sub.add_parser("receipt", help="what has been captured so far")
     p_receipt.set_defaults(fn=cmd_receipt)
-
-    # One optional flag, and it points at a file rather than at a destination:
-    # where to send is inside the file we sent, so this cannot aim the capture
-    # anywhere we did not provision. It exists for the ordinary case of a
-    # credential sitting in a downloads folder, and it is read rather than
-    # copied — the kit never makes a second copy of a key.
-    p_upload = sub.add_parser("upload", help="send the capture to the workspace we made for you")
-    p_upload.add_argument(
-        "--credentials", help="path to the upload.json we sent you, if it is not in try/"
-    )
-    p_upload.set_defaults(fn=cmd_upload)
 
     p_uninstall = sub.add_parser("uninstall", help="restore the original entry")
     p_uninstall.set_defaults(fn=cmd_uninstall)

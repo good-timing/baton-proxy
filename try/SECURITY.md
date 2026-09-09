@@ -15,11 +15,11 @@ Baton Proxy is an MCP proxy. It sits between your agent client and one MCP
 server you already run, forwarding JSON-RPC in both directions and recording
 what passed through.
 
-The try kit is this repository's `try/` folder: two Python files, `kit.py` and
-`upload.py`, standard library only, no imports from the proxy. It installs
-nothing. The proxy is the source you are reading, so the code you review is the
-code that runs. Review a release tag, not `main`: the paste checks out the
-latest tag, and §9 shows how to confirm which one is on disk.
+The try kit is this repository's `try/` folder: one Python file, `kit.py`,
+standard library only, no imports from the proxy. It installs nothing. The
+proxy is the source you are reading, so the code you review is the code that
+runs. Review a release tag, not `main`: the paste checks out the latest tag,
+and §9 shows how to confirm which one is on disk.
 
 Run the trial against a non-production server. The capture holds the full
 results of every tool call (§5), and business data is not redacted (§6).
@@ -27,10 +27,12 @@ results of every tool call (§5), and business data is not redacted (§6).
 The kit works with Claude Code only. It edits `~/.claude.json`, which no other
 client uses. Where this document says "your client" it means Claude Code.
 
-**Nothing Baton records leaves your machine unless you send it.** Events are
-written to a local file. One command can send that file, and it works only
-after you place a credential we email you. Section 4 explains this in detail,
-including every code path that could send data and why each one is inert here.
+**Nothing Baton records leaves your machine unless you upload it.** Events are
+written to a local file. Nothing in the kit sends: there is no command that
+sends, and no credential anywhere in it. You upload the file yourself, in a
+browser, after signing in to Baton, or you never upload it at all. Section 4
+explains this in detail, including every code path that could send data and why
+each one is inert here.
 
 ## 2. What changes on your machine
 
@@ -219,26 +221,25 @@ definitions, arguments, results and errors pass through unchanged.
 
 ### 3a. The kit's own code
 
-Four commands, all run from the `try/` directory:
+Three commands, all run from the `try/` directory:
 
 | command | what it touches |
 |---|---|
 | `setup <server>` | Reads your MCP config; copies the whole file to `try/config-backup.<timestamp>.json`; rewrites one entry; writes `try/state.json`. Nothing else on the machine. |
 | `receipt` | Reads `try/events.jsonl` and `try/state.json`. Writes nothing, opens no connection. |
-| `upload` | Reads `try/events.jsonl` and `try/upload.json` and POSTs the events to the workspace that file names. The only command that sends anything, and the only one that loads `upload.py`. It needs `upload.json`, a credential file we email you when we set up a workspace for you; it is not in this repository, and without it the command refuses. |
 | `uninstall` | Rewrites that one entry back and deletes `try/state.json`. Leaves your events file and the backups for you to read or delete. |
 
-All of the kit's network code is in `upload.py`. `kit.py` loads it by path from
-inside the `upload` command, so `setup`, `receipt` and `uninstall` never put it
-on their import graph. A reviewer who wants to know what can leave the machine
-reads that one file.
+The kit has no network code. The only `urllib` import in `kit.py` is
+`urllib.parse`, which parses strings and opens nothing, and §9's grep returns no
+call site under `try/` at all. A reviewer who wants to know what can leave the
+machine reads §4's table, every row of which is the proxy's.
 
 `try/CLAUDE.md` is a plain-text instruction file for the agent. It grants no
 capability. It tells the agent to use the commands above and what not to do:
 never edit an MCP config by hand, never work around a command that refused,
 never quote the captured events into the conversation, and never send the file
-except through `upload`, after you have placed the credential file we emailed
-you. The agent never opens that file.
+anywhere, because there is no command that sends and the upload is yours to
+make in a browser.
 
 The kit refuses rather than guesses when the named server appears in more than
 one config scope, when the entry is already wrapped by something other than this
@@ -249,20 +250,12 @@ config shapes, `uninstall(setup(x))` returns the original bytes.
 
 ## 4. What leaves your machine
 
-**Nothing, unless you send it.** Events are appended to a local JSONL file.
-
-- `kit.py upload` POSTs the capture to a Baton workspace. It refuses without
-  `upload.json`, a credential file we email you when we set up a workspace for
-  you; it is read from wherever you saved it, and nothing in the kit can send
-  until you have placed it. It sends to the `console_url` named in that file;
-  open the file and you will see the host. A kit cloned from this repository
-  does not have one and cannot obtain one. Its key lives in that file and never
-  in your config entry, so the wrapped server has no credential and no code path
-  that would use one. The proxy is not involved: `upload` reads a file that
-  already exists, and the wrap opens no socket because of it.
-- For a kit without a credential file, `receipt` prints a `gzip` command and an
-  address, **team@goodtiming.ai**. If the file goes there, it is because you
-  attached it to an email yourself.
+**Nothing, unless you upload it.** Events are appended to a local JSONL file
+and stay there. Nothing in this checkout sends them: there is no upload command,
+no credential, and no endpoint of ours anywhere in the kit. When the trial is
+over the receipt names the file and the page you upload it on; you sign in to
+Baton in your own browser and choose the file yourself, or you do not, and the
+capture stays on your disk either way.
 
 One qualification, only if you wrapped a remote entry: that server's traffic was
 already leaving your machine, because your client was dialling the endpoint
@@ -271,8 +264,7 @@ which process opens the connection. No new destination is introduced.
 
 The proxy contains code that can open a network connection or start a process,
 because the same source serves production deployments. Here is the complete
-list, six call sites. Five are the proxy's; the sixth is the kit's, and it is
-the only one that exists to send your data.
+list, five call sites. All five are the proxy's; the kit contributes none.
 
 | # | site | what it does | why it is inert here |
 |---|---|---|---|
@@ -281,7 +273,6 @@ the only one that exists to send your data.
 | 3 | `transport_http.py` · `StreamableHttpClient.post` | Speaks MCP over HTTPS to an upstream server | Only in `--url` mode. For a stdio wrap this is unreachable. For a remote wrap it is the path in use, and it connects to the URL your own config already named. Never to us. |
 | 4 | `proxy.py` · `subprocess.Popen` | Starts the upstream MCP server | Runs exactly the command your config already contained. Not reached for a remote wrap. |
 | 5 | `scan.py` · `subprocess.run` | Runs `claude -p` headlessly for a preflight report | Only under the `baton-proxy scan` subcommand. The try flow never invokes it. |
-| 6 | `try/upload.py` · `open_request` | POSTs your captured events to `{console}/v0/events` | The kit's own, and the one thing here that can send your data. Reached only from `kit.py upload`, which refuses without `upload.json`. `setup`, `receipt` and `uninstall` do not load this module. |
 
 There is no telemetry, no version check, no crash reporting, no auto-update. The
 proxy does not phone home on startup, on failure, or on exit.
@@ -384,8 +375,8 @@ keeps no copy of what it replaced.
 4. **Patterns, not understanding.** Non-North-American phone formats, national
    id numbers, and credential formats outside the list above are not matched.
 
-**Read the file before you send it.** It is line-delimited JSON on your own
-disk, it never moves on its own, and sending it is a step you take at the end.
+**Read the file before you upload it.** It is line-delimited JSON on your own
+disk, it never moves on its own, and uploading it is a step you take at the end.
 Read the `annotation` lines as well as the results. If it should not leave,
 delete it.
 
@@ -400,11 +391,6 @@ delete it.
   value to disk. `uninstall` deletes it once the restore is verified.
 - **`try/config-backup.<timestamp>.json`** is the whole config file as it was
   before setup, `0600`. Evidence, never the source of the restore.
-- **`try/upload.json`**, if we sent you one, holds a live API key issued for
-  your workspace. It is the only credential in this trial that is ours. The kit
-  never moves or copies it; `upload` reads it where you saved it. Delete it when
-  you are done, and tell us if it was ever exposed, because only we can rotate
-  it. If you did not receive one, nothing here is missing.
 - The proxy's default sink also mirrors events to stderr, which a client may
   capture into its own logs. The try configuration sets `BATON_EVENT_SINK` to
   the file only, so this does not apply unless you hand-edit the sink.
@@ -435,15 +421,15 @@ The claims above are mechanical. Re-derive them:
 #    -3-gabc1234 means commits past the tag, which is not what you reviewed.
 git describe --tags
 
-# 1. Every network- or process-capable call site, proxy AND kit. Expect seven
-#    matches: the six in the §4 table plus one comment line in
-#    transport_http.py. The excludes are your own data and credential, which
-#    can contain any string; drop them on a fresh clone.
-grep -rnE "urlopen\(|Popen\(|subprocess\.run\(|boto3\.client\(" --exclude=events.jsonl --exclude=state.json --exclude=upload.json --exclude='config-backup.*' src/ try/
+# 1. Every network- or process-capable call site, proxy AND kit. Expect six
+#    matches: the five in the §4 table plus one comment line in
+#    transport_http.py, and none of them under try/. The excludes are your own
+#    captured data, which can contain any string; drop them on a fresh clone.
+grep -rnE "urlopen\(|Popen\(|subprocess\.run\(|boto3\.client\(" --exclude=events.jsonl --exclude=state.json --exclude='config-backup.*' src/ try/
 
 #    Wider, if you would rather not trust our regex. This catches every
 #    mention, imports and prose included; there are no other call sites.
-grep -rn "urlopen\|socket\|http.client\|requests\.\|boto3\|subprocess" --exclude=events.jsonl --exclude=state.json --exclude=upload.json --exclude='config-backup.*' src/ try/
+grep -rn "urlopen\|socket\|http.client\|requests\.\|boto3\|subprocess" --exclude=events.jsonl --exclude=state.json --exclude='config-backup.*' src/ try/
 
 # 2. The dependency list. Expect it to be empty.
 grep -n "dependencies" pyproject.toml

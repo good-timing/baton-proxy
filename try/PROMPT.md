@@ -6,14 +6,13 @@ already in the kit, so it lives here rather than in an email thread.
 
 Everything below the rule is the text. It assumes nothing has been cloned yet,
 and it is written to be read by the person as well as executed by the agent: it
-goes out in an email with no explanation on top of it.
+is shown on Baton's Setup page with nothing but a Copy link above it.
 
-It travels two ways. Pasted into a session, the person chose the directory by
-starting the session there. Sent as a file, which is how a provisioned handover
-goes out alongside their `upload.json`, it is opened from wherever it was
-downloaded, and "the directory I'm in" silently means the downloads folder.
-Detail B at the end covers the second case, because we do not get to know which
-one happened.
+It travels two ways. Copied from Baton's Setup page into a session, the person
+chose the directory by starting the session there. Saved or forwarded as a file,
+it is opened from wherever it was downloaded, and "the directory I'm in"
+silently means the downloads folder. Detail B at the end covers the second case,
+because we do not get to know which one happened.
 
 ---
 
@@ -40,9 +39,8 @@ reviewing the security details, proceed with the install: read
    window open.
 4. I'll do a few real things with it, then come back here and tell you I'm
    done.
-5. After I tell you I'm done, tell me what Baton captured and what I need to
-   do to send it, so I can see the session summarized in Baton. Don't send it
-   until I tell you to.
+5. After I tell you I'm done, tell me what Baton captured and how to see it in
+   Baton.
 6. Whenever I ask, tell me how to take it back off.
 
 Details:

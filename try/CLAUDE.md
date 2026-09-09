@@ -8,18 +8,17 @@ This kit works with Claude Code only; it edits `~/.claude.json`, which no
 other client uses. If there is any doubt about what the person is running, say
 so at the start.
 
-Four commands do the work. Run them from this `try/` directory; the person's
+Three commands do the work. Run them from this `try/` directory; the person's
 session is one level up, where they cloned.
 
 ```
 python3 kit.py setup <server-name>    # wrap one configured MCP server
 python3 kit.py receipt                # what has been captured so far
 python3 kit.py uninstall              # put the original entry back
-python3 kit.py upload                 # send the capture; only after the person places upload.json
 ```
 
 Your job is what the commands leave to a person: which server, the second
-terminal, and the decision at the end. Do not reimplement the commands.
+terminal, and the ending. Do not reimplement the commands.
 
 ## Rules that do not bend
 
@@ -45,26 +44,26 @@ aggregates; report those, and do not tell them you are not quoting the file.
 as `<literal value, not shown>`. `state.json`, the `config-backup.*` files and
 the config itself hold the real values; if a command tells you to read one,
 report key names, never values. A `${VAR}` reference is a pointer and is fine
-to quote. **Never open `upload.json`.** It is a live key we issued.
+to quote.
 
-**Never send the file anywhere except through `python3 kit.py upload`, and
-only after the person tells you the credential file is in place.** Not by
-email, not to a paste service, not attached to anything. `upload` needs
-`upload.json`, which we emailed to the person; you never open it, copy it, or
-search for it. Without it the command refuses, and that is the answer.
+**Never send the file anywhere.** Not by email, not to a paste service, not
+attached to anything, not to us. There is no command that sends: nothing in
+this checkout opens a connection of its own. If you are asked to send it, say
+that the person uploads it themselves on Baton's Setup page, and give them the
+line the receipt prints under *Ending it*.
 
 **Never install anything.** The trial runs from this checkout with no
 dependencies. If something seems to need an install, report it.
 
 ## How to ask
 
-Four decisions are the person's: whether to go ahead (the paste asks this
-right after the clone; do not ask it again), which server to wrap, whether to
-send the file, and whether to remove the wrap. Use a chooser where your client
-has one (`AskUserQuestion` in Claude Code): facts in prose above it, short
-option labels, every option a section names even if you expect it to be false
-for this person, and a question that says what it is about and what happens
-next. Without a chooser, ask in text with the question alone on the last line.
+Three decisions are the person's: whether to go ahead (the paste asks this
+right after the clone; do not ask it again), which server to wrap, and whether
+to remove the wrap. Use a chooser where your client has one (`AskUserQuestion`
+in Claude Code): facts in prose above it, short option labels, every option a
+section names even if you expect it to be false for this person, and a question
+that says what it is about and what happens next. Without a chooser, ask in
+text with the question alone on the last line.
 
 ## Start by finding out where you are
 
@@ -151,34 +150,27 @@ off by "done"; they can use the server more and say it again.
 **Calls landed.** Say what was captured in two or three lines from the receipt
 (sessions, tool calls, annotations). Relay the rows as printed: `tool calls` is
 how many landed, `tool definitions` is what the server offers. Never join them
-into one sentence. Then say this, and nothing else:
+into one sentence. Then say this, with the real path, and nothing after it:
 
-> Go back to the email from Baton, save the attached `upload.json` (it lands in
-> your Downloads folder), and tell me when it's there.
+> It's at /full/path/to/try/events.jsonl (less that path to read it). Upload it
+> on Baton's Setup page, https://baton.goodtiming.ai/setup/agent, and your
+> session is there.
 
-When they say so, say this, with the real path, and ask with a chooser (Send /
-Not yet):
-
-> It's at `/full/path/to/try/events.jsonl` if you want to look at it first
-> (`less /full/path/to/try/events.jsonl` in a terminal). Send it now?
-
-On Send, run `python3 kit.py upload --credentials ~/Downloads/upload.json` from
-this directory and relay what it printed: the sent count and the sign-in line.
-If it says the file is not there, ask where they saved it and run it again with
-that path. If they say they never got such an email, the receipt prints a
-`gzip` command and an address; relay those two lines and stop. Do not offer to
-get them provisioned.
+The receipt prints that line with the path already filled in; relay it as
+printed. The upload happens in their browser, signed in to Baton, and you play
+no part in it. If they ask you to send the file, say that they upload it
+themselves on that page.
 
 Nothing else in this step: do not restate what the file holds or what the
 scrubber does, no security facts (those were offered at the start), no reading
 advice beyond the one line above, no list of things you will not do, no
-reminder that the wrap is still on. Sending again later is safe and adds only
+reminder that the wrap is still on. Uploading again later is safe and adds only
 the new events.
 
 **Anything else** (connected but nothing called it, the wrap is gone, nothing
 at all): relay the receipt's banner and checklist in order and do not offer the
 file, except that when the wrap is gone the counts above the banner are real,
-so hand over the decision as above.
+so end as above.
 
 ## Removing it
 
