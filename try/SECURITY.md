@@ -167,6 +167,10 @@ authenticate when it next starts. If the token in your entry is a literal, it is
 copied across as is, and also into `try/state.json`, which is why that file is
 `0600`.
 
+The bridge carries the client-initiated request/response loop only, so
+server-initiated messages (sampling, elicitation, notifications) are not carried
+by it and are not captured; tool calls and results are.
+
 Run `python3 kit.py receipt` on the first day. An empty file is how you find a
 broken wrap in an hour instead of at the end of the trial.
 
@@ -300,7 +304,9 @@ Each event is one JSON line in `try/events.jsonl`. The envelope carries an event
 id, type, session id, sequence number, timestamp, and the tenant and vendor
 labels from the config entry. Both labels default to the name of the server you
 wrapped; nothing checks them against anything. They exist so one file can be
-told apart from another later.
+told apart from another later. Each event also carries `runtime_meta`, the
+`_meta` object your client attached to the request, recorded as it arrived: for
+Claude Code that is its tool-use id and progress token.
 
 Recorded in full:
 
@@ -342,8 +348,10 @@ server. Nothing further is recorded unless it does.
 
 ## 6. What the scrubber does, and what it does not
 
-Every payload passes through `Scrubber` (`scrub.py`) before it reaches the file.
-It is on by default and cannot be configured off in the try kit.
+Every payload passes through `Scrubber` (`scrub.py`) before it reaches the file,
+and only the payload does: the `runtime_meta` object of §5 is written as your
+client sent it (`emitter.py`). It is on by default and cannot be configured off
+in the try kit.
 
 **Redacted by pattern:** JWTs, `Bearer` header values, `sk-...` API keys,
 `AKIA...` AWS access key ids, email addresses, North-American-format phone

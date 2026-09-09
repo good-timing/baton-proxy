@@ -119,7 +119,7 @@ SETUP_URL = "https://baton.goodtiming.ai/setup/agent"
 # re-pinning the hash without bumping the version breaks the pair. The release
 # then carries a version the console can be updated to and named by.
 PASTE_VERSION = "0.6.0"
-PASTE_SHA256 = "398443eac2f789c0fa930112ddd5f41b1605b46d4d24d50b609d568f3b0f07e1"
+PASTE_SHA256 = "75642ff310726a50b5587121dc49fbd8ba9505cfccfff081a23fb1271a04e1f0"
 
 
 # Setup is the last thing that speaks before the kit goes quiet. Once they walk
@@ -182,6 +182,25 @@ def setup_note(events_path: Path) -> str:
         "(less that path to read it). Upload it on Baton's Setup page,\n"
         f"{SETUP_URL}, and your session is there."
     )
+
+
+# Run 6: the upload box takes a drag, and a path in a terminal is not something
+# you can drag. `open -R` puts a Finder window in front of the person with the
+# file already selected, which turns the last step from "find this path in a
+# file dialog" into a drag they can see.
+#
+# Printed and never run. The receipt is a reporting command and stays one; what
+# it can do is say the command, and the agent runs it (CLAUDE.md, *Ending it*).
+#
+# macOS only, and read at call time rather than at import so the tests can drive
+# both platforms. `open -R` is macOS's, and Linux has no one equivalent worth
+# guessing at: `xdg-open` on the FILE opens it in an editor rather than showing
+# it in a manager, and there is no portable "reveal". So Linux is told nothing
+# rather than told something that does the wrong thing.
+def reveal_note(events_path: Path) -> str | None:
+    if sys.platform != "darwin":
+        return None
+    return f"Reveal it in Finder: open -R {events_path}"
 
 
 # Not "fully quit and reopen", which was false and was verified false: a second
@@ -1678,6 +1697,9 @@ def cmd_receipt(args: argparse.Namespace) -> int:
 
     print()
     print(setup_note(events_path))
+    reveal = reveal_note(events_path)
+    if reveal:
+        print(reveal)
     return 0
 
 

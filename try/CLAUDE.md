@@ -118,9 +118,10 @@ asking them to authorize again, naming a `localhost` port; that port is their
 server's, and the access goes where it always went. Ask; if they do not know,
 say it may happen.
 
-**2. Run it.** `python3 kit.py setup <name>`. It prints the resulting config
-entry; show that rather than summarising it. Do not ask them to name a tenant
-or a label. The events are tagged with the server's name.
+**2. Run it.** `python3 kit.py setup <name>`. Paste the printed entry into your
+reply, in a code block: tool output is folded and the person will not see it
+otherwise. Do not ask them to name a tenant or a label. The events are tagged
+with the server's name.
 
 **3. Hand them a second terminal, and stay in this one.** Setup prints a line
 beginning `Open a second terminal` that says where to start it; relay that as
@@ -150,16 +151,30 @@ off by "done"; they can use the server more and say it again.
 **Calls landed.** Say what was captured in two or three lines from the receipt
 (sessions, tool calls, annotations). Relay the rows as printed: `tool calls` is
 how many landed, `tool definitions` is what the server offers. Never join them
-into one sentence. Then say this, with the real path, and nothing after it:
+into one sentence. Then hand over the file, which goes differently on the two
+platforms.
+
+**On macOS**, run `open -R /full/path/to/try/events.jsonl` with the real path.
+It brings up a Finder window with the file selected, which is what makes the
+next step a drag rather than a hunt through a file dialog. Then say this, with
+the real path, and nothing after it:
+
+> It's at /full/path/to/try/events.jsonl. Finder is showing it. Drag it onto
+> the upload box on Baton's Setup page,
+> https://baton.goodtiming.ai/setup/agent, and your session is there.
+
+**On Linux**, reveal nothing: there is no portable command for it, and the ones
+that look close open the file in an editor. Say this instead, with the real
+path, and nothing after it:
 
 > It's at /full/path/to/try/events.jsonl (less that path to read it). Upload it
 > on Baton's Setup page, https://baton.goodtiming.ai/setup/agent, and your
 > session is there.
 
-The receipt prints that line with the path already filled in; relay it as
-printed. The upload happens in their browser, signed in to Baton, and you play
-no part in it. If they ask you to send the file, say that they upload it
-themselves on that page.
+The receipt prints the second of those with the path already filled in, and on
+macOS prints the `open -R` command under it. The upload happens in their
+browser, signed in to Baton, and you play no part in it. If they ask you to send
+the file, say that they upload it themselves on that page.
 
 Nothing else in this step: do not restate what the file holds or what the
 scrubber does, no security facts (those were offered at the start), no reading

@@ -4762,3 +4762,179 @@ def test_the_doc_forbids_sending_without_naming_an_exception():
     assert "the person uploads it themselves on Baton's Setup page" in doc, (
         "the doc never says what to answer when someone asks the agent to send it"
     )
+
+
+# ---------------------------------------------------------------------------
+# Run 6: the last step is a drag, and a path in a terminal cannot be dragged.
+#
+# The upload box on Setup takes a file. On macOS `open -R` puts a Finder window
+# in front of the person with the file already selected, which turns "find this
+# path in a file dialog" into something they can see and drag. Linux has no
+# portable equivalent worth guessing at, so it is told nothing rather than told
+# something that opens the capture in an editor.
+#
+# Three surfaces have to agree: what `receipt` prints, what `CLAUDE.md` tells
+# the agent to run, and what the agent then says. The platform split is the part
+# that rots quietly, because CI and the developer are usually on one of the two.
+# ---------------------------------------------------------------------------
+
+
+MACOS_ENDING = (
+    "It's at /full/path/to/try/events.jsonl. Finder is showing it. Drag it onto "
+    "the upload box on Baton's Setup page, "
+    "https://baton.goodtiming.ai/setup/agent, and your session is there."
+)
+
+
+def test_the_receipt_reveals_the_capture_on_macos(tmp_path, monkeypatch, capsys):
+    """One line under the ending, and only the command: `receipt` is a reporting
+    command and does not run things. The agent runs it, and a person reading the
+    receipt on their own can type it."""
+    monkeypatch.setattr(kit.sys, "platform", "darwin")
+    events, out = _run_receipt(tmp_path, monkeypatch, capsys, [_ev(payload={"tool_name": "s"})])
+    assert out.rstrip().endswith(f"Reveal it in Finder: open -R {events}"), (
+        f"the receipt does not end with the reveal command on macOS:\n{out}"
+    )
+    # Under the ending, not instead of it: the file's path and the page are what
+    # the person acts on, and the reveal is help with the last step of it.
+    assert out.index(kit.setup_note(events)) < out.index("Reveal it in Finder"), (
+        "the reveal line printed above the line it is helping with"
+    )
+
+
+def test_the_receipt_says_nothing_about_finder_on_linux(tmp_path, monkeypatch, capsys):
+    """`open -R` is macOS's. On Linux the ending is exactly what it was, and the
+    failure this pins is a receipt that prints a command the person's machine
+    does not have at the one moment they are trying to finish."""
+    monkeypatch.setattr(kit.sys, "platform", "linux")
+    events, out = _run_receipt(tmp_path, monkeypatch, capsys, [_ev(payload={"tool_name": "s"})])
+    assert kit.setup_note(events) in out, f"Linux lost the ending it always had:\n{out}"
+    for macos_only in ("Finder", "open -R"):
+        assert macos_only not in out, f"the receipt offered {macos_only!r} on Linux:\n{out}"
+    assert kit.reveal_note(events) is None, "reveal_note answered on a platform without Finder"
+
+
+def test_the_doc_hands_the_file_over_differently_on_each_platform():
+    """Both branches are written out, because the agent has to pick one and the
+    two endings are different sentences rather than one sentence with a clause.
+
+    The macOS half is pinned whole for the same reason the shared line is: it is
+    said to the person verbatim, and the drag is only possible because the
+    command above it ran first."""
+    doc = _claude_md()
+    flat = _flat_unquoted(doc)
+    assert "**On macOS**, run `open -R /full/path/to/try/events.jsonl`" in flat, (
+        "the doc no longer tells the agent to reveal the file on macOS"
+    )
+    assert MACOS_ENDING in flat, "the macOS ending is not the sentence the person is told"
+    assert kit.SETUP_URL in MACOS_ENDING, "the macOS ending stopped naming the Setup page"
+    assert "**On Linux**, reveal nothing" in flat, (
+        "the doc no longer tells the agent to leave the file alone on Linux"
+    )
+    # The Linux branch is the line `receipt` prints on both platforms, which
+    # `test_the_doc_and_the_kit_say_the_same_sentence` holds equal to the code.
+    assert _flat(kit.setup_note(Path("/full/path/to/try/events.jsonl"))) in flat, (
+        "the Linux branch is no longer the line the receipt prints"
+    )
+
+
+def test_the_doc_and_the_receipt_name_the_same_reveal_command(monkeypatch):
+    """Two places say `open -R`, and a person may act on either: the receipt
+    prints it for someone reading alone, the doc has the agent run it. A flag
+    that drifted between them would reveal the file in one path and open it in
+    an editor in the other."""
+    monkeypatch.setattr(kit.sys, "platform", "darwin")
+    printed = kit.reveal_note(Path("/full/path/to/try/events.jsonl"))
+    assert printed == "Reveal it in Finder: open -R /full/path/to/try/events.jsonl"
+    assert "open -R /full/path/to/try/events.jsonl" in _flat_unquoted(_claude_md()), (
+        f"the doc does not run the command the receipt prints:\n  {printed}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Run 6, the document half: two things the kit does that §5, §6 and §2 did not
+# say. Both are checkable against the code, which is the only kind of claim
+# this document makes, so both are checked here rather than believed.
+# ---------------------------------------------------------------------------
+
+
+def test_security_md_says_what_the_scrubber_does_not_see(tmp_path):
+    """§6 said "every payload passes through `Scrubber`", which was true and
+    was read as "everything does". `runtime_meta` does not: `_emit` scrubs
+    `payload` and hands the client's `_meta` to the event untouched
+    (`emitter.py`).
+
+    Nothing in it is ours. It is whatever the client attached to its own
+    request, which for Claude Code is a tool-use id and a progress token. But
+    "what is recorded" and "what is redacted" are the two questions this
+    document exists to answer, and it answered the second one for one field
+    while implying both.
+
+    Driven through a real emitter rather than read off the source: the claim is
+    about what lands in the file. If the scrubber is ever extended over
+    `runtime_meta`, this fails, and §5 and §6 are what it is telling you to
+    change."""
+    from baton_proxy.config import Config
+    from baton_proxy.emitter import Emitter
+
+    sink = tmp_path / "events.jsonl"
+    emitter = Emitter(
+        Config(
+            session_id="s",
+            event_sink=f"file://{sink}",
+            tenant_id="t",
+            api_key=None,
+            consent_token="c",
+            vendor_id="v",
+            log_file=None,
+        )
+    )
+    emitter.start()
+    emitter.enqueue_tool_call_start(
+        tool_name="echo",
+        params={"note": "mail dave@example.com"},
+        runtime_meta={"claudecode/toolUseId": "tu_1", "progressToken": 3},
+    )
+    emitter.stop(timeout=5.0)
+
+    event = json.loads(sink.read_text(encoding="utf-8").splitlines()[0])
+    assert "dave@example.com" not in json.dumps(event["payload"]), (
+        "the payload reached the file unscrubbed, which §6 says cannot happen"
+    )
+    assert event["runtime_meta"] == {"claudecode/toolUseId": "tu_1", "progressToken": 3}, (
+        "runtime_meta no longer reaches the file as the client sent it; §5 and §6 "
+        f"say it does: {event.get('runtime_meta')!r}"
+    )
+
+    doc = _flat((KIT_PATH.parent / "SECURITY.md").read_text(encoding="utf-8"))
+    assert (
+        "the `_meta` object your client attached to the request, recorded as it arrived" in doc
+    ), "§5 never says the client's `_meta` is recorded"
+    assert "the `runtime_meta` object of §5 is written as your client sent it" in doc, (
+        "§6 still implies the scrubber sees everything"
+    )
+
+
+def test_security_md_says_the_bridge_does_not_hold_the_server_stream():
+    """§2 and §5 both say it now, because it decides what a remote wrap can
+    capture: the bridge POSTs each client message and reads the response off
+    that same POST, and never opens the standing GET SSE channel the transport
+    allows. So sampling, elicitation and server notifications never pass through
+    it and are not in the capture.
+
+    Pinned on the request methods rather than on a comment: opening that channel
+    is one `method="GET"` away, and it would make a sentence in §2, a paragraph
+    in §5 and the scope of the whole remote wrap wrong at once."""
+    source = (REPO_ROOT / "src" / "baton_proxy" / "transport_http.py").read_text(encoding="utf-8")
+    assert re.findall(r'method="(\w+)"', source) == ["POST"], (
+        "transport_http.py issues a request that is not the POST loop; §2 and §5 "
+        "tell a reviewer server-initiated messages never reach the proxy"
+    )
+    doc = _flat((KIT_PATH.parent / "SECURITY.md").read_text(encoding="utf-8"))
+    assert (
+        "server-initiated messages (sampling, elicitation, notifications) are not "
+        "carried by it and are not captured" in doc
+    ), "§2's remote section never says what the bridge leaves behind"
+    assert "does not open the standing GET SSE channel" in doc, (
+        "§5 stopped saying why server-initiated messages are missing"
+    )

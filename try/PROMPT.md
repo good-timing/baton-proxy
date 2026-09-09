@@ -20,7 +20,7 @@ I want to try using Baton to observe one of my MCP servers. Baton allows me to
 see user intent from users of my MCP, even if I don't control their agent. I'm
 going to install Baton Proxy and test it on one of my MCPs myself so I
 understand what data is captured and the insights Baton generates. Nothing
-leaves my machine unless I choose to send the capture at the end.
+leaves my machine unless I choose to upload the capture at the end.
 
 Clone https://github.com/good-timing/baton-proxy into the directory I'm in,
 check out its latest release tag, and tell me which one. Then stop and wait for
