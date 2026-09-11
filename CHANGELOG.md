@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **The `!` line now comes with an instruction to paste it.** In a live run the agent handed the person the `!` line and never said what to do with it. In the terminal it renders as ordinary prose, the same colour as the sentence above it, and someone who has never used `!` in Claude Code does not know it is a command to copy into the prompt box; the whole handoff for a refused command depends on them knowing that. The refusal instruction in `try/CLAUDE.md` now tells the agent to have them copy the line and paste it at their prompt, and not to assume the line explains itself. The test on that paragraph pins both.
 
+- **Setup no longer tells the person to check early.** 0.6.4 removed the day-one receipt nag from `try/CLAUDE.md`, but `setup` printed its own copy under a successful wrap: two lines telling them to run `receipt` on the first day because an empty file then is a quick fix and later a wasted trial. It told the person the wrap may well be broken before they had used it once, and handed them a check the ending already makes, since saying they are done runs `receipt`, which states what landed or that nothing did. Those two lines are gone from both setup paths, the first wrap and the re-entry; the rest of the printout is unchanged, and a test pins both halves.
+
+- **The agent stops reprinting what the person watched print.** Step 2 told the agent to paste setup's printed entry because tool output is folded, which is true when the agent ran it. When the person ran it with `!` they watched it print, and in a live run the entry and the guidance under it appeared twice in a row. Step 2 is now conditional: the agent that ran setup still pastes the entry, and after a `!` run it reprints nothing, says briefly in plain words what changed, and moves on.
+
 
 ## [0.6.4] — 2026-09-11
 

@@ -4461,6 +4461,56 @@ def test_receipt_reads_the_config_only_once_a_wrap_is_in_place(
     assert str(config) in reads, "receipt no longer reads the config once a wrap is in place"
 
 
+def test_setup_does_not_tell_them_to_check_early(tmp_path, kit_home, capsys):
+    """Watched live after 0.6.4: `CLAUDE.md` had lost the day-one receipt nag and
+    setup still printed its own copy. It told the person the wrap may well be
+    broken before they had used it once, and handed them a check the ending
+    already makes: saying they are done runs `receipt`, which states what landed
+    or that nothing did. Pinned on both setup paths, together with the rest of
+    the printout, which has to survive the cut."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    args = ["setup", "notion", "--config-file", str(path), "--tenant", "t"]
+    assert kit.main(args) == 0
+    first, _err = capsys.readouterr()
+    assert kit.main(args) == 0
+    again, _err = capsys.readouterr()
+    assert "Already wrapped" in again, "the second run is not the re-entry path"
+    for out in (first, again):
+        for nag in ("Run it early", "first day", "day one", "five-minute", "wasted trial"):
+            assert nag not in out, f"setup still tells them to check early ({nag!r}):\n{out}"
+        assert kit.come_back() in out and kit.ENDING_NOTE in out, (
+            f"the cut took more than the day-one lines:\n{out}"
+        )
+    for kept in ("backup:", "events:", "tenant:", kit.RESTART_NOTE):
+        assert kept in first, f"the cut took {kept!r} with it:\n{first}"
+
+
+def test_step_2_does_not_reprint_what_the_person_watched_print():
+    """Watched live: the person ran setup with `!`, watched it print, and then saw
+    the same entry and the same guidance again from the agent. Pasting the entry
+    is right when the agent ran it, since tool output is folded and they would
+    not see it otherwise; it is noise when they ran it and saw it. What the raw
+    output does not give them is what changed in plain words, and that stays."""
+    paras = [text for _n, text in _unwrapped(_claude_md())]
+    step = next(text for text in paras if text.startswith("**2. Run it.**"))
+    assert "If you ran it, paste the printed entry into your reply, in a code block" in step, (
+        "the agent that ran setup itself no longer shows the entry it folded away"
+    )
+    assert "tool output is folded and the person will not see it otherwise" in step, (
+        "the reason to paste, which holds only when the agent ran it, is gone"
+    )
+    assert "If they ran it themselves with `!`, they watched it print" in step, (
+        "the instruction is no longer conditional on who ran setup"
+    )
+    assert "do not reprint the entry or repeat the guidance printed under it" in step, (
+        "the agent reprints what the person already has on screen"
+    )
+    assert "Say briefly, in plain words, what changed" in step, (
+        "the plain-words summary, the part the raw output does not give them, is gone"
+    )
+    assert "Do not ask them to name a tenant or a label" in step, "step 2 lost its tenant rule"
+
+
 # ---------------------------------------------------------------------------
 # TK-D-7 — the kit is Claude Code only, and it says so before the cost is paid
 # (Dave's spec §7, second half).

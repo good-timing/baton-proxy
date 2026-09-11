@@ -143,9 +143,7 @@ def come_back() -> str:
         "  python3 kit.py receipt\n"
         # On its own line: this path is interpolated and can be long, and a
         # sentence continuing after it wraps past 80 columns.
-        f"from {TRY_DIR}\n\n"
-        "Run it early — the first day, not the last. An empty file on day one is\n"
-        "a five-minute fix; on day five it is a wasted trial."
+        f"from {TRY_DIR}"
     )
 
 

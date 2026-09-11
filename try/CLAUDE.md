@@ -131,9 +131,12 @@ prints its own reason beside each one it cannot. Do not argue an entry past a
 refusal; each one exists because the wrap would leave them with a server that
 does not work.
 
-**2. Run it.** `python3 kit.py setup <name>`. Paste the printed entry into your
-reply, in a code block: tool output is folded and the person will not see it
-otherwise. Do not ask them to name a tenant or a label. The events are tagged
+**2. Run it.** `python3 kit.py setup <name>`. If you ran it, paste the printed
+entry into your reply, in a code block: tool output is folded and the person
+will not see it otherwise. If they ran it themselves with `!`, they watched it
+print: do not reprint the entry or repeat the guidance printed under it. Say
+briefly, in plain words, what changed, which the raw output does not give them,
+and move on. Do not ask them to name a tenant or a label. The events are tagged
 with the server's name.
 
 **Say this once at the handover, without asking first.** The first wrapped start
