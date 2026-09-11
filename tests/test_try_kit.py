@@ -4394,8 +4394,12 @@ def test_claude_md_makes_a_refusal_stick_for_the_config_commands():
     every command. So the first refusal switches the rest of the trial, and auto
     mode shows its denial text once instead of three times.
 
-    `receipt` is not on the list because it never writes the config, and the
-    ending runs on it: an agent that stopped running it would stop the trial."""
+    `receipt` joins them only once a wrap is in place. Before that it reads just
+    the kit's own files; after, it reads the config to check the wrap is still
+    there, and a read of that path is what auto mode refuses. Left with the
+    agent, it would put the denial text on the finale, the one output the trial
+    exists to produce. Handed over while no wrap exists, it would cost a paste
+    for a command that touches no config."""
     paras = [text for _n, text in _unwrapped(_claude_md())]
     i = next(k for k, text in enumerate(paras) if text.startswith("**If a kit command is refused"))
     rule = paras[i + 3]
@@ -4410,9 +4414,41 @@ def test_claude_md_makes_a_refusal_stick_for_the_config_commands():
     )
     assert "without trying it first" in rule, "the remaining commands are still attempted"
     assert "`receipt` never changes the config" in rule, (
-        "receipt is swept up with the config commands, and the ending runs on it"
+        "the rule no longer says receipt only reads, which is why it is not always handed over"
     )
-    assert "Keep running it yourself in every mode" in rule, "the agent stops running receipt"
+    assert "once a wrap is in place hand `receipt` over the same way too" in rule, (
+        "receipt still runs after a refusal once it reads the config, so the finale is refused"
+    )
+    assert "While no wrap is in place it touches no config, so keep running it yourself" in rule, (
+        "receipt is handed over even while it touches no config, which is not the rule"
+    )
+    assert "in every mode" not in rule, "the rule still says the agent always keeps receipt"
+
+
+def test_receipt_reads_the_config_only_once_a_wrap_is_in_place(
+    tmp_path, kit_home, capsys, monkeypatch
+):
+    """The refusal rule hands `receipt` over only once a wrap is in place, on the
+    grounds that before then it touches no config. That is a claim about the
+    code, so it is measured here rather than trusted: every file `receipt` reads
+    is recorded, with no wrap and then with one. The second half is also what
+    shows the recorder can see a config read at all."""
+    config = _config(tmp_path, GLOBAL_ONLY).resolve()
+    reads: list[str] = []
+    real_read_text = Path.read_text
+
+    def recording_read_text(self, *args, **kwargs):
+        reads.append(str(self.resolve()))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", recording_read_text)
+    _receipt_output(capsys)
+    assert str(config) not in reads, "receipt read the config with no wrap in place"
+    assert kit.main(["setup", "notion", "--config-file", str(config), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    reads.clear()
+    _receipt_output(capsys)
+    assert str(config) in reads, "receipt no longer reads the config once a wrap is in place"
 
 
 # ---------------------------------------------------------------------------
@@ -4607,7 +4643,11 @@ def test_the_main_flow_carries_no_security_readout():
     carries those facts and shows the before-and-after config with the `${VAR}`
     reference kept, where the paragraph could only assert it. This replaces
     `test_the_remote_consent_is_reachable_under_the_order_the_paste_sets`, which
-    pinned the paragraph in place."""
+    pinned the paragraph in place.
+
+    Widened in the same release from "bearer token" to "bearer" in any case,
+    after step 1's eligibility paragraph turned out to still name the
+    `Authorization: Bearer` header without ever saying "bearer token"."""
     md = _claude_md()
     flat = _flat(md)
     for gone in (
@@ -4623,7 +4663,7 @@ def test_the_main_flow_carries_no_security_readout():
     setting_up = md.index("## Setting up")
     assert start < readout < setting_up, "the doc's sections moved; re-cut the main flow"
     main = _flat(md[start:readout] + md[setting_up:]).lower()
-    for fact in ("bearer token", "${var}"):
+    for fact in ("bearer", "${var}"):
         assert fact not in main, f"the main flow mentions {fact!r}, which belongs in the readout"
     # And the readout still carries what the paragraph pointed to, or deleting it
     # lost them rather than moving them to where they already were.

@@ -230,7 +230,7 @@ Three commands, all run from the `try/` directory:
 | command | what it touches |
 |---|---|
 | `setup <server>` | Reads your MCP config; copies the whole file to `try/config-backup.<timestamp>.json`; rewrites one entry; writes `try/state.json`. Nothing else on the machine. |
-| `receipt` | Reads `try/events.jsonl` and `try/state.json`. Writes nothing, opens no connection. |
+| `receipt` | Reads `try/events.jsonl` and `try/state.json`, and once a wrap is in place reads your MCP config to check the wrapped entry is still there. Writes nothing, opens no connection. |
 | `uninstall` | Rewrites that one entry back and deletes `try/state.json`. Leaves your events file and the backups for you to read or delete. |
 
 The kit has no network code. The only `urllib` import in `kit.py` is

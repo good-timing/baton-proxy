@@ -111,8 +111,10 @@ for the rest of the trial. Those are `setup`, with or without a server name,
 and `uninstall`: hand each remaining one over the same way, as a `!` line with
 the real path filled in, without trying it first. `receipt` never changes the
 config: it reads the kit's own state and event files and, once a wrap is in
-place, reads the config to check the wrap is still there. Keep running it
-yourself in every mode.
+place, reads the config to check the wrap is still there. That read is enough
+to be refused, so once a wrap is in place hand `receipt` over the same way too,
+as a command that reads their config rather than edits it. While no wrap is in
+place it touches no config, so keep running it yourself.
 
 **1. Find the server.** Run `python3 kit.py setup` with no arguments. It lists
 the servers it can wrap, and any it cannot and why, from `~/.claude.json`. Show
@@ -121,11 +123,11 @@ use daily. A project-local `.mcp.json` is one more option in that chooser, not
 a sentence above it: if they pick it, ask for the path and pass
 `--config-file <path>` to `setup` only. If the list is empty, say so and stop.
 
-Each offered row is marked `stdio` or `remote`. A remote server is offered
-only when its single `Authorization: Bearer` header holds a token written in
-the config; the wrap turns it into a local process bridging to the same
-endpoint. Do not argue an entry past a refusal; each one exists because the
-wrap would produce a server that cannot authenticate.
+Each offered row is marked `stdio` or `remote`. Offer only the rows the kit
+lists as wrappable: it has already decided which servers it can carry, and it
+prints its own reason beside each one it cannot. Do not argue an entry past a
+refusal; each one exists because the wrap would leave them with a server that
+does not work.
 
 **2. Run it.** `python3 kit.py setup <name>`. Paste the printed entry into your
 reply, in a code block: tool output is folded and the person will not see it
