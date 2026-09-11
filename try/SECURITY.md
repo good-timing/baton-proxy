@@ -348,8 +348,8 @@ Not recorded: your credentials, your filesystem, your shell history, and
 anything from MCP servers other than the one wrapped. For a stdio wrap the proxy
 does not read credentials at all. For a remote wrap it reads
 `BATON_UPSTREAM_AUTH_TOKEN` from its own environment to present it upstream, and
-that value is never emitted, logged, or written anywhere but the config entry
-and `try/state.json`.
+that value is never emitted, logged, or written anywhere but the config entry,
+`try/state.json` and the backup (§7).
 
 For a remote wrap, one class of traffic is not captured: the bridge handles the
 client-initiated request/response loop and does not open the standing GET SSE
@@ -409,8 +409,8 @@ delete it.
   bound for as long as the wrap is in place. The receipt reports its size.
 - **`try/state.json`** records which entry was wrapped, in which file, and its
   original contents, so removal is exact and a receipt can be produced days
-  later. Created `0600`; it is the one place the kit writes a literal `env`
-  value to disk. `uninstall` deletes it once the restore is verified.
+  later. Created `0600`. It and the backup below are the kit's two files that
+  hold a literal `env` value. `uninstall` deletes it once the restore is verified.
 - **`try/config-backup.<timestamp>.json`** is the whole config file as it was
   before setup, `0600`. Evidence, never the source of the restore.
 - **Events do not go to stderr, and that is the kit's doing.** The proxy's
