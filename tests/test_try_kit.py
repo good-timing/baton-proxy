@@ -3789,7 +3789,7 @@ def test_the_offer_is_withheld_from_a_capture_with_no_calls_in_it(tmp_path, kit_
     found to contain calls — never optimistically.
 
     A handshake-only file is not empty (the surface snapshot is in it), so the
-    offer's gate cannot be "are there events". Sending someone to the Setup page
+    offer's gate cannot be "are there events". Sending someone to the Baton Proxy page
     with a handshake-only file wastes the one trip they will make, and it argues
     with the banner printed just above, which said nothing came down the pipe."""
     _wrapped(tmp_path, kit_home, capsys)
@@ -4494,7 +4494,7 @@ def test_the_prompt_does_not_send_them_hunting_for_a_checkout():
 
 
 def test_the_prompt_survives_arriving_as_a_file():
-    """The paste travels two ways. It is copied off Baton's Setup page into a
+    """The paste travels two ways. It is copied off the Baton Proxy page into a
     session, and it is saved or forwarded as a file, which gets opened from a
     downloads folder, where step 1's "the current directory" quietly means
     exactly there.
@@ -4639,7 +4639,7 @@ def test_the_two_receipt_rows_are_relayed_apart():
 # otherwise, because a removed command that a document still names is worse than
 # one that exists.
 #
-# And Baton's Setup page renders a COPY of the paste, pinned to a named kit
+# And the Baton Proxy page renders a COPY of the paste, pinned to a named kit
 # version rather than fetched from here when the page renders. Nothing in either
 # repository can see the other, so the pin below is the only thing that can
 # notice the two drifting apart.
@@ -4686,7 +4686,7 @@ def test_the_paste_is_pinned_to_the_version_that_ships_it():
 
     digest = hashlib.sha256(_paste().encode("utf-8")).hexdigest()
     assert digest == kit.PASTE_SHA256, (
-        "try/PROMPT.md's paste changed and its pin did not. Baton's Setup page "
+        "try/PROMPT.md's paste changed and its pin did not. The Baton Proxy page "
         "holds a copy of this text pinned to a kit version, so a paste edit is a "
         "release:\n"
         f"  1. kit.PASTE_SHA256 = {digest!r}\n"
@@ -4759,7 +4759,7 @@ def test_the_doc_forbids_sending_without_naming_an_exception():
     assert "except" not in doc[doc.index("Never send the file anywhere") :][:400].lower(), (
         "the send rule grew an exception again"
     )
-    assert "the person uploads it themselves on Baton's Setup page" in doc, (
+    assert "the person uploads it themselves on the Baton Proxy page" in doc, (
         "the doc never says what to answer when someone asks the agent to send it"
     )
 
@@ -4767,7 +4767,7 @@ def test_the_doc_forbids_sending_without_naming_an_exception():
 # ---------------------------------------------------------------------------
 # Run 6: the last step is a drag, and a path in a terminal cannot be dragged.
 #
-# The upload box on Setup takes a file. On macOS `open -R` puts a Finder window
+# The upload box on Baton Proxy takes a file. On macOS `open -R` puts a Finder window
 # in front of the person with the file already selected, which turns "find this
 # path in a file dialog" into something they can see and drag. Linux has no
 # portable equivalent worth guessing at, so it is told nothing rather than told
@@ -4781,8 +4781,8 @@ def test_the_doc_forbids_sending_without_naming_an_exception():
 
 MACOS_ENDING = (
     "It's at /full/path/to/try/events.jsonl. Finder is showing it. Drag it onto "
-    "the upload box on Baton's Setup page, "
-    "https://baton.goodtiming.ai/setup/agent, and your session is there."
+    "the upload box on the Baton Proxy page, "
+    "https://baton.goodtiming.ai/setup/proxy, and your session is there."
 )
 
 
@@ -4827,7 +4827,7 @@ def test_the_doc_hands_the_file_over_differently_on_each_platform():
         "the doc no longer tells the agent to reveal the file on macOS"
     )
     assert MACOS_ENDING in flat, "the macOS ending is not the sentence the person is told"
-    assert kit.SETUP_URL in MACOS_ENDING, "the macOS ending stopped naming the Setup page"
+    assert kit.SETUP_URL in MACOS_ENDING, "the macOS ending stopped naming the Baton Proxy page"
     assert "**On Linux**, reveal nothing" in flat, (
         "the doc no longer tells the agent to leave the file alone on Linux"
     )

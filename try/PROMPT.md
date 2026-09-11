@@ -6,9 +6,9 @@ already in the kit, so it lives here rather than in an email thread.
 
 Everything below the rule is the text. It assumes nothing has been cloned yet,
 and it is written to be read by the person as well as executed by the agent: it
-is shown on Baton's Setup page with nothing but a Copy link above it.
+is shown on the Baton Proxy page with nothing but a Copy link above it.
 
-It travels two ways. Copied from Baton's Setup page into a session, the person
+It travels two ways. Copied from the Baton Proxy page into a session, the person
 chose the directory by starting the session there. Saved or forwarded as a file,
 it is opened from wherever it was downloaded, and "the directory I'm in"
 silently means the downloads folder. Detail B at the end covers the second case,

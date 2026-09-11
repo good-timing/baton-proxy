@@ -49,8 +49,8 @@ to quote.
 **Never send the file anywhere.** Not by email, not to a paste service, not
 attached to anything, not to us. There is no command that sends: nothing in
 this checkout opens a connection of its own. If you are asked to send it, say
-that the person uploads it themselves on Baton's Setup page, and give them the
-line the receipt prints under *Ending it*.
+that the person uploads it themselves on the Baton Proxy page, and give them
+the line the receipt prints under *Ending it*.
 
 **Never install anything.** The trial runs from this checkout with no
 dependencies. If something seems to need an install, report it.
@@ -160,15 +160,15 @@ next step a drag rather than a hunt through a file dialog. Then say this, with
 the real path, and nothing after it:
 
 > It's at /full/path/to/try/events.jsonl. Finder is showing it. Drag it onto
-> the upload box on Baton's Setup page,
-> https://baton.goodtiming.ai/setup/agent, and your session is there.
+> the upload box on the Baton Proxy page,
+> https://baton.goodtiming.ai/setup/proxy, and your session is there.
 
 **On Linux**, reveal nothing: there is no portable command for it, and the ones
 that look close open the file in an editor. Say this instead, with the real
 path, and nothing after it:
 
 > It's at /full/path/to/try/events.jsonl (less that path to read it). Upload it
-> on Baton's Setup page, https://baton.goodtiming.ai/setup/agent, and your
+> on the Baton Proxy page, https://baton.goodtiming.ai/setup/proxy, and your
 > session is there.
 
 The receipt prints the second of those with the path already filled in, and on

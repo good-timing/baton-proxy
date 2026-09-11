@@ -105,9 +105,9 @@ STATE_POINTER = (
 # uploading: no network call is added anywhere by knowing where a file may go.
 # Nothing in this checkout opens a connection of its own, so "nothing here sends
 # it" is literally true and §9.1's grep sees no call site in `try/`.
-SETUP_URL = "https://baton.goodtiming.ai/setup/agent"
+SETUP_URL = "https://baton.goodtiming.ai/setup/proxy"
 
-# The paste on Baton's Setup page is a copy of PROMPT.md's text below the rule,
+# The paste on the Baton Proxy page is a copy of PROMPT.md's text below the rule,
 # pinned there to a named kit version rather than fetched when the page renders.
 # So the console holds one of these strings and this file holds the other, and
 # nothing in either repository can notice them drifting apart.
@@ -179,7 +179,7 @@ ENDING_NOTE = (
 def setup_note(events_path: Path) -> str:
     return (
         f"It's at {events_path}\n"
-        "(less that path to read it). Upload it on Baton's Setup page,\n"
+        "(less that path to read it). Upload it on the Baton Proxy page,\n"
         f"{SETUP_URL}, and your session is there."
     )
 
