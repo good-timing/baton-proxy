@@ -92,6 +92,19 @@ proceed with the install, and go to *Setting up*.
 
 ## Setting up
 
+**If a kit command is refused, that is expected, and this is what to do.**
+`setup` reads and writes `~/.claude.json`, which is Claude Code's own config, so
+a permission mode that guards against an agent editing itself will refuse it.
+Do not work around it, and do not ask them to change a setting. Tell them this
+step edits their Claude Code config so they should run it rather than you, and
+give them the line with a `!` in front, which runs it in the session and puts
+the output where you can read it:
+
+> ! cd <path>/baton-proxy/try && python3 kit.py setup
+
+This is not a fallback. Someone deciding whether to let a tool touch their
+client's config is better served running that edit themselves.
+
 **1. Find the server.** Run `python3 kit.py setup` with no arguments. It lists
 the servers it can wrap, and any it cannot and why, from `~/.claude.json`; for
 a project-local `.mcp.json`, ask for the path and pass `--config-file <path>`
@@ -112,24 +125,23 @@ reference without resolving it, which relies on their client expanding it
 inside `env`; and they should run `receipt` on the first day, because an empty
 file is how a broken wrap gets found early. `SECURITY.md` §2 has it in writing.
 
-**If their server signs them in to something (Notion, Google, a ticketing
-system), say so before setup.** The first wrapped start may open a browser tab
-asking them to authorize again, naming a `localhost` port; that port is their
-server's, and the access goes where it always went. Ask; if they do not know,
-say it may happen.
-
 **2. Run it.** `python3 kit.py setup <name>`. Paste the printed entry into your
 reply, in a code block: tool output is folded and the person will not see it
 otherwise. Do not ask them to name a tenant or a label. The events are tagged
 with the server's name.
 
+**Say this once at the handover, without asking first.** The first wrapped start
+may open a browser tab asking them to sign in again, naming a `localhost` port.
+That is their MCP server's own sign-in, not ours. The port is their server's and
+the access goes where it always went. Baton never asks for credentials.
+
 **3. Hand them a second terminal, and stay in this one.** Setup prints a line
 beginning `Open a second terminal` that says where to start it; relay that as
 printed. Then end your message with this, and nothing after it:
 
-> Leave this window open. Open a second terminal, start your client there, and
-> use the server the way you normally would. This window keeps the old server;
-> the new terminal gets the wrapped one. Come back here when you are done.
+> Leave this window open. Open a second terminal, start Claude Code there, and
+> use the MCP server the way you normally would. This window still has the unwrapped
+> one; the new terminal gets the wrapped one. Come back here when you are done.
 
 ## While it runs
 

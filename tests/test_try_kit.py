@@ -3195,7 +3195,11 @@ def test_every_scope_hands_over_the_line_the_doc_tells_the_agent_to_relay():
         ("/Users/someone/work/app", home_config),  # project scope
         (str(Path.cwd()), home_config),  # project scope, already there
     ):
-        assert kit.start_where(scope, config).startswith(marker), (scope, config)
+        line = kit.start_where(scope, config)
+        assert line.startswith(marker), (scope, config)
+        # The kit is Claude Code only. "Start your client" is followed exactly by
+        # someone on another client, whose events file then stays empty.
+        assert "start Claude Code" in line and "your client" not in line, (scope, config, line)
 
 
 # A CONCRETE path — `cd <path>` describing the shape of setup's line is the
@@ -4336,17 +4340,28 @@ def test_security_md_discloses_the_reauthorization_prompt():
     )
 
 
-def test_claude_md_tells_the_agent_to_say_it_before_setup_runs():
+def test_claude_md_tells_the_agent_to_say_it_at_the_handover():
     """The doc and the terminal are two sinks for one claim. Disclosure that
     only exists in a document nobody opened does not stop the surprise — and by
-    the time the tab is open there is no good moment to explain it."""
+    the time the tab is open there is no good moment to explain it.
+
+    It used to be a question asked before setup, and every answer to it led to
+    the same warning. So it is said once, unconditionally, at the handover."""
     md = _claude_md()
-    para = next(text for _n, text in _unwrapped(md) if "signs them in to something" in text)
-    assert "say so before setup" in para, "the warning is not tied to a moment"
-    assert "Ask; if they do not know" in para, (
-        "the agent is not told to ask, so it will infer from the config and be wrong"
+    para = next(
+        text for _n, text in _unwrapped(md) if "wrapped start may open a browser tab" in text
     )
-    assert "may happen" in para, "an agent told to predict this will overstate it"
+    assert "Say this once at the handover" in para, "the warning is not tied to a moment"
+    assert md.index("**2. Run it.**") < md.index(para[:40]) < md.index("**3. Hand them"), (
+        "the warning is not placed at the handover, between running setup and the handoff"
+    )
+    assert "without asking first" in para and "Ask;" not in para, (
+        "the agent is told to ask a question whose every answer leads to the same warning"
+    )
+    assert "may open" in para, "an agent told to predict this will overstate it"
+    assert "Baton never asks for credentials" in para, (
+        "the warning no longer says the sign-in is theirs and not ours"
+    )
 
 
 # ---------------------------------------------------------------------------

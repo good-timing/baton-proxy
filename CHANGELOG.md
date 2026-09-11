@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 
+## [0.6.2] — 2026-09-11
+
+### Changed
+
+- **A refused kit command now comes with an instruction, and the instruction is not a workaround.** `setup` reads and writes `~/.claude.json`, which is Claude Code's own config, and a permission mode that guards against an agent editing itself refuses that. Under Claude Code 2.1.268 in auto mode it stopped a trial at its first step. `try/CLAUDE.md` now opens *Setting up* by telling the agent the refusal is expected, that it must not route around it or ask the person to change a setting, and that it hands them the command with a `!` in front, so the person runs the edit to their own client's config and the output still lands in the session.
+
+- **The re-authorization warning is said, not asked.** `try/CLAUDE.md` had the agent ask before setup whether the server signs them in to something, and every answer led to the same warning. It is now one unconditional line at the handover: the first wrapped start may open a sign-in tab naming a `localhost` port, that sign-in is their MCP server's own, and Baton never asks for credentials. The test that pinned the question now pins the line, its place between running setup and handing over the second terminal, and the absence of the question.
+
+- **The handover names Claude Code.** The four lines `setup` prints about where to open the second terminal, and the block `try/CLAUDE.md` has the agent end its message on, said "your client". The kit works with Claude Code only, so a reader on another client could follow the line exactly and finish with an empty `events.jsonl` and no error. "Client" stays wherever it describes a mechanism rather than telling the person what to do, and the test on those four lines now holds every one of them to "start Claude Code".
+
+### Added
+
+- **`.claude/settings.json` pre-approves the four kit commands, and nothing wider.** `python3 kit.py setup`, `setup` with arguments, `receipt` and `uninstall` are allowed, so a manual-mode session stops asking for each one separately. Claude Code checks each part of a compound command on its own, and a `cd` into the working directory counts as read-only, so `cd <path>/baton-proxy/try && python3 kit.py setup` is covered too. The limit, from Claude Code's permissions and settings docs and not yet observed in a live session: it reads `.claude/settings.json` from the session's primary working directory, and applies its allow rules only after that folder's workspace trust is accepted. The paste starts the session in the directory the repository is cloned into, one level up, so as shipped these rules apply only to a session started inside the clone.
+
+
 ## [0.6.1] — 2026-09-11
 
 ### Changed

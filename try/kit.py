@@ -118,7 +118,7 @@ SETUP_URL = "https://baton.goodtiming.ai/setup/proxy"
 # it equal to `baton_proxy.__version__`. Editing the paste breaks the hash;
 # re-pinning the hash without bumping the version breaks the pair. The release
 # then carries a version the console can be updated to and named by.
-PASTE_VERSION = "0.6.1"
+PASTE_VERSION = "0.6.2"
 PASTE_SHA256 = "75642ff310726a50b5587121dc49fbd8ba9505cfccfff081a23fb1271a04e1f0"
 
 
@@ -1297,7 +1297,7 @@ def start_where(scope: str | None, config_path: str | Path) -> str:
     they already had is the one that survives the trial."""
     if scope is None and is_global_config(config_path):
         return (
-            "Open a second terminal and start your client the way you normally do.\n"
+            "Open a second terminal and start Claude Code the way you normally do.\n"
             "This entry is registered globally, so it loads wherever you start from."
         )
     if scope is None:
@@ -1306,7 +1306,7 @@ def start_where(scope: str | None, config_path: str | Path) -> str:
         # the shape it is nearly always in.
         holder = Path(config_path).parent
         return (
-            "Open a second terminal and start your client where this entry\n"
+            "Open a second terminal and start Claude Code where this entry\n"
             "applies. It is at the top level of\n"
             f"  {config_path}\n"
             "which is not your global config — a project config is loaded for\n"
@@ -1319,12 +1319,12 @@ def start_where(scope: str | None, config_path: str | Path) -> str:
         already_there = False
     if already_there:
         return (
-            "Open a second terminal in this same directory and start your client\n"
+            "Open a second terminal in this same directory and start Claude Code\n"
             f"there. The entry is scoped to {scope}, and it only loads for a session\n"
             "started from there."
         )
     return (
-        "Open a second terminal and start your client where this server is\n"
+        "Open a second terminal and start Claude Code where this MCP server is\n"
         "registered:\n\n"
         f"{_cd_to(scope)}\n\n"
         "The entry is scoped to that directory. A session started anywhere else\n"
