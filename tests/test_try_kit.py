@@ -4364,6 +4364,29 @@ def test_claude_md_tells_the_agent_to_say_it_at_the_handover():
     )
 
 
+def test_claude_md_tells_the_agent_to_fill_in_the_real_path_on_a_refusal():
+    """The refusal paragraph hands the person a command to run themselves, and
+    the doc writes that command with a `<path>` placeholder. Relayed literally it
+    cannot run, in the one paragraph a security-minded reader studies hardest.
+    So the sentence that introduces the line tells the agent to substitute."""
+    paras = [text for _n, text in _unwrapped(_claude_md())]
+    i = next(k for k, text in enumerate(paras) if text.startswith("**If a kit command is refused"))
+    intro, line, after = paras[i : i + 3]
+    assert "Fill in the real path to this checkout" in intro, (
+        "the agent is not told to put the real path in the command it relays"
+    )
+    assert "do not relay the placeholder" in intro, (
+        "the agent is not told that `<path>` is a placeholder"
+    )
+    assert line == "> ! cd <path>/baton-proxy/try && python3 kit.py setup", (
+        "the instruction to substitute is not directly above the line it is about"
+    )
+    assert after == (
+        "This is not a fallback. Someone deciding whether to let a tool touch their "
+        "client's config is better served running that edit themselves."
+    ), "the closing sentences of the refusal paragraph changed"
+
+
 # ---------------------------------------------------------------------------
 # TK-D-7 — the kit is Claude Code only, and it says so before the cost is paid
 # (Dave's spec §7, second half).
