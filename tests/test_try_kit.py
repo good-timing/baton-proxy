@@ -4367,7 +4367,11 @@ def test_claude_md_tells_the_agent_to_fill_in_the_real_path_on_a_refusal():
     """The refusal paragraph hands the person a command to run themselves, and
     the doc writes that command with a `<path>` placeholder. Relayed literally it
     cannot run, in the one paragraph a security-minded reader studies hardest.
-    So the sentence that introduces the line tells the agent to substitute."""
+    So the sentence that introduces the line tells the agent to substitute.
+
+    And to say what to do with it. In the terminal the `!` line renders as
+    ordinary prose, and someone who has never used `!` does not know it is a
+    command to paste at their prompt; the whole handoff depends on that."""
     paras = [text for _n, text in _unwrapped(_claude_md())]
     i = next(k for k, text in enumerate(paras) if text.startswith("**If a kit command is refused"))
     intro, line, after = paras[i : i + 3]
@@ -4376,6 +4380,12 @@ def test_claude_md_tells_the_agent_to_fill_in_the_real_path_on_a_refusal():
     )
     assert "do not relay the placeholder" in intro, (
         "the agent is not told that `<path>` is a placeholder"
+    )
+    assert "Tell them to copy the line and paste it at their prompt" in intro, (
+        "the person is handed a `!` line with no word on what to do with it"
+    )
+    assert "They may never have used `!` before" in intro, (
+        "the agent is not told the person may not know what a `!` line is"
     )
     assert line == "> ! cd <path>/baton-proxy/try && python3 kit.py setup", (
         "the instruction to substitute is not directly above the line it is about"

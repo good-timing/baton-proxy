@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 
+## [0.6.5] — 2026-09-11
+
+### Changed
+
+- **The `!` line now comes with an instruction to paste it.** In a live run the agent handed the person the `!` line and never said what to do with it. In the terminal it renders as ordinary prose, the same colour as the sentence above it, and someone who has never used `!` in Claude Code does not know it is a command to copy into the prompt box; the whole handoff for a refused command depends on them knowing that. The refusal instruction in `try/CLAUDE.md` now tells the agent to have them copy the line and paste it at their prompt, and not to assume the line explains itself. The test on that paragraph pins both.
+
+
 ## [0.6.4] — 2026-09-11
 
 ### Changed

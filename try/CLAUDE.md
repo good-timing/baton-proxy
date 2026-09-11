@@ -99,7 +99,9 @@ Do not work around it, and do not ask them to change a setting. Tell them this
 step edits their Claude Code config so they should run it rather than you, and
 give them the line with a `!` in front, which runs it in the session and puts
 the output where you can read it. Fill in the real path to this checkout; do
-not relay the placeholder:
+not relay the placeholder. Tell them to copy the line and paste it at their
+prompt. They may never have used `!` before, so do not assume the line explains
+itself:
 
 > ! cd <path>/baton-proxy/try && python3 kit.py setup
 
