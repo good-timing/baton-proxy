@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A caller can no longer assert its own runtime.** `detect_agent_runtime` honoured `_meta.baton.agent_runtime` and ranked it ABOVE the `claudecode/*` heuristic, on the reasoning that a client naming itself beats our guess about its key names. That reasoning is what fell: `agent_runtime` is self-reported and never attested, so the override let the thing being measured pick its own label. The SDK donor removed it in both spellings (nested at B5, reverse-DNS `io.baton/*` on 2026-09-09; SPEC §5.2 now reads "Recognized keys: none") and **this copy had not followed, so two sensors watching one client disagreed about what it was** — the single failure a hand-maintained cross-repo copy exists to prevent. Following meant DELETING the read, not adopting the new key name. The value is still carried: `runtime_meta` forwards `_meta` verbatim, so a client that sends one still reaches the Console as data to group on downstream.
+
+  The test that asserted the override is now the test that asserts it is ignored, parametrised over both spellings — the nested one this file actually read, and the reverse-DNS one it never did, kept as a forward guard so "follow the donor" cannot later be misread as "adopt its new key". A second case pins that an override cannot *suppress* the heuristic either, which is the way a half-finished removal loses a detection rather than inventing one.
+
+  The docstring's donor citation pointed at `baton/integrations/fastmcp/runtime_adapter.py`, a path that stopped existing at the adapter rename; it now names `integrations/runtime_adapter.py`.
+
+- **`hash_user_id` takes `issuer`, closing a divergence this module's own header had opened.** `baton.identity` grew the parameter on 2026-09-09 — an OIDC `sub` is unique only within the provider that minted it (RFC 7519 §4.1.2), so two IdPs behind one vendor can hand the same `sub` to two people, who then hash to one `user_id` — while this file's docstring still promised the two copies were in lockstep. Not a correctness bug in anything emitted: the SDK's `issuer=None` reproduced this message byte-for-byte, so the two agreed on every value either had ever produced. Identical signature and identical append-only message layout adopted here.
+
+  ⚠ **Held by a frozen cross-repo vector now, in both repos** (`tests/test_identity.py` and the SDK's `tests/test_identity_adapter.py` carry the same principal, tenant, key and two literal digests). Every other test of this function compares the implementation to itself — including the "issuer=None matches the pre-issuer form" check, whose two sides both come from one module — so a layout change applied to both repos on the same day would stay green in both while every `h1:` hash ever emitted became unreproducible. A literal computed before the change is the only assertion that reds for that. Do not change the layout a second time: the append-only shape is what makes `None` compatible, and a second divergence would have no compatible default to hide behind.
+
+### Documentation
+
+- **`BATON_USER_ID_HMAC_KEY` now says how to generate one** (`openssl rand -hex 32`). The README said only "per-tenant secret" — no length, no randomness guidance — while the fixtures set it to `rig-test`, which is the value a copy-pasting operator keeps. The input space is emails and user ids: small and guessable. **A weak key is not a weaker pseudonym, it is none** — anyone holding the events dictionary-attacks the column back to raw identities.
+
+
 ## [0.6.0] — 2026-09-08
 
 ### Changed

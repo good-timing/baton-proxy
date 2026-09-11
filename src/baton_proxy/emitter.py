@@ -56,15 +56,26 @@ def detect_agent_runtime(meta: Mapping[str, Any] | None) -> str | None:
     """The agent runtime one event's MCP ``_meta`` betrays, or None.
 
     Rules copied from the SDK's
-    ``baton/integrations/fastmcp/runtime_adapter.detect_agent_runtime``.
+    ``baton/integrations/runtime_adapter.detect_agent_runtime``.
     baton-proxy is zero-dep and cannot import it, so this is a copy across
     repos that no test can pin; what makes the copy worth having is that both
     sensors must store the SAME token for the same client, or every query that
-    groups by ``agent_runtime`` splits one client into two. Donor's precedence:
+    groups by ``agent_runtime`` splits one client into two. Precedence:
 
-    1. explicit ``_meta.baton.agent_runtime`` — a documented client override
-    2. a ``claudecode/*`` key prefix -> ``claude-code``
-    3. None, and the caller falls back
+    1. a ``claudecode/*`` key prefix -> ``claude-code``
+    2. None, and the caller falls back
+
+    ⚠ **A caller cannot assert its own runtime.** This used to honour an
+    explicit ``_meta.baton.agent_runtime`` and rank it ABOVE the heuristic.
+    The donor removed that override in both its spellings — the nested form at
+    B5, the reverse-DNS ``io.baton/*`` form on 2026-09-09 — leaving SPEC §5.2
+    reading "Recognized keys: none", and this copy followed on 2026-09-10.
+    Following meant DELETING the read, not adopting the new key name: the
+    point of the removal is that the thing being measured does not get to
+    choose its own label, and until this landed the two sensors disagreed
+    about exactly that. The value is still CARRIED — ``runtime_meta`` forwards
+    ``_meta`` verbatim, so anything a client sends arrives at the Console as
+    data and can be grouped on downstream, where the decision can be revised.
 
     Takes a plain mapping rather than the donor's ``Any``: both proxy call
     sites already ``isinstance``-check ``_meta`` to a dict before it reaches
@@ -73,12 +84,6 @@ def detect_agent_runtime(meta: Mapping[str, Any] | None) -> str | None:
     """
     if not meta:
         return None
-
-    baton_meta = meta.get("baton")
-    if isinstance(baton_meta, dict):
-        runtime = baton_meta.get("agent_runtime")
-        if isinstance(runtime, str) and runtime:
-            return runtime
 
     for key in meta:
         if isinstance(key, str) and key.startswith("claudecode/"):

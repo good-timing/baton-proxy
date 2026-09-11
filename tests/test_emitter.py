@@ -450,18 +450,44 @@ def test_detect_agent_runtime_reads_the_claudecode_prefix() -> None:
     assert detect_agent_runtime({"progressToken": 3, "claudecode/sessionId": "s"}) == "claude-code"
 
 
-def test_detect_agent_runtime_honours_the_explicit_override() -> None:
-    """`_meta.baton.agent_runtime` is a documented client override in the SDK
-    donor, and it outranks the prefix heuristic — a client that asserts its own
-    identity is a better source than our guess about its key names."""
+@pytest.mark.parametrize(
+    "meta",
+    [
+        pytest.param({"baton": {"agent_runtime": "some-plugin"}}, id="pre-B5-nested-form"),
+        pytest.param({"io.baton/agent_runtime": "some-plugin"}, id="reverse-dns-form"),
+    ],
+)
+def test_detect_agent_runtime_ignores_a_client_override(meta: dict[str, object]) -> None:
+    """**The override was REMOVED 2026-09-10**, following the SDK donor.
+
+    This test used to assert the opposite, on the reasoning that "a client that
+    asserts its own identity is a better source than our guess about its key
+    names". That reasoning is what fell: ``agent_runtime`` is self-reported and
+    never attested, so an override lets the thing being measured pick its own
+    label — and while the donor had dropped it and this copy had not, the two
+    sensors watching one client disagreed about what it was, which is the one
+    failure a cross-repo copy exists to prevent.
+
+    Both spellings are covered. The nested form is the one this file actually
+    read; the reverse-DNS form never reached here, and is pinned as a FORWARD
+    guard so "follow the donor" cannot later be read as "adopt its new key".
+    """
+    assert detect_agent_runtime(meta) is None
+
+
+def test_an_override_cannot_suppress_the_heuristic() -> None:
+    """The removal must not have left a half-read key that can still LOSE a
+    detection: the heuristic answers regardless of what else is in ``_meta``."""
     meta = {"claudecode/toolUseId": "tu_1", "baton": {"agent_runtime": "some-plugin"}}
-    assert detect_agent_runtime(meta) == "some-plugin"
+    assert detect_agent_runtime(meta) == "claude-code"
 
 
 def test_detect_agent_runtime_is_none_without_a_signal() -> None:
     """No signal returns None rather than a default, so the caller decides what
-    to fall back to. Malformed shapes are signals too — an empty override
-    string and a non-dict `baton` key must not become the answer."""
+    to fall back to. The last two cases were written when ``baton`` was a read
+    key, to stop a malformed override becoming the answer; they are kept
+    because the key is now inert and these prove it — a ``baton`` entry of any
+    shape is just another unread ``_meta`` key."""
     assert detect_agent_runtime(None) is None
     assert detect_agent_runtime({}) is None
     assert detect_agent_runtime({"progressToken": 3}) is None

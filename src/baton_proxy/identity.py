@@ -71,14 +71,39 @@ def _canonicalize(raw_principal: str) -> str:
     return unicodedata.normalize("NFC", raw_principal).strip().lower()
 
 
-def hash_user_id(raw_principal: str, *, tenant_id: str, key: bytes) -> str:
+def hash_user_id(
+    raw_principal: str, *, tenant_id: str, key: bytes, issuer: str | None = None
+) -> str:
     """HMAC-SHA256 a raw principal into a console-safe, per-tenant ``user_id``.
 
     ``tenant_id`` is folded into the HMAC MESSAGE (not just the key) so the same
     principal under two tenants can never collide or be cross-tenant-correlated,
     even if an operator misconfigures one shared key — the per-tenant guarantee
     the residency contract requires. Returns ``"<scheme>:<hex>"`` (e.g. ``"h1:9f2c…"``).
+
+    ``issuer`` — the OIDC ``iss`` claim — is folded in the same way when
+    supplied, because a ``sub`` is unique only within the provider that minted
+    it (RFC 7519 §4.1.2). Two identity providers behind one vendor can hand out
+    the same ``sub`` to different people, and without the issuer those two
+    people hash to one ``user_id``.
+
+    ⚠ **``issuer=None`` MUST hash byte-identically to the pre-issuer form**,
+    and the append-only message layout below is what guarantees it. Every hash
+    this package and the extmcp gateway have produced since 0.5.0 was
+    issuer-less, and a format change under the same ``h1:`` tag would leave one
+    derivation tag naming two different derivations across the sensor family —
+    precisely what the scheme prefix exists to prevent. Do NOT change the
+    layout a second time: the append-only shape is what makes ``None``
+    compatible, and a second divergence would have no compatible default to
+    hide behind. Pinned byte-for-byte by ``test_identity.py``'s shared vector,
+    which the SDK asserts on the same values.
+
+    Added 2026-09-10, closing the divergence this module's own header opened:
+    ``baton.identity`` grew ``issuer`` on 2026-09-09 while the docstring above
+    still promised the two copies were in lockstep.
     """
-    message = f"{tenant_id}\x00{_canonicalize(raw_principal)}".encode()
-    digest = hmac.new(key, message, sha256).hexdigest()
+    message = f"{tenant_id}\x00{_canonicalize(raw_principal)}"
+    if issuer is not None:
+        message += f"\x00{_canonicalize(issuer)}"
+    digest = hmac.new(key, message.encode(), sha256).hexdigest()
     return f"{HASH_SCHEME}:{digest}"

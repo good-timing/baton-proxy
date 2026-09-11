@@ -97,3 +97,62 @@ def test_user_name_field_scrubbed_but_not_name() -> None:
     assert out["user_name"].startswith("[REDACTED")
     assert out["name"] == "get_thing"  # prompt/tool names must survive
     assert out["tool_name"] == "echo"
+
+
+# --------------------------------------------------------------------------
+# The CROSS-REPO vector — the only assertion that can catch a joint drift
+# --------------------------------------------------------------------------
+
+# One principal, one tenant, one key, and the two digests they must produce.
+# ⚠ These literals are DUPLICATED VERBATIM in the sibling sensor
+# (`baton/tests/test_identity_adapter.py` <-> `baton-proxy/tests/test_identity.py`)
+# and that duplication is the entire point: `hash_user_id` is a hand-maintained
+# copy across two repos that cannot import each other, and every other test of
+# it compares the implementation to ITSELF. The pre-existing
+# "issuer=None matches the pre-issuer form" check asserts
+# `hash_user_id(x) == hash_user_id(x, issuer=None)` — both sides from the same
+# module — so a layout change applied to BOTH repos on the same day stays green
+# in both while every `h1:` hash ever emitted becomes unreproducible. A frozen
+# literal is the only thing that reds for that, because it was computed before
+# the change and no edit can move it.
+#
+# The principal carries a trailing space and mixed case on purpose: canonical-
+# isation (NFC, strip, lower) is part of the derivation, so a divergence there
+# is a divergence in the hash.
+#
+# If one of these ever fails, the answer is NOT to update the literal. It means
+# the two sensors have stopped agreeing about what `h1:` denotes, and every
+# stored `user_id` was written under the other definition.
+_VECTOR_PRINCIPAL = "Alice@Example.COM "
+_VECTOR_TENANT = "ten_abc"
+_VECTOR_KEY = b"shared-key-bytes"
+_VECTOR_ISSUER = "https://idp.example.com"
+_VECTOR_ISSUERLESS = "h1:b8556c3cd4564b06af433259553eadee690754318e27ca392deabba8aac7843b"
+_VECTOR_WITH_ISSUER = "h1:9fc18f492b9dfe9092acf9d330d710b648d29b4aa131ecf702938df9409f0e78"
+
+
+def test_the_shared_cross_repo_vector_issuerless() -> None:
+    """Frozen 2026-09-10, when the two copies were verified byte-identical."""
+    assert (
+        hash_user_id(_VECTOR_PRINCIPAL, tenant_id=_VECTOR_TENANT, key=_VECTOR_KEY)
+        == _VECTOR_ISSUERLESS
+    )
+
+
+def test_the_shared_cross_repo_vector_with_an_issuer() -> None:
+    """The issuer fold is append-only, so this pins the APPENDED layout too.
+
+    Without it, only the issuer-less half would be nailed down and the two
+    repos could still diverge on where the issuer goes — which is the failure
+    the docstring warns cannot be hidden behind a compatible default a second
+    time.
+    """
+    assert (
+        hash_user_id(
+            _VECTOR_PRINCIPAL,
+            tenant_id=_VECTOR_TENANT,
+            key=_VECTOR_KEY,
+            issuer=_VECTOR_ISSUER,
+        )
+        == _VECTOR_WITH_ISSUER
+    )
