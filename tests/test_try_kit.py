@@ -2376,12 +2376,11 @@ def test_each_offered_row_says_whether_the_server_is_remote(tmp_path, kit_home, 
     """Finding 4. The refused list names every class precisely; the offered one
     named none, so a stdio entry and an http+bearer entry rendered identically.
 
-    That difference is not cosmetic: `CLAUDE.md` gates two extra warnings on it —
-    that a process of ours will hold their bearer token, and that `${VAR}`
-    expansion inside `env` is measured behaviour rather than a guarantee. Before
-    this, the doc could only tell the agent to go back into the config and infer
-    the kind from the presence of a `url`. An inference the agent can skip is a
-    warning the person may never hear.
+    That difference is not cosmetic: `CLAUDE.md` describes each offered row by
+    its kind. Before this, the doc could only tell the agent to go back into the
+    config and infer the kind from the presence of a `url`. The remote warnings
+    that word once gated left the main flow in 0.6.4 and live in `SECURITY.md`
+    §2, but a row the agent has to infer is still a row it can misdescribe.
 
     The two words are read off the module, so the doc's vocabulary and the code's
     cannot drift apart while both stay green."""
@@ -2395,9 +2394,9 @@ def test_each_offered_row_says_whether_the_server_is_remote(tmp_path, kit_home, 
     assert kit.KIND_REMOTE not in rows["alpha"], f"alpha is not remote: {rows['alpha']!r}"
     assert kit.KIND_STDIO not in rows["charlie"], f"charlie is not stdio: {rows['charlie']!r}"
     # And the doc's vocabulary IS the module's. Reading the constants above only
-    # makes this test follow a rename; it does not stop one. `CLAUDE.md` gates
-    # the two warnings named above on the literal word, so a renamed constant
-    # with an untouched doc leaves the agent hunting a word no row carries.
+    # makes this test follow a rename; it does not stop one. `CLAUDE.md` names
+    # the rows by the literal word, so a renamed constant with an untouched doc
+    # leaves the agent hunting a word no row carries.
     claude_md = (REPO_ROOT / "try" / "CLAUDE.md").read_text(encoding="utf-8")
     for kind in (kit.KIND_STDIO, kit.KIND_REMOTE):
         assert f"`{kind}`" in claude_md, (
@@ -4387,6 +4386,35 @@ def test_claude_md_tells_the_agent_to_fill_in_the_real_path_on_a_refusal():
     ), "the closing sentences of the refusal paragraph changed"
 
 
+def test_claude_md_makes_a_refusal_stick_for_the_config_commands():
+    """Try once, then hand over. The model cannot see its own permission mode,
+    so a refusal is the only detector it has. Handing over without ever trying
+    was rejected: in manual mode the person gets a prompt with a "don't ask
+    again" option, and never trying would turn that one keypress into a paste on
+    every command. So the first refusal switches the rest of the trial, and auto
+    mode shows its denial text once instead of three times.
+
+    `receipt` is not on the list because it never writes the config, and the
+    ending runs on it: an agent that stopped running it would stop the trial."""
+    paras = [text for _n, text in _unwrapped(_claude_md())]
+    i = next(k for k, text in enumerate(paras) if text.startswith("**If a kit command is refused"))
+    rule = paras[i + 3]
+    assert rule.startswith("Once a kit command has been refused"), (
+        "the rule is not conditioned on a refusal, so it no longer tries once"
+    )
+    assert "do not attempt the config commands again for the rest of the trial" in rule, (
+        "a refusal no longer carries over to the commands that follow it"
+    )
+    assert "`setup`, with or without a server name," in rule and "`uninstall`" in rule, (
+        "the rule does not name exactly the commands that touch the config"
+    )
+    assert "without trying it first" in rule, "the remaining commands are still attempted"
+    assert "`receipt` never changes the config" in rule, (
+        "receipt is swept up with the config commands, and the ending runs on it"
+    )
+    assert "Keep running it yourself in every mode" in rule, "the agent stops running receipt"
+
+
 # ---------------------------------------------------------------------------
 # TK-D-7 — the kit is Claude Code only, and it says so before the cost is paid
 # (Dave's spec §7, second half).
@@ -4568,28 +4596,42 @@ def _flat_unquoted(text: str) -> str:
     return _flat(re.sub(r"(?m)^> ?", "", text))
 
 
-def test_the_remote_consent_is_reachable_under_the_order_the_paste_sets():
-    """The half of the same finding that is not cosmetic.
+def test_the_main_flow_carries_no_security_readout():
+    """Dave's rubric (2026-09-11): every security-flavoured thing belongs in the
+    security readout, and nothing of that kind appears anywhere else. A prospect
+    who skips the security detail is choosing to skip it.
 
-    The remote disclosure once hung off a pre-consent summary the paste ran
-    BEFORE listing the servers, so the consent was specified for a moment at
-    which no row existed and it could never be reached. The summary is gone
-    (2026-09-04) and the disclosure now hangs off the pick itself, which is the
-    fix rather than a consequence of the rewrite: this pins the window it has to
-    land in — after the row exists, before the config is written — and the three
-    facts it carries, not the order of the forks around it.
-    """
-    doc = _flat(_claude_md())
-    # One sentence now carries both halves of the window: "if they picked" is
-    # after the row exists, "before `setup` runs" is before the edit.
-    assert "If they picked a remote server, say three things before `setup` runs" in doc, (
-        "the remote consent lost the placement that makes it reachable"
+    The remote paragraph broke that. It said three things "whether or not they
+    asked for the security detail", so a reader who had declined got a security
+    lecture anyway. It is deleted rather than moved: `SECURITY.md` §2 already
+    carries those facts and shows the before-and-after config with the `${VAR}`
+    reference kept, where the paragraph could only assert it. This replaces
+    `test_the_remote_consent_is_reachable_under_the_order_the_paste_sets`, which
+    pinned the paragraph in place."""
+    md = _claude_md()
+    flat = _flat(md)
+    for gone in (
+        "say three things before `setup` runs",
+        "whether or not they asked for the security detail",
+        "`receipt` on the first day",
+    ):
+        assert gone not in flat, f"the three-things paragraph is back: {gone!r}"
+    # The main flow is everything from finding out where you are onward, less
+    # the one section that IS the readout.
+    start = md.index("## Start by finding out where you are")
+    readout = md.index("## If they asked for the security detail")
+    setting_up = md.index("## Setting up")
+    assert start < readout < setting_up, "the doc's sections moved; re-cut the main flow"
+    main = _flat(md[start:readout] + md[setting_up:]).lower()
+    for fact in ("bearer token", "${var}"):
+        assert fact not in main, f"the main flow mentions {fact!r}, which belongs in the readout"
+    # And the readout still carries what the paragraph pointed to, or deleting it
+    # lost them rather than moving them to where they already were.
+    sec = (KIT_PATH.parent / "SECURITY.md").read_text(encoding="utf-8")
+    section = sec[sec.index("## 2. What changes") : sec.index("## 3. What your agent sees")]
+    assert "bearer token" in _flat(section) and "${" in section, (
+        "SECURITY.md §2 no longer carries the facts the deleted paragraph pointed to"
     )
-    # The three facts, absorbed 2026-09-04 from the bound test that used to
-    # hold them. The bound is gone; the facts are the part that was never
-    # about formatting.
-    for fact in ("bearer token", "${VAR}", "`receipt` on the first day"):
-        assert fact in doc, f"the remote section lost a fact while being reshaped: {fact!r}"
 
 
 def test_the_prompt_hands_the_agent_the_doc_it_will_run_from():

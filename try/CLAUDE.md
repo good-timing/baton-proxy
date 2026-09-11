@@ -106,25 +106,26 @@ not relay the placeholder:
 This is not a fallback. Someone deciding whether to let a tool touch their
 client's config is better served running that edit themselves.
 
+Once a kit command has been refused, do not attempt the config commands again
+for the rest of the trial. Those are `setup`, with or without a server name,
+and `uninstall`: hand each remaining one over the same way, as a `!` line with
+the real path filled in, without trying it first. `receipt` never changes the
+config: it reads the kit's own state and event files and, once a wrap is in
+place, reads the config to check the wrap is still there. Keep running it
+yourself in every mode.
+
 **1. Find the server.** Run `python3 kit.py setup` with no arguments. It lists
-the servers it can wrap, and any it cannot and why, from `~/.claude.json`; for
-a project-local `.mcp.json`, ask for the path and pass `--config-file <path>`
-to `setup` only. Show the list and ask which one they want; the trial is worth
-most on a server they use daily. If the list is empty, say so and stop.
+the servers it can wrap, and any it cannot and why, from `~/.claude.json`. Show
+the list and ask which one they want; the trial is worth most on a server they
+use daily. A project-local `.mcp.json` is one more option in that chooser, not
+a sentence above it: if they pick it, ask for the path and pass
+`--config-file <path>` to `setup` only. If the list is empty, say so and stop.
 
 Each offered row is marked `stdio` or `remote`. A remote server is offered
 only when its single `Authorization: Bearer` header holds a token written in
 the config; the wrap turns it into a local process bridging to the same
 endpoint. Do not argue an entry past a refusal; each one exists because the
 wrap would produce a server that cannot authenticate.
-
-**If they picked a remote server, say three things before `setup` runs**,
-whether or not they asked for the security detail: after the wrap a process of
-ours runs on their machine, holding their bearer token and sending it only to
-the endpoint their config named; the kit copies the token as a `${VAR}`
-reference without resolving it, which relies on their client expanding it
-inside `env`; and they should run `receipt` on the first day, because an empty
-file is how a broken wrap gets found early. `SECURITY.md` §2 has it in writing.
 
 **2. Run it.** `python3 kit.py setup <name>`. Paste the printed entry into your
 reply, in a code block: tool output is folded and the person will not see it

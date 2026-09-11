@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 
+## [0.6.4] — 2026-09-11
+
+### Changed
+
+- **The main flow no longer delivers a security readout to someone who declined one.** `try/CLAUDE.md` had the agent say three things before wrapping a remote server "whether or not they asked for the security detail": that a process of ours holds their bearer token, that the token is copied as a `${VAR}` reference their client has to expand, and that they should run `receipt` on the first day. The paragraph is deleted, not moved. `SECURITY.md` §2 already carries the first two, shows the before-and-after config with the reference kept rather than asserting it, and reaches anyone who asks for the security detail in full. The day-one receipt line has no new home: the ending already runs `receipt` and says what was captured or that nothing was, so checking early was the same check handed to the person with less information, phrased as a warning that the wrap may not work. The test that pinned the paragraph is deleted; its replacement holds that the paragraph is gone, that the main flow names neither the bearer token nor the `${VAR}` reference, and that §2 still does.
+
+- **A refusal now carries over.** The refusal instruction from 0.6.2 handled each refused command on its own, so an auto-mode reader met the classifier's denial text once per config command: the listing, the wrap, and later the uninstall. Once a kit command has been refused, the agent now stops attempting `setup`, with or without a server name, and `uninstall` for the rest of the trial, and hands each one over as a `!` line without trying it first. It still tries the first one, because the model cannot see its permission mode and a refusal is the only signal it gets; in manual mode that first attempt is a prompt with a "don't ask again" option, which never trying would replace with a paste on every command. `receipt` stays with the agent in every mode: it never changes the config, and reads it only to check that the wrap is still there.
+
+- **Step 1 offers a project `.mcp.json` once.** It was named in the prose and again as an option in the chooser, and in a real run the agent relayed both, one under the other. It is now an option in the chooser only. `--config-file <path>` and its setup-only rule are unchanged.
+
+
 ## [0.6.3] — 2026-09-11
 
 ### Changed
