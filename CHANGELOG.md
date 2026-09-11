@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+
+## [0.6.1] — 2026-09-11
+
 ### Changed
 
 - **A caller can no longer assert its own runtime.** `detect_agent_runtime` honoured `_meta.baton.agent_runtime` and ranked it ABOVE the `claudecode/*` heuristic, on the reasoning that a client naming itself beats our guess about its key names. That reasoning is what fell: `agent_runtime` is self-reported and never attested, so the override let the thing being measured pick its own label. The SDK donor removed it in both spellings (nested at B5, reverse-DNS `io.baton/*` on 2026-09-09; SPEC §5.2 now reads "Recognized keys: none") and **this copy had not followed, so two sensors watching one client disagreed about what it was** — the single failure a hand-maintained cross-repo copy exists to prevent. Following meant DELETING the read, not adopting the new key name. The value is still carried: `runtime_meta` forwards `_meta` verbatim, so a client that sends one still reaches the Console as data to group on downstream.
