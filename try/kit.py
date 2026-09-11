@@ -118,7 +118,7 @@ SETUP_URL = "https://baton.goodtiming.ai/setup/proxy"
 # it equal to `baton_proxy.__version__`. Editing the paste breaks the hash;
 # re-pinning the hash without bumping the version breaks the pair. The release
 # then carries a version the console can be updated to and named by.
-PASTE_VERSION = "0.6.2"
+PASTE_VERSION = "0.6.3"
 PASTE_SHA256 = "75642ff310726a50b5587121dc49fbd8ba9505cfccfff081a23fb1271a04e1f0"
 
 

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+
+## [0.6.3] — 2026-09-11
+
 ### Changed
 
 - The agent-facing instructions name the proxy for what it does, name the missing-tool case, and give the agent a reason to file.
