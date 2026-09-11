@@ -916,6 +916,45 @@ def test_state_file_mode_is_fixed_even_when_it_already_exists(tmp_path, monkeypa
     assert stale.stat().st_mode & 0o077 == 0
 
 
+def test_backup_is_not_world_readable_when_the_config_is(tmp_path):
+    """The backup is the whole config verbatim, every env block included. It was
+    `shutil.copy2`, which copies the SOURCE's mode, so a 0644 config made a 0644
+    backup while SECURITY.md §2 and §7 said 0600."""
+    source = tmp_path / "claude.json"
+    source.write_text('{"mcpServers": {"s": {"env": {"TOKEN": "s3cret"}}}}', encoding="utf-8")
+    source.chmod(0o644)
+    backup = tmp_path / "config-backup.json"
+    kit.write_backup(source, backup)
+    assert backup.stat().st_mode & 0o777 == 0o600, "group/other can read the token"
+    assert backup.read_bytes() == source.read_bytes(), "the backup is no longer a verbatim copy"
+
+
+def test_backup_mode_is_fixed_even_when_the_file_already_exists(tmp_path):
+    """os.open sets the mode only on CREATE. The name is stamped to the second,
+    so a second setup inside that second writes into the first one's file."""
+    source = tmp_path / "claude.json"
+    source.write_text("{}", encoding="utf-8")
+    stale = tmp_path / "config-backup.json"
+    stale.write_text("old", encoding="utf-8")
+    stale.chmod(0o644)
+    kit.write_backup(source, stale)
+    assert stale.stat().st_mode & 0o777 == 0o600
+    assert stale.read_text(encoding="utf-8") == "{}"
+
+
+def test_setup_writes_its_backup_0600_from_a_0644_config(tmp_path, kit_home, capsys):
+    """The two above prove nothing if setup stops calling the helper. This is
+    the path SECURITY.md describes, driven from a config other users can read."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    path.chmod(0o644)
+    before = path.read_bytes()
+    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    (backup,) = kit_home.glob("config-backup.*.json")
+    assert backup.stat().st_mode & 0o777 == 0o600
+    assert backup.read_bytes() == before
+    assert path.stat().st_mode & 0o777 == 0o644, "§2: the config keeps its own mode"
+
+
 def test_a_literal_env_value_is_never_printed():
     entry = {"command": "npx", "args": ["-y", "srv"], "env": {"SNOWFLAKE_PAT": "xoxb-REAL-TOKEN"}}
     out = kit.entry_json(entry)
@@ -5117,4 +5156,51 @@ def test_security_md_says_the_bridge_does_not_hold_the_server_stream():
     ), "§2's remote section never says what the bridge leaves behind"
     assert "does not open the standing GET SSE channel" in doc, (
         "§5 stopped saying why server-initiated messages are missing"
+    )
+
+
+def test_security_md_names_the_headers_that_announce_the_proxy():
+    """A remote wrap sends the upstream two headers that say a proxy is there,
+    and a request the upstream never saw before the wrap is a change on the wire
+    that §2 exists to list. Read off the headers the bridge builds, not a copy
+    of them: a renamed `Via` or a new identifying header fails here first."""
+    from baton_proxy import USER_AGENT, __version__
+    from baton_proxy.transport_http import StreamableHttpClient
+
+    headers = StreamableHttpClient("https://example.invalid/mcp")._headers(is_initialize=True)
+    named = {k: v for k, v in headers.items() if "baton-proxy" in v}
+    assert set(named) == {"User-Agent", "Via"}, f"headers naming the proxy: {named}"
+    assert named["User-Agent"] == USER_AGENT
+
+    doc = _flat((KIT_PATH.parent / "SECURITY.md").read_text(encoding="utf-8"))
+    section = doc[
+        doc.index("### Remote entries, specifically") : doc.index("## 3. What your agent")
+    ]
+    shown = {"User-Agent": USER_AGENT.replace(__version__, "<version>"), "Via": named["Via"]}
+    for name, value in shown.items():
+        assert f"`{name}: {value}`" in section, f"§2's remote section never names {name}"
+    assert "A stdio wrap sends neither" in section, "§2 does not say which path sends them"
+
+
+def test_security_md_scopes_stderr_to_what_actually_goes_there():
+    """§7 said events are not mirrored to stderr, which is true and narrower than
+    it reads: the proxy's status lines go there on every wrap, unscrubbed, and
+    the client may keep them. Pinned on the mechanism each sentence names, so the
+    prose moves when the code does."""
+    import inspect
+
+    from baton_proxy import proxy as proxy_mod
+    from baton_proxy.config import DEFAULT_EVENT_SINK
+    from baton_proxy.transport_http import _safe_read_snippet
+
+    limit = inspect.signature(_safe_read_snippet).parameters["limit"].default
+    assert "logging.StreamHandler(sys.stderr)" in inspect.getsource(proxy_mod._configure_logging)
+
+    doc = _flat((KIT_PATH.parent / "SECURITY.md").read_text(encoding="utf-8"))
+    section = doc[doc.index("## 7. Where the data lives") : doc.index("## 8. Provenance")]
+    assert f"the default is `{DEFAULT_EVENT_SINK}`" in section, "§7 misquotes the proxy's default"
+    assert "that is the kit's doing" in section, "§7 credits the proxy with the kit's property"
+    assert "Status lines do go to stderr, and the scrubber never sees them" in section
+    assert f"the first {limit} bytes of the response body" in section, (
+        f"§7's error-body size no longer matches `_safe_read_snippet` ({limit})"
     )

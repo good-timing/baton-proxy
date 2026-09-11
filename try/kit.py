@@ -1375,6 +1375,24 @@ def write_state_file(state: dict) -> None:
     os.chmod(STATE_PATH, 0o600)
 
 
+def write_backup(source: Path, backup: Path) -> None:
+    """Copy the whole config to ``backup`` at 0600, whatever the source's mode.
+
+    This was ``shutil.copy2``, which copies the SOURCE's mode: a
+    ``~/.claude.json`` at 0644 made a 0644 backup, and the backup is a verbatim
+    copy of every server's env block, literal secrets included. SECURITY.md §2
+    and §7 promise 0600, and a reviewer reads that promise, not this function.
+
+    Same ordering as ``write_atomically``: the mode is 0600 before the first
+    byte goes in. The ``fchmod`` is not redundant: ``os.open``'s mode applies
+    only when it creates, and the umask can narrow it."""
+    fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as dst:
+        os.fchmod(dst.fileno(), 0o600)
+        with open(source, "rb") as src:
+            shutil.copyfileobj(src, dst)
+
+
 def restored_matches_on_disk(path: Path, state: dict) -> bool:
     """Re-read the config and compare the entry to what setup recorded.
 
@@ -1542,7 +1560,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     # than MCP servers, and a bad write on a machine we will never see is
     # unrecoverable for us. The backup is evidence; uninstall does not read it.
     backup = TRY_DIR / f"config-backup.{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
-    shutil.copy2(path, backup)
+    write_backup(path, backup)
 
     write_atomically(path, new_text)
     write_state_file(state)

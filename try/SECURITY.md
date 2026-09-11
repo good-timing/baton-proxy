@@ -167,6 +167,19 @@ authenticate when it next starts. If the token in your entry is a literal, it is
 copied across as is, and also into `try/state.json`, which is why that file is
 `0600`.
 
+The upstream sees the proxy's request headers, not your client's, and two of
+them name the proxy. `User-Agent: baton-proxy/<version>` says which software
+sent the request, where `<version>` is the one in `src/baton_proxy/__init__.py`.
+urllib's default agent, `Python-urllib/<version>`, is refused by Cloudflare's
+bot filter, which sits in front of hosted MCP servers such as Notion's, so
+without a named agent the request is turned away before it reaches the server's
+own authentication. `Via: 1.1 baton-proxy` is the header HTTP defines for an
+intermediary (RFC 9110 §7.6.3). The two answer different questions: the user
+agent says who sent the request, and `Via` says a proxy sits in the path. Both
+go on every request the bridge sends (`transport_http.py`,
+`StreamableHttpClient._headers`). A stdio wrap sends neither, because it makes
+no HTTP request.
+
 The bridge carries the client-initiated request/response loop only, so
 server-initiated messages (sampling, elicitation, notifications) are not carried
 by it and are not captured; tool calls and results are.
@@ -264,7 +277,8 @@ capture stays on your disk either way.
 One qualification, only if you wrapped a remote entry: that server's traffic was
 already leaving your machine, because your client was dialling the endpoint
 itself. It still goes to the same endpoint with the same token. What changes is
-which process opens the connection. No new destination is introduced.
+which process opens the connection, and the two headers that name it (§2). No
+new destination is introduced.
 
 The proxy contains code that can open a network connection or start a process,
 because the same source serves production deployments. Here is the complete
@@ -274,7 +288,7 @@ list, five call sites. All five are the proxy's; the kit contributes none.
 |---|---|---|---|
 | 1 | `sinks.py` · `HttpSink.write` | POSTs events to `{url}/v0/events` | Built only when `BATON_EVENT_SINK` is an `http(s)://` URL. The try config sets a `file://` URL. It also raises at startup without `BATON_API_KEY`, which the try config does not set. |
 | 2 | `sinks.py` · `S3Sink` | PUTs one object per event to an S3 bucket | Built only for an `s3://` sink. Requires `boto3`, an optional extra this package does not install (`dependencies = []`). |
-| 3 | `transport_http.py` · `StreamableHttpClient.post` | Speaks MCP over HTTPS to an upstream server | Only in `--url` mode. For a stdio wrap this is unreachable. For a remote wrap it is the path in use, and it connects to the URL your own config already named. Never to us. |
+| 3 | `transport_http.py` · `StreamableHttpClient.post` | Speaks MCP over HTTPS to an upstream server, with `User-Agent` and `Via` headers that name the proxy (§2) | Only in `--url` mode. For a stdio wrap this is unreachable. For a remote wrap it is the path in use, and it connects to the URL your own config already named. Never to us. |
 | 4 | `proxy.py` · `subprocess.Popen` | Starts the upstream MCP server | Runs exactly the command your config already contained. Not reached for a remote wrap. |
 | 5 | `scan.py` · `subprocess.run` | Runs `claude -p` headlessly for a preflight report | Only under the `baton-proxy scan` subcommand. The try flow never invokes it. |
 
@@ -399,9 +413,27 @@ delete it.
   value to disk. `uninstall` deletes it once the restore is verified.
 - **`try/config-backup.<timestamp>.json`** is the whole config file as it was
   before setup, `0600`. Evidence, never the source of the restore.
-- The proxy's default sink also mirrors events to stderr, which a client may
-  capture into its own logs. The try configuration sets `BATON_EVENT_SINK` to
-  the file only, so this does not apply unless you hand-edit the sink.
+- **Events do not go to stderr, and that is the kit's doing.** The proxy's
+  default sink also mirrors events to stderr, which a client may capture into
+  its own logs: the default is `stderr:,file:///tmp/baton-proxy.jsonl`
+  (`config.py`, `DEFAULT_EVENT_SINK`). The try configuration sets
+  `BATON_EVENT_SINK` to the file only, so this does not apply unless you
+  hand-edit the sink. The kit writes that value into the entry
+  (`kit.py`, `build_wrapped_entry`); a proxy started without it mirrors every
+  event to stderr.
+- **Status lines do go to stderr, and the scrubber never sees them.** The proxy
+  logs its own status and errors to stderr on every wrap, stdio and remote
+  (`proxy.py`, `_configure_logging`). Your client holds the other end of that
+  stream and may keep what arrives in its own logs, outside this checkout and
+  outside everything else this section lists, so deleting the checkout does not
+  remove them. The scrubber runs on event payloads only (`emitter.py`), and
+  these lines are written as they are. The startup line carries the full
+  command of a stdio server, arguments included, so a credential passed as an
+  argument (§2) is in it; for a remote server it carries the full URL, and says
+  whether a bearer token is present without printing it. When a remote request
+  fails with an HTTP error, the line it logs carries the status code and the
+  first 500 bytes of the response body (`transport_http.py`,
+  `_safe_read_snippet`).
 
 **To remove the kit at any point, including mid-trial:** run
 `python3 kit.py uninstall`, which restores the recorded entry, prints it, and
