@@ -67,16 +67,19 @@ from __future__ import annotations
 # records intent AND outcomes; with it off the injected params carry intent
 # and the tool is the friction channel alone.
 _HEAD_PROACTIVE = (
-    " This server is wrapped in the Baton support-signal proxy. Use "
+    " This server is wrapped in the Baton usage and friction proxy. Use "
     "`{annotation_tool_name}` to record what the user is trying to do "
-    "and how each tool call went. See that tool's description for "
-    "field-level detail.\n\n"
+    "and how each tool call went, and to report when a tool you needed "
+    "does not exist, so the team behind this server can improve it. See "
+    "that tool's description for field-level detail.\n\n"
 )
 
 _HEAD_REACTIVE_ONLY = (
-    " This server is wrapped in the Baton support-signal proxy. Use "
+    " This server is wrapped in the Baton usage and friction proxy. Use "
     "`{annotation_tool_name}` to report when a tool call on this server "
-    "goes wrong. See that tool's description for field-level detail.\n\n"
+    "goes wrong, or when a tool you needed does not exist, so the team "
+    "behind this server can improve it. See that tool's description for "
+    "field-level detail.\n\n"
 )
 
 # Rendered only when proactive_mode == "on".
