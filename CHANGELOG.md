@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 
+## [0.6.6] — 2026-09-12
+
+### Changed
+
+- **The paste tells the agent to hand over a command it cannot run, not to propose a setting change.** At the clone step the agent has only the paste, because `try/CLAUDE.md` is inside the repo it has not cloned yet, so every rule about handling a refusal was out of reach at the first refusal a prospect sees. In a harness run on 0.6.5, an agent met that refusal by offering to change the person's permission settings. The clone paragraph of the paste now ends: "If you can't run something, don't tell me to change a setting. Give me the command and I'll run it myself." The paste's pin moves with it: `PASTE_SHA256` is the new text's, and `PASTE_VERSION` is 0.6.6.
+
+- **Every `!` hand-over carries the instruction to copy and paste it.** 0.6.5 added the instruction to the first hand-over after a refusal, then had the agent hand each remaining command over "the same way". In a harness run the agent read that as the `!` format alone, and a later hand-over went out without the instruction to copy the line. The refusal rule in `try/CLAUDE.md` now says every hand-over carries the instruction to copy the line and paste it, not only the first one, and the test on that paragraph pins the sentence.
+
+- **`uninstall` says what the backups it leaves behind hold.** It listed the leftover `config-backup.*.json` files under "Deliberately left in place, for you to read or delete:", which says they are there and not what is in them. Each is a verbatim copy of the whole config, every server's `env` block with any literal credentials in it, so someone who uninstalled believing the tool was gone still had them on disk. The header now reads "Deliberately left in place. `config-backup.*` is a full copy of your config, every server's credentials included:". Nothing else changed: the backups stay where they are as evidence, and `uninstall` still deletes only `state.json`, and only once the restore verifies. A test pins the header and that behaviour together.
+
+### Fixed
+
+- **The config backup is created `0600` whatever the source's mode.** It was made with `shutil.copy2`, which copies the source file's mode, so a `~/.claude.json` at `0644` produced a world-readable backup holding a verbatim copy of every server's `env` block. `try/SECURITY.md` §2 and §7 both said the backup is `0600`. The backup is now opened `0600` and set to `0600` before the first byte is written, the same ordering the config write already uses. Three tests pin it: from a `0644` source, into a file that already exists, and through `setup` end to end.
+
+- **`try/SECURITY.md` now covers what a remote wrap sends and what reaches stderr.** §2 and §4 disclose the two headers the bridge adds to every request to a remote server, `User-Agent: baton-proxy/<version>` and `Via: 1.1 baton-proxy`; a stdio wrap sends neither. §7 said captured events are not mirrored to stderr, which is true because the kit writes a file-only sink rather than because of the proxy's default, and it said nothing about the proxy's own status lines. Those go to stderr on every wrap, unscrubbed, where the client may keep them, and they can carry the full launch command or remote URL and the first 500 bytes of an HTTP error body. §7 now says both. Two tests tie these statements to the code: the headers are read off the bridge, and the default sink and the byte count are read from the source.
+
+- **`try/SECURITY.md` stops calling `state.json` the one file holding a literal `env` value.** The backup holds the same values. Beside "`uninstall` deletes it", the old sentence told a reviewer that uninstalling removed their last copy of their credentials. §7 now names both files, and §5 names the backup among the places a literal upstream token is written.
+
+
 ## [0.6.5] — 2026-09-11
 
 ### Changed
