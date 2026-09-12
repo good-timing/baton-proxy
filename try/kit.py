@@ -1798,7 +1798,10 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     for b in sorted(TRY_DIR.glob("config-backup.*.json")):
         left.append(f"  {b}")
     if left:
-        print("\nDeliberately left in place, for you to read or delete:")
+        print(
+            "\nDeliberately left in place. `config-backup.*` is a full copy of your config, "
+            "every server's credentials included:"
+        )
         print("\n".join(left))
     print()
     print(checkout_note(verified))

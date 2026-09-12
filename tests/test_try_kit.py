@@ -3779,6 +3779,29 @@ def test_uninstall_names_the_checkout_and_says_nothing_was_installed(tmp_path, k
     assert "deleting that folder removes all of it" in out
 
 
+def test_uninstall_says_what_the_backups_it_leaves_behind_hold(tmp_path, kit_home, capsys):
+    """A security review of our own documents found the leftover list said the
+    backups were there and not what was in them: a verbatim copy of the whole
+    config, literal credentials included. The decision was to keep them, as
+    evidence of a write we cannot see, and make the header honest. So this pins
+    the words and the behaviour together: the backup is named under the header
+    and is still on disk, and `state.json` is deleted exactly as before."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    capsys.readouterr()
+    (backup,) = kit_home.glob("config-backup.*.json")
+    assert kit.main(["uninstall"]) == 0
+    out, _err = capsys.readouterr()
+    header = (
+        "Deliberately left in place. `config-backup.*` is a full copy of your config, "
+        "every server's credentials included:"
+    )
+    assert header in out, f"the leftover list does not say what the backups hold:\n{out}"
+    assert out.index(header) < out.index(str(backup)), "the backup is not listed under the header"
+    assert backup.exists(), "uninstall deleted the backup; the decision was to keep it"
+    assert not (kit_home / "state.json").exists(), "uninstall stopped deleting state.json"
+
+
 def test_the_unverified_branch_does_not_tell_you_to_delete_the_record(
     tmp_path, kit_home, capsys, monkeypatch
 ):
