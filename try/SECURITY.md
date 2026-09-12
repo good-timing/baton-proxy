@@ -170,15 +170,10 @@ copied across as is, and also into `try/state.json`, which is why that file is
 The upstream sees the proxy's request headers, not your client's, and two of
 them name the proxy. `User-Agent: baton-proxy/<version>` says which software
 sent the request, where `<version>` is the one in `src/baton_proxy/__init__.py`.
-urllib's default agent, `Python-urllib/<version>`, is refused by Cloudflare's
-bot filter, which sits in front of hosted MCP servers such as Notion's, so
-without a named agent the request is turned away before it reaches the server's
-own authentication. `Via: 1.1 baton-proxy` is the header HTTP defines for an
-intermediary (RFC 9110 §7.6.3). The two answer different questions: the user
-agent says who sent the request, and `Via` says a proxy sits in the path. Both
-go on every request the bridge sends (`transport_http.py`,
-`StreamableHttpClient._headers`). A stdio wrap sends neither, because it makes
-no HTTP request.
+`Via: 1.1 baton-proxy` is the header HTTP defines for an intermediary
+(RFC 9110 §7.6.3). Both go on every request the bridge sends
+(`transport_http.py`, `StreamableHttpClient._headers`). A stdio wrap sends
+neither, because it makes no HTTP request.
 
 The bridge carries the client-initiated request/response loop only, so
 server-initiated messages (sampling, elicitation, notifications) are not carried
