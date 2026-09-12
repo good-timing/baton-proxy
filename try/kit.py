@@ -119,7 +119,7 @@ SETUP_URL = "https://baton.goodtiming.ai/setup/proxy"
 # re-pinning the hash without bumping the version breaks the pair. The release
 # then carries a version the console can be updated to and named by.
 PASTE_VERSION = "0.6.5"
-PASTE_SHA256 = "75642ff310726a50b5587121dc49fbd8ba9505cfccfff081a23fb1271a04e1f0"
+PASTE_SHA256 = "4c578b276eb2826af46d46da4a56502b46d668b66d896e5bbf7a5dc19cea322c"
 
 
 # Setup is the last thing that speaks before the kit goes quiet. Once they walk
