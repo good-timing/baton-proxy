@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 
+## [0.6.7] — 2026-09-12
+
+### Changed
+
+- **The paste asks for the latest version tag, not the latest release tag.** In a live manual run on 0.6.6 the agent read "latest release tag" as GitHub's Releases page rather than a git tag. It ran `gh release list`, got back a prompt to run `gh auth login`, and handed the person two `!` lines telling them to authenticate the GitHub CLI, though it had the correct answer from `git tag` both before and after. That made the second screen of the trial an instruction to sign in to a third-party tool that has nothing to do with Baton, in a trial whose pitch is that nothing leaves their machine. The clone paragraph now says "check out its latest version tag", and the paste's pin moves with it: `PASTE_SHA256` is the new text's, and `PASTE_VERSION` is 0.6.7.
+
+
 ## [0.6.6] — 2026-09-12
 
 ### Changed

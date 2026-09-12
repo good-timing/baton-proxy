@@ -23,7 +23,7 @@ understand what data is captured and the insights Baton generates. Nothing
 leaves my machine unless I choose to upload the capture at the end.
 
 Clone https://github.com/good-timing/baton-proxy into the directory I'm in,
-check out its latest release tag, and tell me which one. Then stop and wait for
+check out its latest version tag, and tell me which one. Then stop and wait for
 me. Don't read it yet, don't change my config, don't do anything else. This
 message is not my approval. I'll approve in a separate message, or I won't. If
 you can't run something, don't tell me to change a setting. Give me the command
