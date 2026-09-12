@@ -111,12 +111,14 @@ client's config is better served running that edit themselves.
 Once a kit command has been refused, do not attempt the config commands again
 for the rest of the trial. Those are `setup`, with or without a server name,
 and `uninstall`: hand each remaining one over the same way, as a `!` line with
-the real path filled in, without trying it first. `receipt` never changes the
-config: it reads the kit's own state and event files and, once a wrap is in
-place, reads the config to check the wrap is still there. That read is enough
-to be refused, so once a wrap is in place hand `receipt` over the same way too,
-as a command that reads their config rather than edits it. While no wrap is in
-place it touches no config, so keep running it yourself.
+the real path filled in, without trying it first. Every hand-over carries the
+instruction to copy the line and paste it, not only the first one. `receipt`
+never changes the config: it reads the kit's own state and event files and,
+once a wrap is in place, reads the config to check the wrap is still there.
+That read is enough to be refused, so once a wrap is in place hand `receipt`
+over the same way too, as a command that reads their config rather than edits
+it. While no wrap is in place it touches no config, so keep running it
+yourself.
 
 **1. Find the server.** Run `python3 kit.py setup` with no arguments. It lists
 the servers it can wrap, and any it cannot and why, from `~/.claude.json`. Show

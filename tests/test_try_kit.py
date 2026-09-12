@@ -4485,6 +4485,12 @@ def test_claude_md_makes_a_refusal_stick_for_the_config_commands():
         "the rule does not name exactly the commands that touch the config"
     )
     assert "without trying it first" in rule, "the remaining commands are still attempted"
+    # "The same way" was read as the `!` format alone, and the repeats went out
+    # bare. The instruction is named so it cannot be read out of the back-reference.
+    assert (
+        "Every hand-over carries the instruction to copy the line and paste it, "
+        "not only the first one." in rule
+    ), "the copy-and-paste instruction is tied to the first hand-over only"
     assert "`receipt` never changes the config" in rule, (
         "the rule no longer says receipt only reads, which is why it is not always handed over"
     )
