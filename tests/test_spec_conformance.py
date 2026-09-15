@@ -26,6 +26,10 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from baton_proxy.config import Config
+from baton_proxy.emitter import Emitter
+from baton_proxy.identity import HASH_SCHEME, Principal
+
 HERE = Path(__file__).parent
 REPO = HERE.parent
 FIXTURE = HERE / "fixture_server.py"
@@ -120,7 +124,7 @@ def event_schema() -> dict:
     return json.loads(SCHEMA_PATH.read_text())
 
 
-def test_emitted_events_conform_to_shared_schema(event_schema: dict) -> None:
+def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: Path) -> None:
     events = _run_stdio()
     covered = [e for e in events if e["event_type"] in SCHEMA_COVERED_EVENT_TYPES]
     assert covered, "scenario produced no schema-covered events — check the fixture/scenario"
@@ -133,6 +137,32 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict) -> None:
         f"scenario didn't exercise every schema-covered type, missing: "
         f"{SCHEMA_COVERED_EVENT_TYPES - seen_types}"
     )
+
+    # The stdio scenario resolves no principal, so ``principal_id`` never
+    # reaches the loop above. Drive the emitter with one and an HMAC key, as
+    # baton-extmcp does, and validate the hashed event it writes. Kept in this
+    # test rather than a third one: try/SECURITY.md §8 counts the two tests
+    # that skip without the submodule, and test_try_kit.py pins that count.
+    sink = tmp_path / "events.jsonl"
+    config = Config(
+        session_id="conformance-session",
+        event_sink=f"file://{sink}",
+        tenant_id="conformance",
+        api_key=None,
+        consent_token="ct_conformance",
+        vendor_id="conformance-vendor",
+        log_file=None,
+        principal_id_hmac_key=b"conformance-key",
+    )
+    emitter = Emitter(config)
+    emitter.start()
+    emitter.enqueue_tool_call_start(
+        tool_name="echo", params={}, principal=Principal(principal_id="u123")
+    )
+    emitter.stop()
+    event = json.loads(sink.read_text().splitlines()[-1])
+    assert event["principal_id"].startswith(f"{HASH_SCHEME}:")
+    jsonschema.validate(event, event_schema)
 
 
 def test_vectors_still_conform_to_the_schema_shipped_alongside_them(event_schema: dict) -> None:
