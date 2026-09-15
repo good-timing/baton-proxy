@@ -212,13 +212,13 @@ class Config:
     # this field being populated and the bootstrap emitting it.
     startup_warnings: tuple[str, ...] = ()
 
-    # Per-tenant secret keying the end-user ``user_id`` HMAC (identity.py).
+    # Per-tenant secret keying the ``principal_id`` HMAC (identity.py).
     # Raw identity is hashed at the edge with this key before an event reaches
-    # any console-bound sink (residency contract). None → user_id capture is
-    # fail-open-skipped (events still emit, just without the actor field);
-    # user_id is additive analytics, never a consent/authz gate. Populated from
-    # BATON_USER_ID_HMAC_KEY (raw UTF-8 secret) by from_env().
-    user_id_hmac_key: bytes | None = None
+    # any console-bound sink (residency contract). None → the field is
+    # fail-open-skipped (events still emit, just without it); it is additive
+    # analytics, never a consent/authz gate. Populated from
+    # BATON_PRINCIPAL_ID_HMAC_KEY (raw UTF-8 secret) by from_env().
+    principal_id_hmac_key: bytes | None = None
 
     @property
     def emission_enabled(self) -> bool:
@@ -285,7 +285,16 @@ class Config:
                 f"BATON_PROACTIVE must be one of {sorted(_PROACTIVE_MODES)}; "
                 f"got {proactive_mode!r}."
             )
-        hmac_key = _env("BATON_USER_ID_HMAC_KEY")
+        hmac_key = _env("BATON_PRINCIPAL_ID_HMAC_KEY")
+        if not hmac_key and _env("BATON_USER_ID_HMAC_KEY"):
+            # Renamed in 0.6.8 with no fallback. Hashed identity fails open, so a
+            # leftover old variable would otherwise just stop producing the field.
+            # The value is never read or logged.
+            warnings.append(
+                "baton-proxy: BATON_USER_ID_HMAC_KEY is set, but it was renamed to "
+                "BATON_PRINCIPAL_ID_HMAC_KEY in 0.6.8 and is no longer read, so "
+                "principal_id is OFF. Set BATON_PRINCIPAL_ID_HMAC_KEY to turn it back on."
+            )
         return cls(
             session_id=str(uuid.uuid4()),
             event_sink=_env("BATON_EVENT_SINK") or DEFAULT_EVENT_SINK,
@@ -296,7 +305,7 @@ class Config:
             tenant_type=tenant_type,
             intent_param_mode=intent_param_mode,
             proactive_mode=proactive_mode,
-            user_id_hmac_key=hmac_key.encode("utf-8") if hmac_key else None,
+            principal_id_hmac_key=hmac_key.encode("utf-8") if hmac_key else None,
             log_file=_env("BATON_PROXY_LOG_FILE"),
             startup_warnings=tuple(warnings),
         )

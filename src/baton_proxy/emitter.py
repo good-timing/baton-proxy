@@ -32,7 +32,7 @@ from typing import Any
 
 from baton_proxy import USER_AGENT as _SDK_VERSION
 from baton_proxy.config import Config
-from baton_proxy.identity import Principal, hash_user_id
+from baton_proxy.identity import Principal, hash_principal_id
 from baton_proxy.scrub import Scrubber
 from baton_proxy.sinks import Sink, make_sink
 
@@ -113,11 +113,11 @@ class _Event:
     agent_runtime: str
     payload: dict[str, Any]
     runtime_meta: dict[str, Any] | None = None
-    # Hashed end-user actor (HMAC-SHA256, per-tenant, hashed at the edge — the
+    # Hashed resolved principal (HMAC-SHA256, per-tenant, hashed at the edge — the
     # raw principal is never emitted). None when no identity resolved or no
     # HMAC key configured. Additive + nullable: omitted from the wire when
     # None, so a v0.4.x console sees byte-identical output.
-    user_id: str | None = None
+    principal_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -135,8 +135,8 @@ class _Event:
         }
         if self.runtime_meta is not None:
             d["runtime_meta"] = self.runtime_meta
-        if self.user_id is not None:
-            d["user_id"] = self.user_id
+        if self.principal_id is not None:
+            d["principal_id"] = self.principal_id
         return d
 
 
@@ -633,25 +633,25 @@ class Emitter:
         if not self._config.emission_enabled or self._thread is None:
             return
 
-        # Hash the end-user principal AT THE EDGE — the console DB is
-        # metadata-only and may only ever see the hash (residency contract). The
-        # raw principal never survives this method. No key configured → fail-open:
-        # drop user_id, keep emitting, warn once (user_id is additive analytics,
-        # never a consent/authz gate).
-        user_id: str | None = None
+        # Hash the principal AT THE EDGE — the console DB is metadata-only and
+        # may only ever see the hash (residency contract). The raw principal
+        # never survives this method. No key configured → fail-open: drop the
+        # field, keep emitting, warn once (it is additive analytics, never a
+        # consent/authz gate).
+        principal_id: str | None = None
         if principal is not None:
-            key = self._config.user_id_hmac_key
+            key = self._config.principal_id_hmac_key
             if key:
-                user_id = hash_user_id(
-                    principal.user_id,
+                principal_id = hash_principal_id(
+                    principal.principal_id,
                     tenant_id=self._config.tenant_id or "",
                     key=key,
                 )
             elif not self._warned_no_hmac_key:
                 self._warned_no_hmac_key = True
                 logger.warning(
-                    "baton-proxy: identity resolved but BATON_USER_ID_HMAC_KEY "
-                    "is unset — dropping user_id (events still emit)"
+                    "baton-proxy: identity resolved but BATON_PRINCIPAL_ID_HMAC_KEY "
+                    "is unset — dropping principal_id (events still emit)"
                 )
 
         # Scrub PII from the payload before anything else touches it. Both
@@ -683,7 +683,7 @@ class Emitter:
             agent_runtime=agent_runtime,
             payload=payload,
             runtime_meta=runtime_meta,
-            user_id=user_id,
+            principal_id=principal_id,
         )
 
         with self._enqueue_lock:

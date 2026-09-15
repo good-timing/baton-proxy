@@ -35,6 +35,8 @@ def _scrub_baton_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "BATON_CONSENT_TOKEN",
         "BATON_VENDOR_ID",
         "BATON_PROXY_LOG_FILE",
+        "BATON_PRINCIPAL_ID_HMAC_KEY",
+        "BATON_USER_ID_HMAC_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -44,6 +46,27 @@ def _set_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     today). Tests that exercise the zero-config UX layer this on top of
     ``_scrub_baton_env`` to model 'no optional env vars set'."""
     monkeypatch.setenv("BATON_VENDOR_ID", "v")
+
+
+@pytest.mark.parametrize("new_env", [None, "new-secret"], ids=["old-name-only", "new-name-set"])
+def test_the_renamed_hmac_env_var_is_never_read_and_warned_about_only_when_it_matters(
+    monkeypatch: pytest.MonkeyPatch, new_env: str | None
+) -> None:
+    """0.6.8 renamed ``BATON_USER_ID_HMAC_KEY`` with no fallback. Hashed identity
+    fails open, so a leftover old variable with nothing in its place is warned
+    about; beside a working key it is not. Its value is never used or logged."""
+    _scrub_baton_env(monkeypatch)
+    monkeypatch.setenv("BATON_USER_ID_HMAC_KEY", "old-secret-value")
+    if new_env:
+        monkeypatch.setenv("BATON_PRINCIPAL_ID_HMAC_KEY", new_env)
+    config = Config.from_env()
+    assert config.principal_id_hmac_key == (new_env.encode() if new_env else None)
+    text = " ".join(config.startup_warnings)
+    warns = new_env is None
+    assert ("BATON_USER_ID_HMAC_KEY" in text) is warns
+    # The part that tells the operator what to do: the name to set instead.
+    assert ("BATON_PRINCIPAL_ID_HMAC_KEY" in text) is warns
+    assert "old-secret-value" not in text
 
 
 def test_from_env_zero_config_uses_multi_sink_defaults(

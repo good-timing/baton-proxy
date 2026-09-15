@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 
+## [0.6.8] — 2026-09-14
+
+### Changed
+
+- ⚠ **BREAKING: `user_id` is now `principal_id`, on the wire and in configuration, with no aliases.** Events carry `principal_id` where they carried `user_id`, and `BATON_USER_ID_HMAC_KEY` is now `BATON_PRINCIPAL_ID_HMAC_KEY`. In Python, `Principal.user_id`, `hash_user_id` and `Config.user_id_hmac_key` are `Principal.principal_id`, `hash_principal_id` and `Config.principal_id_hmac_key`. The value is unchanged: the field name is not part of the HMAC, so every `h1:` hash is byte-identical. The field was documented as a person and as a customer at once, and a gateway's identity is often a service account; a principal is whoever the resolver named, at whatever grain that is. The same change ships in `baton-sdk` 0.8.6 and the TypeScript `@goodtiming/baton-sdk` 0.3.5.
+
+  **What you change.** Rename the environment variable. The old one is not read; if it is set and the new one is not, the proxy logs a startup warning saying so, because hashed identity fails open and would otherwise just stop appearing. A collector must accept `principal_id` before this version sends to it; the hosted Console already does. ⚠ `baton-extmcp` builds `Principal` from this package, so it must move to this version in the same release.
+
+
 ## [0.6.7] — 2026-09-12
 
 ### Changed

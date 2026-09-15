@@ -1,8 +1,8 @@
-"""End-user identity — resolve a raw principal, hash it at the edge.
+"""Principal identity — resolve a raw principal, hash it at the edge.
 
-Baton attaches an end-user actor (``user_id``) to every event so the Console
-can answer "which *customer* hit this" and group by
-``(tenant_id, vendor_id, user_id)``.
+Baton attaches the resolved principal (``principal_id``) to every event so the
+Console can group by ``(tenant_id, vendor_id, principal_id)``, at whatever grain
+the resolver named: a person, a service account or an organisation.
 
 Residency contract: the Console DB is metadata-only and may only ever see the
 HASH — raw identity must never leave the capture edge. So hashing happens HERE,
@@ -11,7 +11,7 @@ survive past ``Emitter._enqueue``.
 
 Two pieces:
 
-- ``hash_user_id`` — the per-tenant HMAC. Reachable by both the proxy and the
+- ``hash_principal_id`` — the per-tenant HMAC. Reachable by both the proxy and the
   gRPC gateway processor (which depends on this package for the shared core).
   Zero new deps (stdlib ``hmac``/``hashlib``/``unicodedata``).
 - ``IdentityResolver`` / ``Principal`` — the per-modality seam. Each capture
@@ -42,16 +42,16 @@ HASH_SCHEME = "h1"
 
 @dataclass(frozen=True)
 class Principal:
-    """A resolved end-user identity, RAW (pre-hash).
+    """A resolved principal, RAW (pre-hash).
 
-    Only ``user_id`` is hashed onto the wire today. ``user_name`` / ``user_data``
+    Only ``principal_id`` is hashed onto the wire today. ``user_name`` / ``user_data``
     are PII confined to the customer-owned payload tier (S3) — they are NOT
     emitted to the console path today and are force-scrubbed out of payloads
     (see scrub ``REDACT_FIELD_NAMES``). They exist here so a resolver can carry
     them once the split-sink payload tier lands, without a shape change.
     """
 
-    user_id: str
+    principal_id: str
     user_name: str | None = None
     user_data: dict[str, Any] | None = None
 
@@ -59,7 +59,7 @@ class Principal:
 class IdentityResolver(Protocol):
     """Turns a modality-native carrier (gRPC headers / FastMCP context /
     host-app callback / process env) into a ``Principal``. Returns ``None`` when
-    no identity is available — the core then skips ``user_id`` (fail-open)."""
+    no identity is available — the core then skips ``principal_id`` (fail-open)."""
 
     def resolve(self, carrier: Any) -> Principal | None: ...
 
@@ -71,10 +71,10 @@ def _canonicalize(raw_principal: str) -> str:
     return unicodedata.normalize("NFC", raw_principal).strip().lower()
 
 
-def hash_user_id(
+def hash_principal_id(
     raw_principal: str, *, tenant_id: str, key: bytes, issuer: str | None = None
 ) -> str:
-    """HMAC-SHA256 a raw principal into a console-safe, per-tenant ``user_id``.
+    """HMAC-SHA256 a raw principal into a console-safe, per-tenant ``principal_id``.
 
     ``tenant_id`` is folded into the HMAC MESSAGE (not just the key) so the same
     principal under two tenants can never collide or be cross-tenant-correlated,
@@ -85,7 +85,7 @@ def hash_user_id(
     supplied, because a ``sub`` is unique only within the provider that minted
     it (RFC 7519 §4.1.2). Two identity providers behind one vendor can hand out
     the same ``sub`` to different people, and without the issuer those two
-    people hash to one ``user_id``.
+    people hash to one ``principal_id``.
 
     ⚠ **``issuer=None`` MUST hash byte-identically to the pre-issuer form**,
     and the append-only message layout below is what guarantees it. Every hash
