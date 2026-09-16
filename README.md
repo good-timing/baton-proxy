@@ -1,6 +1,6 @@
 # baton-proxy
 
-Transparent MCP proxy. Wraps a stdio MCP server as a subprocess, **or** bridges to a remote Streamable-HTTP MCP server (`--url`); injects an annotation tool and two intent parameters into the handshake, and emits friction events to one or more sinks (stderr, a JSONL file, or a Baton Console).
+Transparent MCP proxy. Wraps a stdio MCP server as a subprocess, **or** bridges to a remote Streamable-HTTP MCP server (`--url`); injects an annotation tool and three intent parameters into the handshake, and emits friction events to one or more sinks (stderr, a JSONL file, or a Baton Console).
 
 Zero changes to the underlying MCP server. The proxy *is* the MCP server from Claude's perspective; the real server is either its child process (stdio) or the endpoint it forwards to (`--url`).
 
@@ -17,35 +17,15 @@ Zero changes to the underlying MCP server. The proxy *is* the MCP server from Cl
    └─────────────────┘  └─────────────────┘  └─────────────────┘
 ```
 
-## Trialling Baton inside your company
-
-If someone else has to approve what runs on your machine, start with
-**[`try/SECURITY.md`](try/SECURITY.md)**. It is a review document written to be read
-before anything is cloned, by a reviewer who never talks to us: what changes on your
-machine (one MCP config entry), what gets recorded, what the redaction does and does
-not cover, and how to re-derive every claim here yourself in about a minute.
-
-The trial is the [`try/`](try/) folder — a recipe and a receipt command, not a second
-product. It installs nothing; the proxy is the source you just reviewed, so the code
-you read is the code that runs. Events go to a local JSONL file, and whether that file
-ever leaves your machine is a decision you make at the end.
-
-```bash
-git clone https://github.com/good-timing/baton-proxy
-cd baton-proxy/try && claude
-```
-
-Claude reads the instructions in that folder and walks you through it. Three commands
-do the work — `setup`, `receipt`, `uninstall` — and the last one restores your original
-entry at any point, including immediately.
+**The docs are at [goodtiming.ai/docs.html#proxy](https://goodtiming.ai/docs.html#proxy)**: the full configuration reference, what gets emitted, the intent parameters and the sink ladder. This page is the short version.
 
 ## Quick start
 
-```bash
+```sh
 pipx install baton-proxy  # or: pip install baton-proxy
 ```
 
-`pipx` installs the CLI into its own isolated venv and puts `baton-proxy` on your PATH — so Claude's config can invoke it directly without env activation. Plain `pip install` works if you already manage your own Python env.
+`pipx` installs the CLI into its own isolated venv and puts `baton-proxy` on your PATH — so Claude's config can invoke it directly without env activation. Plain `pip install` works if you already manage your own Python env. Python 3.11+, pure stdlib, no third-party runtime dependencies.
 
 Replace your MCP server entry in Claude's config:
 
@@ -57,214 +37,55 @@ Replace your MCP server entry in Claude's config:
 { "command": "baton-proxy", "args": ["--", "npx", "@vendor/mcp-server"] }
 ```
 
-That's the entire install. Start a new Claude session, drive the wrapped server, then either:
+That's the entire install. Start a new Claude session and drive the wrapped server.
 
-- Ask Claude **"show me the friction report for this session"** — the proxy injects a `baton_session_report` tool that returns a vendor-shareable markdown report directly in the conversation, or
-- `cat /tmp/baton-proxy.jsonl` to see the raw friction events.
+For a remote server, name it with `--url` instead of a command after `--`. The two forms are mutually exclusive, and `BATON_UPSTREAM_AUTH_TOKEN` is sent upstream as a bearer token:
 
-No env vars, no backend, no credentials. The report is a preview of the ticket shape a Baton-instrumented vendor sees in their Console.
-
-To ship events to a Console instead (or in addition), add four env vars:
-
-```jsonc
-{
-  "command": "baton-proxy",
-  "args": ["--", "npx", "@vendor/mcp-server"],
-  "env": {
-    "BATON_EVENT_SINK":    "https://console.example.com",
-    "BATON_TENANT_ID":     "your-tenant",
-    "BATON_API_KEY":       "...",
-    "BATON_CONSENT_TOKEN": "..."
-  }
-}
+```sh
+baton-proxy --url https://mcp.example.com/mcp
 ```
-
-The proxy adds two tools to the upstream server's tool list:
-- `baton_annotate` — Claude calls it (unprompted) when it hits friction; emits an annotation event.
-- `baton_session_report` — Claude calls it (when the customer asks for a report); returns a vendor-shareable markdown summary of the session's friction. **Only injected in local-sink installs** — vendors using an `http(s)://` sink (production mode) get a clean tool list; the vendor's Console renders tickets there instead.
-
-And the proxy emits a friction event per real tool call.
 
 ## Try it in one command: `scan`
 
 Preview the friction an agent is likely to hit on a server you run — no permanent install, no change to your Claude config:
 
-```bash
+```sh
 uvx baton-proxy scan --config github
 ```
 
-`scan` targets a server you've **already configured in Claude** (by name), reusing that entry's saved credentials. It writes an ephemeral config, drives a headless agent (`claude -p`, billed to your own auth) through the wrapped server, and renders `./baton-report.md`. Everything runs locally — nothing leaves your machine, and you type no secrets. The report is labeled **preflight/inferred**: it previews likely friction, it's not real-user data (that's what the permanent wrap above captures).
+`scan` targets a server you've **already configured in Claude** (by name), reusing that entry's saved credentials. It writes an ephemeral config, drives a headless agent (`claude -p`, billed to your own auth) through the wrapped server, and renders `./baton-report.md`. Everything runs locally — nothing leaves your machine, and you type no secrets. The report is labeled **preflight/inferred**: it previews likely friction, it is not real-user data — that is what the permanent wrap above captures.
 
-Why `--config` (and not a raw server command)? A friction report only delivers its insight on a server you actually run — its real tools, its real auth, your real workflows. So scan resolves a configured entry rather than scanning a stranger's server. It reads `--config <name>` from `~/.claude.json` or `./.mcp.json`; point at a specific file with `--config-file`:
+A friction report only delivers its insight on a server you actually run — its real tools, its real auth, your real workflows — which is why `scan` resolves a configured entry rather than scanning a stranger's server. It reads `--config <name>` from `~/.claude.json` or `./.mcp.json`; point at a specific file with `--config-file ./.mcp.json`.
 
-```bash
-uvx baton-proxy scan --config github --config-file ./.mcp.json
-```
+## Where events go
 
-Details:
-- The resolved entry's credentials (its `env`, including `${VAR}` references) flow to the wrapped server untouched.
-- An entry that's already `baton-proxy`-wrapped is unwrapped automatically, and its `BATON_*` vars are dropped so the scan session stays local rather than shipping to your real Console.
-- Remote/OAuth (`http`/`sse`) entries aren't supported yet — scan wraps stdio servers.
-- `--timeout` bounds the run (default 300s; a partial report renders on expiry). `--out` sets the report path.
+`BATON_EVENT_SINK` takes a comma-separated list, and the URL scheme picks the sink: `stderr:` writes JSON Lines to stderr, `file:///tmp/events.jsonl` appends one JSON object per event, and `https://console.example.com` POSTs to `{url}/v0/events`. The default is `stderr:,file:///tmp/baton-proxy.jsonl`, so a bare install writes only to your own machine.
 
-## What gets emitted
+A misconfigured sink fails loudly at startup rather than silently dropping events. The full variable list — timeouts, tenant shape, the upstream token, the intent-parameter mode — is in the [configuration reference](https://goodtiming.ai/docs.html#configuration).
 
-These event types match the [Baton wire format](https://github.com/good-timing/baton/blob/main/docs/SPEC.md):
+## Payload scrubbing
 
-| Event | Payload |
-|---|---|
-| `tool_call_start` | `{tool_name, params, call_intent, call_expected, intent_source}` |
-| `tool_call_end`   | `{tool_name, result, duration_ms}` |
-| `tool_call_error` | `{tool_name, error_type, error_body, duration_ms}` |
-| `annotation` | `{signal_type, intent, expected_outcome, suggested_improvement}` |
-| `surface_snapshot` | serverInfo, capabilities, instructions and the full tool list, hashed over the vendor-true (pre-injection) surface. At most one per session, and only when the hash changes. |
+**On by default.** Tool params, results and error bodies run through the same ruleset the Baton SDK ships: email, `Bearer` values, `sk-*` and `AKIA*` keys, JWTs, phone numbers, Luhn-checked card numbers, plus force-redaction on sensitive field names.
 
-Each event carries a session id (one per proxy process), monotonic sequence number, and the upstream MCP request's `_meta` block (for cycle correlation).
-
-The injected `baton_annotate` tool itself is handled by the proxy; the upstream server never sees it.
-
-### Intent parameters
-
-At `tools/list` the proxy adds two optional string parameters to every upstream
-tool's advertised schema, and strips them at `tools/call` before forwarding. Your
-server receives the arguments it would have received unwrapped.
-
-| Parameter | Captured as |
-|---|---|
-| `user_goal` | `tool_call_start.payload.call_intent` |
-| `expected_result` | `tool_call_start.payload.call_expected`, omitted when the agent did not fill it in |
-
-This is the capture path that survives clients which drop
-`InitializeResult.instructions` entirely (observed on Claude Desktop): a
-parameter description reaches the model at the moment it composes the call.
-`intent_source` records where a captured intent came from, and the session's
-first one also emits a proactive annotation sequenced before its
-`tool_call_start`.
-
-A tool that already declares a parameter of one of those names is left alone for
-that field. Its value is forwarded to the vendor untouched and never read as
-intent. Injection and stripping are fail-open throughout: an error there
-forwards the message unmodified rather than failing the call.
-
-### Payload scrubbing
-
-Every payload passes through `scrub.py` in `Emitter._enqueue` **before it reaches
-any sink**, local file included. It is on by default and there is no env var to
-turn it off.
-
-Redacted by pattern: JWTs, `Bearer` header values, `sk-…` API keys, `AKIA…` AWS
-access key ids, email addresses, North-American-format phone numbers, and 13–19
-digit strings that pass a Luhn check — which catches card numbers and, by
-design, about 1 in 10 other long digit strings, so the `cc` count means
-card-shaped, not card. Redacted by field name regardless of
-value: `email`, `phone`, `ssn`, `api_key`, `token`, `secret`, `password`,
-`user_name`.
-
-What it does **not** do, stated plainly because the distinction matters: it
-targets credentials and personal identifiers, not the substance of the work.
-Query results, table and column names, document text and row contents are
-recorded as your server returned them. Values nested more than ten levels deep
-are passed through untouched (`DEPTH_LIMIT`), and non-string leaves are not
-examined.
-
-Per-category counts are available as `Emitter.scrub_counts`.
-
-## Configuration
-
-All knobs are environment variables. Every emission-related one has a default; the zero-config install (no env vars) writes events to stderr + `/tmp/baton-proxy.jsonl`.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `BATON_EVENT_SINK`    | `stderr:,file:///tmp/baton-proxy.jsonl` | Where events go. URL scheme picks the sink: `https://console.example.com` POSTs to `{url}/v0/events`, `file:///tmp/events.jsonl` appends a JSON line per event, `stderr:` writes JSONL to stderr. Comma-separated values fan out to all of them. |
-| `BATON_TENANT_ID`     | `local` | Tenant identifier. Placeholder; replace when shipping to a Console. |
-| `BATON_CONSENT_TOKEN` | `local` | Per-process consent token. **Placeholder; you MUST replace this before pointing at an `http(s)://` sink** — the proxy refuses to start in that combination, so accidental remote leakage of placeholder-tagged events doesn't happen. |
-| `BATON_API_KEY`       | _(unset)_ | Bearer token. Required only when the sink scheme is `http(s)://`; `file://` and `stderr:` sinks ignore it. |
-| `BATON_VENDOR_ID`     | `local` | Labels the install for the operator (useful for multi-vendor customers grepping their JSONL). Placeholder; **a remote sink refuses to start while it is still `local`**, because the Console buckets friction by vendor and an unset label files rows under a vendor nobody owns. Does NOT prefix the injected tool name — that stays `baton_annotate` in v1. Vendors who need a white-labelled tool name will get an opt-in switch when they ask. |
-| `BATON_UPSTREAM_AUTH_TOKEN` | _(unset)_ | Credential for the `--url` bridge, sent upstream as `Authorization: Bearer`. Ignored by the stdio form, which passes the entry's own `env` to the child instead. |
-| `BATON_TENANT_TYPE`   | `vendor` | Which tenant shape this install ships to. `vendor` sends signal to the wrapped server's vendor Console; `customer` sends it to the end user's own Baton tenant. Also decides whether `baton_session_report` survives alongside an HTTP sink. |
-| `BATON_INTENT_PARAM`  | `required` | Injection mode for the intent parameters. `required` (the default; 0.5.3 shipped `optional`) additionally lists `user_goal` in the schema's advertised `required` set, and its description is labelled `REQUIRED.` to match. That is an advertisement only: nothing validates it, the param is stripped before forwarding, and no call fails for omitting it. Set `optional` to advertise it as optional; `off` is no longer accepted — the way to stop the injection is to stop wrapping. |
-| `BATON_PRINCIPAL_ID_HMAC_KEY` | _(unset)_ | Per-tenant secret keying the `principal_id` hash (named `BATON_USER_ID_HMAC_KEY` before 0.6.8, and no longer read under that name). The raw principal is hashed at the edge, so no sink ever sees it. Unset means `principal_id` is skipped and events still emit; it is additive analytics, never a consent gate. **Generate it with `openssl rand -hex 32`** — the input space is emails and user ids, which is small and guessable, so a memorable key is not a weaker pseudonym, it is none: anyone holding the events can dictionary-attack the column back to raw identities. |
-| `BATON_UPSTREAM_TIMEOUT` | `60` | Read timeout in seconds for the `--url` bridge. A bad value logs a warning and falls back to the default. |
-| `BATON_PROXY_LOG_FILE`| _(unset)_ | Path to tee proxy logs to (default: stderr only). |
-
-### The three rungs
-
-Pick the rung you need; the env-var deltas are the entire difference.
-
-| Rung | Sink | env additions |
-|---|---|---|
-| **1. Default (install-and-play)** | stderr + `/tmp/baton-proxy.jsonl` | _(none)_ |
-| **2. Custom local capture** | wherever you want | `BATON_EVENT_SINK=file:///path/to/your.jsonl` |
-| **3. Ship to a Console** | hosted | `BATON_EVENT_SINK=https://console.example.com` + `BATON_API_KEY=...` + `BATON_TENANT_ID=your-tenant` + `BATON_CONSENT_TOKEN=real-token` + `BATON_VENDOR_ID=your-vendor` |
-
-### See it locally
-
-After installing (`{ "command": "baton-proxy", "args": ["--", "npx", "@vendor/mcp-server"] }` in your Claude config) and starting a new Claude session, drive a few tool calls and try either:
-
-**Conversational** — ask Claude:
-> Show me the friction report for this session.
-
-Claude calls the injected `baton_session_report` tool; the proxy returns a markdown report (per-tool breakdown, errored calls with input/error detail, any annotations the model emitted) that Claude relays directly in the conversation.
-
-**Raw** — inspect the JSONL stream:
-
-```sh
-cat /tmp/baton-proxy.jsonl | jq -c '{type: .event_type, payload}'
-```
-
-See `examples/live-claude-invocation/` for a guided walk-through that also covers the elicitation behaviour of the injected `baton_annotate` tool.
-
-### Sink misconfig fails loudly
-
-The proxy refuses to start when:
-- an `http(s)://` sink is configured but `BATON_API_KEY` is unset
-- an `http(s)://` sink is configured but `BATON_CONSENT_TOKEN` is still the placeholder `"local"`
-- an `http(s)://` sink is configured but `BATON_VENDOR_ID` is still the placeholder `"local"`
-- the sink URL has an unsupported scheme
-
-These are emitted as proxy startup errors so a misconfigured install never silently drops or silently mistags events.
+**It is pattern matching, not a guarantee** — a name and a street address pass through untouched. Decide what your server puts in tool params and results on that basis. [What it does and does not catch](https://goodtiming.ai/docs.html#pii).
 
 ## Trust properties
 
 - **Open source, Apache 2.0.** Auditable end-to-end.
-- **Fail-open.** Console outage, network issue, or instrumentation bug never breaks the MCP pipe. Tested by `tests/test_emitter.py::test_stop_is_clean_when_console_dead` and `tests/test_injection.py`.
-- **Outbound-only.** The proxy never accepts inbound connections. Events go to the configured sink (HTTP POST out for `https://` sinks, local file write for `file://` sinks); that's the only egress surface.
-- **Source-side scrubbing, on by default.** Credentials and PII patterns are redacted before any sink sees a payload — not a roadmap item. Scope and limits above.
-- **No deps.** Pure stdlib. No pydantic, no httpx, no third-party runtime requirements.
-- **Emission off the hot path.** Event emission is enqueued onto a background thread; the proxy I/O pump does not wait for the POST. End-to-end overhead measurement pending.
+- **Fail-open.** A Console outage, a network issue or an instrumentation bug never breaks the MCP pipe. If injection or stripping raises, the message is forwarded unmodified.
+- **Outbound-only.** The proxy never accepts inbound connections. Events go to the configured sink — an HTTPS POST out, or a local file write — and that is the only egress surface.
+- **Source-side scrubbing, on by default**, with the limits stated above.
+- **Emission off the hot path.** Events are enqueued onto a background thread; the I/O pump does not wait for the POST.
 
-**Trust model.** baton-proxy and the wrapped MCP server run in the same trust domain (same user, vendor's own MCP server). The proxy filters `BATON_*` from the upstream subprocess env as a least-privilege measure — the upstream has no need for Baton credentials, and accidental leakage paths (debug logging, crash-report env dumps, future plugins) shouldn't see them. This is not a cross-process trust boundary; don't use baton-proxy to instrument an MCP server you don't trust — that's not the threat model the proxy is designed for.
+**Trust model.** baton-proxy and the wrapped MCP server run in the same trust domain (same user, vendor's own MCP server). The proxy filters `BATON_*` out of the upstream subprocess env as a least-privilege measure — the upstream has no need for Baton credentials, and accidental leakage paths (debug logging, crash-report env dumps) should not see them. This is **not** a cross-process trust boundary: do not use baton-proxy to instrument an MCP server you do not trust, which is not the threat model it is designed for.
 
-## How it works
+## More
 
-Two unidirectional pumps:
+| | |
+|---|---|
+| [goodtiming.ai/docs.html#proxy](https://goodtiming.ai/docs.html#proxy) | The docs — configuration, what it captures, the intent parameters, the Console |
+| [`docs/SPEC.md`](https://github.com/good-timing/baton/blob/main/docs/SPEC.md) | The wire protocol, in the `baton` repo. The contract a collector consumes |
+| [baton-sdk](https://pypi.org/project/baton-sdk/) | The in-process alternative: capture from inside a server you own, with no proxy hop |
+| [`CHANGELOG.md`](https://github.com/good-timing/baton-proxy/blob/main/CHANGELOG.md) | What has shipped |
 
-- **client → server**: forwards stdin lines to the child process. Intercepts `tools/call` for `baton_annotate` (proxy synthesises the response). For every other `tools/call`, reads and strips the intent parameters, enqueues a `tool_call_start` event carrying them, and records the request id.
-- **server → client**: forwards child stdout to the client. Modifies the `initialize` response to append annotation-tool instructions; modifies the `tools/list` response to append the `baton_annotate` tool and splice the intent parameters onto every upstream tool's schema, and snapshots the vendor-true surface before those additions. Correlates responses by id to emit `tool_call_end` / `tool_call_error`.
-
-A third background thread drains an in-memory queue and delivers events one at a time to the configured sink (HTTP POST for `https://`, JSONL append for `file://`). Failed deliveries are logged and dropped — the proxy never retries on the hot path.
-
-## Development
-
-```bash
-git clone https://github.com/good-timing/baton-proxy
-cd baton-proxy
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-pytest
-```
-
-## Related
-
-- **[baton-sdk](https://github.com/good-timing/baton)** — the in-process alternative. Vendors who control their MCP server add `install_baton(mcp, ...)` instead of subprocess-wrapping. Same wire format, same sinks; tighter integration with one line of vendor code.
-- **[Baton wire protocol](https://github.com/good-timing/baton/blob/main/docs/SPEC.md)** — the event envelope, signal taxonomy, and HTTPS contract that both `baton-proxy` and `baton-sdk` emit against.
-
-## Roadmap
-
-- Static-linked single-binary distribution (PyInstaller, then likely a Go rewrite once distribution shape is set).
-- Helm chart for hosted-HTTP MCP servers.
-- Hosted-evaluation mode (per-request consent tokens).
-
-## License
-
-Apache 2.0. See [LICENSE](LICENSE).
+Apache-2.0.
