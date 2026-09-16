@@ -42,8 +42,14 @@ That's the entire install. Start a new Claude session and drive the wrapped serv
 For a remote server, name it with `--url` instead of a command after `--`. The two forms are mutually exclusive, and `BATON_UPSTREAM_AUTH_TOKEN` is sent upstream as a bearer token:
 
 ```jsonc
-{ "command": "baton-proxy", "args": ["--url", "https://mcp.example.com/mcp"] }
+{
+  "command": "baton-proxy",
+  "args": ["--url", "https://mcp.example.com/mcp"],
+  "env": { "BATON_UPSTREAM_AUTH_TOKEN": "..." }
+}
 ```
+
+The token goes in the entry's `env`, not your shell: the MCP client starts the proxy with a fixed six-name environment allowlist, so an exported value never arrives, the upstream rejects the call, and the proxy degrades to a synthetic empty tool list — a server that looks connected and offers nothing.
 
 Either form is started by your MCP client, not by you: the proxy speaks JSON-RPC on stdin, so running it straight from a shell just waits for input.
 
