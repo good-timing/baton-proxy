@@ -73,7 +73,7 @@ A misconfigured sink fails loudly at startup rather than silently dropping event
 
 ## Payload scrubbing
 
-**On by default, and there is no environment variable that turns it off.** Tool params, results and error bodies run through the same ruleset the Baton SDK ships: email, `Bearer` values, `sk-*` and `AKIA*` keys, JWTs, North-American-format phone numbers, Luhn-checked card numbers, plus force-redaction on sensitive field names.
+**Always on. Nothing turns it off** — not an environment variable, not a flag; the proxy constructs its scrubber unconditionally. Tool params, results and error bodies run through the same ruleset the Baton SDK ships: email, `Bearer` values, `sk-*` and `AKIA*` keys, JWTs, North-American-format phone numbers, Luhn-checked card numbers, plus force-redaction on sensitive field names.
 
 **It is pattern matching, not a guarantee** — a name and a street address pass through untouched. Decide what your server puts in tool params and results on that basis. [What it does and does not catch](https://goodtiming.ai/docs.html#pii).
 
