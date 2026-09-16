@@ -41,9 +41,11 @@ That's the entire install. Start a new Claude session and drive the wrapped serv
 
 For a remote server, name it with `--url` instead of a command after `--`. The two forms are mutually exclusive, and `BATON_UPSTREAM_AUTH_TOKEN` is sent upstream as a bearer token:
 
-```sh
-baton-proxy --url https://mcp.example.com/mcp
+```jsonc
+{ "command": "baton-proxy", "args": ["--url", "https://mcp.example.com/mcp"] }
 ```
+
+Either form is started by your MCP client, not by you: the proxy speaks JSON-RPC on stdin, so running it straight from a shell just waits for input.
 
 ## Try it in one command: `scan`
 
@@ -65,7 +67,7 @@ A misconfigured sink fails loudly at startup rather than silently dropping event
 
 ## Payload scrubbing
 
-**On by default.** Tool params, results and error bodies run through the same ruleset the Baton SDK ships: email, `Bearer` values, `sk-*` and `AKIA*` keys, JWTs, phone numbers, Luhn-checked card numbers, plus force-redaction on sensitive field names.
+**On by default, and there is no environment variable that turns it off.** Tool params, results and error bodies run through the same ruleset the Baton SDK ships: email, `Bearer` values, `sk-*` and `AKIA*` keys, JWTs, North-American-format phone numbers, Luhn-checked card numbers, plus force-redaction on sensitive field names.
 
 **It is pattern matching, not a guarantee** — a name and a street address pass through untouched. Decide what your server puts in tool params and results on that basis. [What it does and does not catch](https://goodtiming.ai/docs.html#pii).
 
