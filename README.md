@@ -9,7 +9,7 @@ Zero changes to the underlying MCP server. The proxy *is* the MCP server from Cl
 │  Claude  │ ◀──▶ │  baton-proxy  │ ◀──▶ │ your MCP server    │
 └──────────┘      └───────┬───────┘      └────────────────────┘
                           │
-                          │ async fan-out — pick any subset
+                          │ async fan-out, pick any subset
                           ▼
    ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
    │  stderr:        │  │  file://        │  │  Baton Console  │
@@ -25,7 +25,7 @@ Zero changes to the underlying MCP server. The proxy *is* the MCP server from Cl
 pipx install baton-proxy  # or: pip install baton-proxy
 ```
 
-`pipx` installs the CLI into its own isolated venv and puts `baton-proxy` on your PATH — so Claude's config can invoke it directly without env activation. Plain `pip install` works if you already manage your own Python env. Python 3.11+, pure stdlib, no third-party runtime dependencies.
+`pipx` installs the CLI into its own isolated venv and puts `baton-proxy` on your PATH, so Claude's config can invoke it directly without env activation. Plain `pip install` works if you already manage your own Python env. Python 3.11+, pure stdlib, no third-party runtime dependencies.
 
 Replace your MCP server entry in Claude's config:
 
@@ -33,7 +33,7 @@ Replace your MCP server entry in Claude's config:
 // Before
 { "command": "npx", "args": ["@vendor/mcp-server"] }
 
-// After — zero-config: events go to stderr + /tmp/baton-proxy.jsonl
+// After. Zero-config: events go to stderr + /tmp/baton-proxy.jsonl
 { "command": "baton-proxy", "args": ["--", "npx", "@vendor/mcp-server"] }
 ```
 
@@ -49,49 +49,49 @@ For a remote server, name it with `--url` instead of a command after `--`. The t
 }
 ```
 
-The token goes in the entry's `env`, not your shell: the MCP client starts the proxy with a fixed six-name environment allowlist, so an exported value never arrives, the upstream rejects the call, and the proxy degrades to a synthetic empty tool list — a server that looks connected and offers nothing.
+The token goes in the entry's `env`, not your shell: the MCP client starts the proxy with a fixed six-name environment allowlist, so an exported value never arrives. The upstream then rejects the call and the proxy degrades to a synthetic empty tool list: a server that looks connected and offers nothing.
 
 Either form is started by your MCP client, not by you: the proxy speaks JSON-RPC on stdin, so running it straight from a shell just waits for input.
 
 ## Try it in one command: `scan`
 
-Preview the friction an agent is likely to hit on a server you run — no permanent install, no change to your Claude config:
+Preview the friction an agent is likely to hit on a server you run, with no permanent install and no change to your Claude config:
 
 ```sh
 uvx baton-proxy scan --config github
 ```
 
-`scan` targets a server you've **already configured in Claude** (by name), reusing that entry's saved credentials. It writes an ephemeral config, drives a headless agent (`claude -p`, billed to your own auth) through the wrapped server, and renders `./baton-report.md`. Everything runs locally — nothing leaves your machine, and you type no secrets. The report is labeled **preflight/inferred**: it previews likely friction, it is not real-user data — that is what the permanent wrap above captures.
+`scan` targets a server you've **already configured in Claude** (by name), reusing that entry's saved credentials. It writes an ephemeral config, drives a headless agent (`claude -p`, billed to your own auth) through the wrapped server, and renders `./baton-report.md`. Everything runs locally: nothing leaves your machine, and you type no secrets. The report is labeled **preflight/inferred**. It previews likely friction rather than real-user data, which is what the permanent wrap above captures.
 
-A friction report only delivers its insight on a server you actually run — its real tools, its real auth, your real workflows — which is why `scan` resolves a configured entry rather than scanning a stranger's server. It reads `--config <name>` from `~/.claude.json` or `./.mcp.json`; point at a specific file with `--config-file ./.mcp.json`.
+A friction report only delivers its insight on a server you actually run, with its real tools, its real auth and your real workflows. That is why `scan` resolves a configured entry rather than scanning a stranger's server. It reads `--config <name>` from `~/.claude.json` or `./.mcp.json`; point at a specific file with `--config-file ./.mcp.json`.
 
 ## Where events go
 
 `BATON_EVENT_SINK` takes a comma-separated list, and the URL scheme picks the sink: `stderr:` writes JSON Lines to stderr, `file:///tmp/events.jsonl` appends one JSON object per event, and `https://console.example.com` POSTs to `{url}/v0/events`. The default is `stderr:,file:///tmp/baton-proxy.jsonl`, so a bare install writes only to your own machine.
 
-A misconfigured sink fails loudly at startup rather than silently dropping events. The full variable list — timeouts, tenant shape, the upstream token, the intent-parameter mode — is in the [configuration reference](https://goodtiming.ai/docs.html#configuration).
+A misconfigured sink fails loudly at startup rather than silently dropping events. The full variable list, covering timeouts, tenant shape, the upstream token and the intent-parameter mode, is in the [configuration reference](https://goodtiming.ai/docs.html#configuration).
 
 ## Payload scrubbing
 
-**Always on. Nothing turns it off** — not an environment variable, not a flag; the proxy constructs its scrubber unconditionally. Tool params, results and error bodies run through the same ruleset the Baton SDK ships: email, `Bearer` values, `sk-*` and `AKIA*` keys, JWTs, North-American-format phone numbers, Luhn-checked card numbers, plus force-redaction on sensitive field names.
+**Always on. Nothing turns it off**, not an environment variable and not a flag: the proxy constructs its scrubber unconditionally. Tool params, results and error bodies run through the same ruleset the Baton SDK ships: email, `Bearer` values, `sk-*` and `AKIA*` keys, JWTs, North-American-format phone numbers, Luhn-checked card numbers, plus force-redaction on sensitive field names.
 
-**It is pattern matching, not a guarantee** — a name and a street address pass through untouched. Decide what your server puts in tool params and results on that basis. [What it does and does not catch](https://goodtiming.ai/docs.html#pii).
+**It is pattern matching, not a guarantee.** A name and a street address pass through untouched. Decide what your server puts in tool params and results on that basis. [What it does and does not catch](https://goodtiming.ai/docs.html#pii).
 
 ## Trust properties
 
 - **Open source, Apache 2.0.** Auditable end-to-end.
 - **Fail-open.** A Console outage, a network issue or an instrumentation bug never breaks the MCP pipe. If injection or stripping raises, the message is forwarded unmodified.
-- **Outbound-only.** The proxy never accepts inbound connections. Events go to the configured sink — an HTTPS POST out, or a local file write — and that is the only egress surface.
+- **Outbound-only.** The proxy never accepts inbound connections. Events go to the configured sink, either an HTTPS POST out or a local file write, and that is the only egress surface.
 - **Source-side scrubbing, on by default**, with the limits stated above.
 - **Emission off the hot path.** Events are enqueued onto a background thread; the I/O pump does not wait for the POST.
 
-**Trust model.** baton-proxy and the wrapped MCP server run in the same trust domain (same user, vendor's own MCP server). The proxy filters `BATON_*` out of the upstream subprocess env as a least-privilege measure — the upstream has no need for Baton credentials, and accidental leakage paths (debug logging, crash-report env dumps) should not see them. This is **not** a cross-process trust boundary: do not use baton-proxy to instrument an MCP server you do not trust, which is not the threat model it is designed for.
+**Trust model.** baton-proxy and the wrapped MCP server run in the same trust domain (same user, vendor's own MCP server). The proxy filters `BATON_*` out of the upstream subprocess env as a least-privilege measure: the upstream has no need for Baton credentials, and accidental leakage paths such as debug logging or crash-report env dumps should not see them. This is **not** a cross-process trust boundary: do not use baton-proxy to instrument an MCP server you do not trust.
 
 ## More
 
 | | |
 |---|---|
-| [goodtiming.ai/docs.html#proxy](https://goodtiming.ai/docs.html#proxy) | The docs — configuration, what it captures, the intent parameters, the Console |
+| [goodtiming.ai/docs.html#proxy](https://goodtiming.ai/docs.html#proxy) | The docs: configuration, what it captures, the intent parameters, the Console |
 | [`docs/SPEC.md`](https://github.com/good-timing/baton/blob/main/docs/SPEC.md) | The wire protocol, in the `baton` repo. The contract a collector consumes |
 | [baton-sdk](https://pypi.org/project/baton-sdk/) | The in-process alternative: capture from inside a server you own, with no proxy hop |
 | [`CHANGELOG.md`](https://github.com/good-timing/baton-proxy/blob/main/CHANGELOG.md) | What has shipped |
