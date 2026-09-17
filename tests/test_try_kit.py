@@ -5450,9 +5450,12 @@ def test_claude_md_tells_the_agent_to_fill_in_the_real_path_on_a_refusal():
     assert line == "> ! cd <path>/baton-proxy/try && python3 kit.py setup", (
         "the instruction to substitute is not directly above the line it is about"
     )
+    # K1b: "touch"/"that edit" became "read"/"it". The paragraph is about a
+    # refusal of `setup`, and after the flip setup only READS their config —
+    # "edit" was the false word, not the pinned one.
     assert after == (
-        "This is not a fallback. Someone deciding whether to let a tool touch their "
-        "client's config is better served running that edit themselves."
+        "This is not a fallback. Someone deciding whether to let a tool read their "
+        "client's config is better served running it themselves."
     ), "the closing sentences of the refusal paragraph changed"
 
 
@@ -5464,39 +5467,67 @@ def test_claude_md_makes_a_refusal_stick_for_the_config_commands():
     every command. So the first refusal switches the rest of the trial, and auto
     mode shows its denial text once instead of three times.
 
-    `receipt` joins them only once a wrap is in place. Before that it reads just
-    the kit's own files; after, it reads the config to check the wrap is still
-    there, and a read of that path is what auto mode refuses. Left with the
-    agent, it would put the denial text on the finale, the one output the trial
-    exists to produce. Handed over while no wrap exists, it would cost a paste
-    for a command that touches no config."""
+    ⚠ REWRITTEN AT K1b, and the old premise is worth recording because it was
+    load-bearing and is now false. It read: "`receipt` joins them only once a
+    wrap is in place. Before that it reads just the kit's own files; after, it
+    reads the config to check the wrap is still there, and a read of that path
+    is what auto mode refuses." In project mode `receipt` checks the wrap in
+    `MCP_PATH`, the kit's own file, so it never opens their config at any point
+    of the trial — and `uninstall` deletes that same file rather than writing
+    theirs. The set of commands that touch their config went from two-and-a-half
+    to exactly one, `setup`, and it is a read.
+
+    So the promise this guards is unchanged — the rule names exactly the
+    commands that open their config, and hands over only those — while the
+    membership changed. The three `receipt` clauses are gone because the
+    condition they turned on no longer exists, not because the caution was
+    dropped.
+
+    What replaces them is the OTHER refusal, which is not about the config at
+    all: some permission modes refuse to run code from a freshly cloned
+    repository whatever it touches. That one can hit `receipt` and `uninstall`,
+    so the doc must keep a route for them without claiming they read the
+    config."""
     paras = [text for _n, text in _unwrapped(_claude_md())]
-    i = next(k for k, text in enumerate(paras) if text.startswith("**If a kit command is refused"))
-    rule = paras[i + 3]
-    assert rule.startswith("Once a kit command has been refused"), (
-        "the rule is not conditioned on a refusal, so it no longer tries once"
+    # By leading text, never by offset from the intro. The K1b rewrite split
+    # this section into more paragraphs than it had, and a positional index
+    # would have moved silently onto the wrong one.
+    rule = next(t for t in paras if t.startswith("Once a kit command has been refused"))
+    only = next(t for t in paras if t.startswith("`setup` is the only command"))
+    other = next(t for t in paras if t.startswith("A refusal can still reach them"))
+
+    assert "do not attempt `setup` again for the rest of the trial" in rule, (
+        "a refusal no longer carries over to the command that opens their config"
     )
-    assert "do not attempt the config commands again for the rest of the trial" in rule, (
-        "a refusal no longer carries over to the commands that follow it"
+    assert "with or without a server name" in rule, (
+        "the rule does not name setup in both of its forms"
     )
-    assert "`setup`, with or without a server name," in rule and "`uninstall`" in rule, (
-        "the rule does not name exactly the commands that touch the config"
+    assert "`uninstall`" not in rule, (
+        "uninstall is back in the hand-over rule; in project mode it writes only "
+        "the kit's own files, so handing it over costs a paste for nothing"
     )
-    assert "without trying it first" in rule, "the remaining commands are still attempted"
+    assert "without trying it first" in rule, "the remaining hand-overs are still attempted"
     # "The same way" was read as the `!` format alone, and the repeats went out
     # bare. The instruction is named so it cannot be read out of the back-reference.
     assert (
         "Every hand-over carries the instruction to copy the line and paste it, "
         "not only the first one." in rule
     ), "the copy-and-paste instruction is tied to the first hand-over only"
-    assert "`receipt` never changes the config" in rule, (
-        "the rule no longer says receipt only reads, which is why it is not always handed over"
+
+    assert "`setup` is the only command that opens their config" in only, (
+        "the doc no longer says which single command reaches their config, which is "
+        "what makes the rule above checkable rather than a bare list"
     )
-    assert "once a wrap is in place hand `receipt` over the same way too" in rule, (
-        "receipt still runs after a refusal once it reads the config, so the finale is refused"
+    assert "keep running those yourself" in only, (
+        "receipt and uninstall are handed over despite touching no config of theirs"
     )
-    assert "While no wrap is in place it touches no config, so keep running it yourself" in rule, (
-        "receipt is handed over even while it touches no config, which is not the rule"
+
+    assert "refuse to run code from a repository the person has just cloned" in other, (
+        "the second, config-independent refusal is gone — it is the one that can still "
+        "hit receipt and uninstall, and without it a refusal there reads as a contradiction"
+    )
+    assert "hand it over the same way" in other, (
+        "the second refusal names no route, so the trial stops at it"
     )
     assert "in every mode" not in rule, "the rule still says the agent always keeps receipt"
 

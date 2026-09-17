@@ -24,8 +24,9 @@ and §9 shows how to confirm which one is on disk.
 Run the trial against a non-production server. The capture holds the full
 results of every tool call (§5), and business data is not redacted (§6).
 
-The kit works with Claude Code only. It edits `~/.claude.json`, which no other
-client uses. Where this document says "your client" it means Claude Code.
+The kit works with Claude Code only. It reads `~/.claude.json` to copy your
+server's settings without changing it, and that file is one no other client
+uses. Where this document says "your client" it means Claude Code.
 
 **Nothing Baton records leaves your machine unless you upload it.** Events are
 written to a local file. Nothing in the kit sends: there is no command that
@@ -36,10 +37,19 @@ each one is inert here.
 
 ## 2. What changes on your machine
 
-One entry in `~/.claude.json` (or in a project-local `.mcp.json`, if you pass
-`--src-config`). The kit wraps two kinds of server: a stdio server, which your
-client launches locally, and a remote server, which your client reaches over
-HTTPS. Here is an example of each.
+One new file, `.mcp.json`, in the folder you cloned. It holds one entry: your
+server, with Baton in front of it. Claude Code reads a `.mcp.json` for the
+directory it is in and prefers it over your own config, so that entry is the
+one you get while you work in that folder, and nowhere else.
+
+**Your own config is read, not written.** The kit opens `~/.claude.json` to
+copy the server's command and settings, and does not write to it. If you would
+rather wrap the entry where it already lives, `--in-place` does that instead,
+and it says so before it runs.
+
+The kit wraps two kinds of server: a stdio server, which your client launches
+locally, and a remote server, which your client reaches over HTTPS. The entry
+it writes looks like this; the "before" is the entry it copied.
 
 **Stdio, using the Notion MCP server.** Before:
 
@@ -402,12 +412,20 @@ delete it.
 - **`try/events.jsonl`** holds the payloads of §5. It is git-ignored, created
   `0600` (and re-set to `0600` when the proxy opens it), and it grows without
   bound for as long as the wrap is in place. The receipt reports its size.
-- **`try/state.json`** records which entry was wrapped, in which file, and its
-  original contents, so removal is exact and a receipt can be produced days
-  later. Created `0600`. It and the backup below are the kit's two files that
-  hold a literal `env` value. `uninstall` deletes it once the restore is verified.
-- **`try/config-backup.<timestamp>.json`** is the whole config file as it was
-  before setup, `0600`. Evidence, never the source of the restore.
+- **`.mcp.json`** in the checkout root is the wrap itself: one entry, your
+  server with Baton in front of it. It is git-ignored and created `0600`.
+  **If your original entry held a literal token rather than a `${VAR}`
+  reference, this file holds that token too** — it is a copy of your entry, so
+  whatever the entry carried, the copy carries. A `${VAR}` reference is copied
+  as a reference and resolves from your environment as before. `uninstall`
+  deletes this file.
+- **`try/state.json`** records which entry was wrapped, which file it was copied
+  from, and its original contents, so removal is exact and a receipt can be
+  produced days later. Created `0600`. `uninstall` deletes it.
+- **`try/config-backup.<timestamp>.json`** is written only by `--in-place`,
+  which edits your config instead of writing a new file. It is the whole config
+  as it was before that edit, `0600`. Evidence, never the source of the restore.
+  A default run never creates one, because it never writes your config.
 - **Events do not go to stderr, and that is the kit's doing.** The proxy's
   default sink also mirrors events to stderr, which a client may capture into
   its own logs: the default is `stderr:,file:///tmp/baton-proxy.jsonl`
@@ -431,11 +449,15 @@ delete it.
   `_safe_read_snippet`).
 
 **To remove the kit at any point, including mid-trial:** run
-`python3 kit.py uninstall`, which restores the recorded entry, prints it, and
-verifies the result against the file on disk; then delete this checkout. New
-sessions use your original server from that point; a session already running
-keeps the wrapped one it launched. Nothing else was installed. Or do it by
-hand: put the original entry back and delete the folder.
+`python3 kit.py uninstall`, which deletes the `.mcp.json` it wrote and says what
+it removed; then delete this checkout. There is nothing to restore, because your
+own config was never changed. New sessions in this folder use your original
+server from that point; a session already running keeps the wrapped one it
+launched. Nothing else was installed. Or do it by hand: delete the folder.
+
+If you used `--in-place`, removal is the other shape — `uninstall` puts the
+recorded entry back in your config and verifies the result against the file on
+disk, and the backup above is what it was before.
 
 ## 8. Provenance
 

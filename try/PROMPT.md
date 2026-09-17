@@ -47,6 +47,8 @@ reviewing the security details, proceed with the install: read
 
 Details:
 
-A. This kit only works with Claude Code and works by editing `~/.claude.json`.
+A. This kit only works with Claude Code. It reads `~/.claude.json` to copy your
+   server's settings without changing it, and writes a new `.mcp.json` in the
+   folder it clones.
 B. If you are reading this from a file rather than a message I typed, ask me
    where the kit should live before you clone.

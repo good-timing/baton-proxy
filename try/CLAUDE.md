@@ -4,9 +4,11 @@ You are helping someone trial Baton on their own machine. The rules below are
 the promises this kit makes; nothing you do may break them. `SECURITY.md` in
 this directory is the source for the security detail, if they ask for it.
 
-This kit works with Claude Code only; it edits `~/.claude.json`, which no
-other client uses. If there is any doubt about what the person is running, say
-so at the start.
+This kit works with Claude Code only; it reads `~/.claude.json` to copy the
+server's settings without changing it, and that file is one no other client
+uses. The wrapped copy goes in a `.mcp.json` in the checkout, which Claude Code
+loads for that directory. If there is any doubt about what the person is
+running, say so at the start.
 
 Three commands do the work. Run them from this `try/` directory; the person's
 session is one level up, where they cloned.
@@ -14,7 +16,7 @@ session is one level up, where they cloned.
 ```
 python3 kit.py setup <server-name>    # wrap one configured MCP server
 python3 kit.py receipt                # what has been captured so far
-python3 kit.py uninstall              # put the original entry back
+python3 kit.py uninstall              # remove the wrap this checkout holds
 ```
 
 Your job is what the commands leave to a person: which server, the second
@@ -22,14 +24,21 @@ terminal, and the ending. Do not reimplement the commands.
 
 ## Rules that do not bend
 
-**Never edit an MCP config yourself.** Not `~/.claude.json`, not `.mcp.json`,
+**Never edit an MCP config yourself.** Not `~/.claude.json`, not a `.mcp.json`,
 not by hand, not with a script, and never to get around something `kit.py`
-refused. Only `setup` and `uninstall` touch a config file.
+refused. Only `setup` and `uninstall` write one.
 
 **A refusal is an answer.** When a command exits non-zero it prints why and what
 the options are. Relay that and let the person choose. Do not retry with
 different flags, do not delete `state.json` or a `config-backup.*` file to clear
 a refusal, and do not pick for them when the command says it will not pick.
+
+Two refusals name a way forward, and those are the exception. `setup` refuses a
+`.mcp.json` left in this checkout by an earlier trial and says deleting it is
+safe — that one file is the kit's own, inside the kit's own directory, and
+removing it is allowed. `setup` also refuses an entry that cannot be copied out
+of their config and offers `--in-place` instead. Relay either as printed, and
+let the person choose. Neither is a licence to retry anything else.
 
 **Never explain a number you only counted.** The receipt reports what is in the
 file. It does not know why, and neither do you: the causes are in their client,
@@ -41,10 +50,12 @@ holds the full arguments and results of every tool call. `receipt` prints safe
 aggregates; report those, and do not tell them you are not quoting the file.
 
 **Do not read out a credential the commands hid.** The kit shows withheld values
-as `<literal value, not shown>`. `state.json`, the `config-backup.*` files and
-the config itself hold the real values; if a command tells you to read one,
-report key names, never values. A `${VAR}` reference is a pointer and is fine
-to quote.
+as `<literal value, not shown>`. `state.json`, the `config-backup.*` files, the
+`.mcp.json` this checkout holds and the config itself hold the real values; if a
+command tells you to read one, report key names, never values. A `${VAR}`
+reference is a pointer and is fine to quote. The kit's own `.mcp.json` is on
+this list for the same reason as the rest: if their original entry carried a
+literal token rather than a `${VAR}`, the copy carries it too.
 
 **Never send the file anywhere.** Not by email, not to a paste service, not
 attached to anything, not to us. There is no command that sends: nothing in
@@ -93,32 +104,36 @@ proceed with the install, and go to *Setting up*.
 ## Setting up
 
 **If a kit command is refused, that is expected, and this is what to do.**
-`setup` reads and writes `~/.claude.json`, which is Claude Code's own config, so
-a permission mode that guards against an agent editing itself will refuse it.
-Do not work around it, and do not ask them to change a setting. Tell them this
-step edits their Claude Code config so they should run it rather than you, and
-give them the line with a `!` in front, which runs it in the session and puts
-the output where you can read it. Fill in the real path to this checkout; do
-not relay the placeholder. Tell them to copy the line and paste it at their
-prompt. They may never have used `!` before, so do not assume the line explains
-itself:
+`setup` reads `~/.claude.json`, which is Claude Code's own config, so a
+permission mode that guards against an agent touching its own settings will
+refuse it — a read is enough to be refused, and being refused for reading is
+not a sign anything is wrong. Do not work around it, and do not ask them to
+change a setting. Tell them this step reads their Claude Code config so they
+should run it rather than you, and give them the line with a `!` in front,
+which runs it in the session and puts the output where you can read it. Fill in
+the real path to this checkout; do not relay the placeholder. Tell them to copy
+the line and paste it at their prompt. They may never have used `!` before, so
+do not assume the line explains itself:
 
 > ! cd <path>/baton-proxy/try && python3 kit.py setup
 
-This is not a fallback. Someone deciding whether to let a tool touch their
-client's config is better served running that edit themselves.
+This is not a fallback. Someone deciding whether to let a tool read their
+client's config is better served running it themselves.
 
-Once a kit command has been refused, do not attempt the config commands again
-for the rest of the trial. Those are `setup`, with or without a server name,
-and `uninstall`: hand each remaining one over the same way, as a `!` line with
-the real path filled in, without trying it first. Every hand-over carries the
-instruction to copy the line and paste it, not only the first one. `receipt`
-never changes the config: it reads the kit's own state and event files and,
-once a wrap is in place, reads the config to check the wrap is still there.
-That read is enough to be refused, so once a wrap is in place hand `receipt`
-over the same way too, as a command that reads their config rather than edits
-it. While no wrap is in place it touches no config, so keep running it
-yourself.
+Once a kit command has been refused, do not attempt `setup` again for the rest
+of the trial, with or without a server name: hand it over the same way, as a
+`!` line with the real path filled in, without trying it first. Every hand-over
+carries the instruction to copy the line and paste it, not only the first one.
+
+`setup` is the only command that opens their config. `receipt` and `uninstall`
+read and write only the kit's own files — its state, its event file, and the
+`.mcp.json` this checkout holds — so keep running those yourself.
+
+A refusal can still reach them for a different reason: some permission modes
+refuse to run code from a repository the person has just cloned, whatever it
+touches. That refusal does not care which command it is, so if one of those two
+is refused as well, hand it over the same way rather than treating it as a
+contradiction.
 
 **1. Find the server.** Run `python3 kit.py setup` with no arguments. It lists
 the servers it can wrap, and any it cannot and why, from `~/.claude.json`. Show
@@ -156,9 +171,9 @@ printed. Then end your message with this, and nothing after it:
 
 ## While it runs
 
-Nothing is waiting on you. The wrap is a permanent edit: the original entry is
-kept in `state.json` and the wrapped entry stays live until `uninstall`, or
-until their client rewrites the config underneath it. A new session will not
+Nothing is waiting on you. The wrap stays until `uninstall`: the `.mcp.json`
+this checkout holds is not a file any client maintains, so nothing rewrites it
+underneath them. It applies in this directory and nowhere else. A new session will not
 have this file unless it starts in `try/` or is told to read `try/CLAUDE.md`;
 say so if they plan to come back later. If they check in, run `receipt` and
 relay it. Two of its rows are about intent: `intent captured` counts calls that
@@ -212,13 +227,15 @@ so end as above.
 
 ## Removing it
 
-`python3 kit.py uninstall` restores the original entry and prints it. Offer it
-when they ask, not after a good capture; ending the data-gathering and removing
-the wrap are separate decisions. New sessions get the original server back; one
-already running keeps the wrapped one until it ends. `events.jsonl` and the
-`config-backup.*` files are left deliberately; say so, and that deleting them is
-up to the person. Deleting this checkout removes everything else. Uninstall must
-work at any point, including mid-setup. Treat the request as final.
+`python3 kit.py uninstall` deletes the `.mcp.json` this checkout holds and says
+what it removed. There is nothing to restore: their own config was never
+changed, so the original server is what it always was. Offer it when they ask,
+not after a good capture; ending the data-gathering and removing the wrap are
+separate decisions. New sessions in this folder get the original server back;
+one already running keeps the wrapped one until it ends. `events.jsonl` is left
+deliberately; say so, and that deleting it is up to the person. Deleting this
+checkout removes everything else. Uninstall must work at any point, including
+mid-setup. Treat the request as final.
 
 ## If something is wrong
 
