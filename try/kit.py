@@ -545,7 +545,7 @@ def _relative_path_like(value: str, *, exempt_npm_and_url: bool = True) -> bool:
     return "/" in candidate or os.sep in candidate
 
 
-def _names_a_file_in(base: Path | None, value: str) -> bool:
+def _names_a_file_in(base: Path | None, value: str, *, files_only: bool = False) -> bool:
     """Does this argument name something that exists in the entry's own directory?
 
     The check `_relative_path_like` cannot do. `node server.js` carries no
@@ -556,14 +556,26 @@ def _names_a_file_in(base: Path | None, value: str) -> bool:
     Only meaningful for an entry with a directory to resolve against, which is a
     project key in `~/.claude.json`. A top-level entry has no base: the working
     directory a stdio server is launched in is not documented, which is why a
-    relative path there is already unreliable."""
+    relative path there is already unreliable.
+
+    ``files_only`` is set for environment values, and it is the difference
+    between a guard and a nuisance. `NODE_ENV=production` is an ordinary
+    environment value and an ordinary project has a `production/` directory, so
+    a directory match there refuses a config with nothing wrong with it —
+    measured 2026-09-17, on `production`, `test` and `debug`. A refusal that
+    fires on a normal config is the sentence that stops the next prospect, and
+    `--global` being offered in the same breath does not excuse it. Arguments
+    keep the wider check: `node server` resolving to a directory is a real
+    launch, and an argument is a position where a bare word is usually a path.
+    """
     if base is None:
         return False
     candidate = _path_candidate(value)
     if not candidate or candidate.startswith("-") or Path(candidate).is_absolute():
         return False
     try:
-        return (base / candidate).exists()
+        target = base / candidate
+        return target.is_file() if files_only else target.exists()
     except OSError:  # pragma: no cover - an unreadable base is not worth a branch
         return False
 
@@ -643,7 +655,7 @@ def cwd_dependent_reason(entry: dict, base: Path | None = None) -> str | None:
         # left `{"DB": "data.sqlite"}` — a bare filename sitting in the entry's
         # own directory — passing while the identical string in `args` was
         # caught. Each field is a position that can be missed; this one was.
-        if _names_a_file_in(base, value):
+        if _names_a_file_in(base, value, files_only=True):
             return f"its `{key}` environment value names a file in the entry's own directory (`{value}`)"
     return None
 

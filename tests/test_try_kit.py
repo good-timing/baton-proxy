@@ -5035,6 +5035,28 @@ def test_the_same_bare_filename_is_caught_in_env_as_in_args(tmp_path):
     assert "`DB`" in as_env, f"the reason does not say which variable: {as_env}"
 
 
+@pytest.mark.parametrize("word", ["production", "test", "debug"])
+def test_an_ordinary_env_word_is_not_refused_for_matching_a_directory(tmp_path, word):
+    """The guard must not fire on a config with nothing wrong with it.
+
+    `NODE_ENV=production` is an ordinary environment value, and an ordinary
+    project has a `production/` directory beside it. Checking `exists()` on env
+    values refused all three of these — measured before the fix, not imagined.
+
+    A refusal here costs more than a missed one. It lands on someone who has
+    done nothing unusual, it is the kit telling them their own config is the
+    problem, and offering `--global` in the same breath does not repair it:
+    three prospects have already stopped at a sentence about their config.
+    So env values match on `is_file()` only. An argument keeps the wider check,
+    where `node server` resolving to a directory is a real launch."""
+    (tmp_path / word).mkdir()
+    entry = {"command": "node", "env": {"NODE_ENV": word}}
+
+    assert kit.cwd_dependent_reason(entry, base=tmp_path) is None, (
+        f"a directory named `{word}` beside the config made an ordinary env value a refusal"
+    )
+
+
 @pytest.mark.parametrize(
     "entry",
     [
