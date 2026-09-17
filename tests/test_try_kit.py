@@ -5510,38 +5510,40 @@ def test_the_handover_line_carries_the_folder_the_wrap_loads_in():
     )
 
 
-def test_the_terminal_the_agent_opens_is_platform_split_and_never_the_only_route():
-    """T7, shaped like the `open -R` split in the ending and for the same reason.
+def test_the_agent_does_not_open_a_terminal_for_them():
+    """T7 was built, driven once, and reverted the same day.
 
-    macOS has a command that puts them in the right folder; Linux has none that
-    is portable, so the two platforms get different instructions and the doc
-    has to say which is which. What is NOT like `open -R`: Finder is the only
-    file manager on a Mac, and Terminal.app is not the only terminal. `open -a
-    Terminal` opens Terminal specifically, so a person who lives in iTerm gets
-    a window they did not ask for. The `cd` line therefore stays in the message
-    on both platforms — the opened window is a convenience, never the route.
+    `open -a Terminal <dir>` from inside an agent session hands the new window
+    that session's environment. Measured: an agent's shell carries seven
+    CLAUDE_CODE_* variables, `CLAUDE_CODE_CHILD_SESSION` among them, plus the
+    messaging socket, token and session id of the session doing the opening.
+    The client started in that window reads the child marker, disables
+    transcript saving, and prints a warning the person did not cause.
 
-    That is the assertion worth having. A later edit that drops the `cd` line
-    because "we open the terminal for them now" would work on the machine it
-    was written on and strand everyone else."""
-    flat = _flat(_doc_section("**3. Hand them a second terminal", "## While it runs"))
-    assert "**On macOS**, run `open -a Terminal" in flat, (
-        "the macOS branch no longer opens a terminal in the folder"
+    Worse than wrong: inconsistent. If their terminal app is already running,
+    `open` asks the running app for a window and the shell gets a clean
+    environment; if it is not, `open` launches it as a child and it inherits.
+    So the same instruction degrades the session for some people and not
+    others, which is the hardest kind of report to act on.
+
+    Pinned as a prohibition rather than deleted, because "open a terminal in
+    the right folder for them" is an obvious convenience and will be proposed
+    again by someone who has not paid for it."""
+    step = _flat(_doc_section("**3. Hand them a second terminal", "## While it runs"))
+    assert "Do not open a terminal for them" in step, (
+        "the prohibition is gone, and the convenience will be re-added"
     )
-    assert "**On Linux**, open nothing" in flat, (
-        "Linux is not split out, so the agent will try a macOS-only command there"
+    assert "CLAUDE_CODE_CHILD_SESSION" in step, (
+        "the reason is gone, so the prohibition reads as taste and will be overruled"
     )
-    assert "opens Terminal.app specifically" in flat, (
-        "the doc no longer says the opened window may not be their terminal, which "
-        "is the reason the cd line has to survive"
+    assert "open -a Terminal" not in step, "the agent is told to open a terminal again"
+    assert "Continue without using this MCP server" in step, (
+        "the hand-over no longer warns that the approval prompt's DEFAULT captures "
+        "nothing, which is the cheapest way for a trial to produce a silent zero"
     )
-    assert "If you'd rather use your own terminal, run" in flat, (
-        "the macOS message dropped the cd line, so anyone not using Terminal.app is "
-        "left with a window they will not use and no path to type"
-    )
-    assert "On Linux, drop the first sentence about the terminal you opened" in flat, (
-        "the Linux message is not given, so the agent will claim it opened a terminal "
-        "on a platform where it opened nothing"
+    assert "Do not promise either prompt" in step, (
+        "the doc promises a trust prompt that a folder under an already-trusted one "
+        "never raises — which is the usual shape, since their session is one level up"
     )
 
 

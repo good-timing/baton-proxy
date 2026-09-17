@@ -177,40 +177,35 @@ only for a session started in the directory setup named. A terminal opened
 anywhere else gets their ordinary server and captures nothing, and that looks
 exactly like a broken install.
 
-**On macOS**, run `open -a Terminal /full/path/to/baton-proxy` with the real
-path first. It opens a window already sitting in that folder, which is what
-turns the next step into typing one word instead of pasting a path. Say that
-you did it, in the message below, and still give them the `cd` line: `-a
-Terminal` opens Terminal.app specifically, so someone who lives in iTerm or
-another terminal gets a window they did not ask for, and the line is what they
-will use instead.
-
-**On Linux**, open nothing. There is no portable command, and the ones that
-look close either need a desktop environment you cannot detect or open the
-folder in a file manager. The `cd` line is the whole instruction there.
+**Do not open a terminal for them.** It was tried and it is worse than the
+line. A terminal opened from inside your session inherits your environment,
+including `CLAUDE_CODE_CHILD_SESSION` and the messaging socket and session id
+of the session you are in. The client they start in that window sees the child
+marker, turns transcript saving off, and says so in a warning they did not
+cause and cannot act on. It is also inconsistent: whether the window inherits
+depends on whether their terminal app happened to be running already, so the
+failure appears for some people and not others. Give them the line.
 
 Fill in the real folder below; do not relay the placeholder. Then end your
 message with this, and nothing after it:
-
-> Leave this window open. I've opened a terminal in the right folder — start
-> Claude Code there with `claude`. If you'd rather use your own terminal, run
-> `cd <folder>` first. Starting it anywhere else will not record anything. Use
-> the MCP server the way you normally would. This window still has the
-> unwrapped one; the new terminal gets the wrapped one. Come back here when you
-> are done.
-
-On Linux, drop the first sentence about the terminal you opened and give the
-`cd` line as the instruction:
 
 > Leave this window open. Open a second terminal, run `cd <folder>`, and start
 > Claude Code there. Use the MCP server the way you normally would. Starting it
 > anywhere else will not record anything. This window still has the unwrapped
 > one; the new terminal gets the wrapped one. Come back here when you are done.
 
-Their first start in that folder asks two questions: whether they trust the
-folder, and then whether to approve the server it defines. Both have to be
-answered before anything is captured. Do not pre-empt them — say so only if
-they come back with nothing recorded, where the receipt's checklist covers it.
+**Starting it raises a prompt whose default is the wrong answer.** The client
+asks whether to use the server this folder defines, and the pre-selected
+option is *Continue without using this MCP server* — the one that captures
+nothing. Enter is the easiest key to press and it is the wrong one. Say so
+when you hand over, in one line: they should choose to use the server, not
+accept the default.
+
+They may also be asked whether they trust the folder, before that. They may
+not: a folder inside one the client already trusts does not ask again, which
+is the usual shape here because their session is one level up. Do not promise
+either prompt. Name the approval one, because its default costs them the
+trial.
 
 ## While it runs
 
