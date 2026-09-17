@@ -1756,7 +1756,16 @@ def test_a_duplicate_name_is_a_choice_and_never_a_rename(tmp_path, kit_home, cap
     capsys.readouterr()
 
     state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
-    assert state["scope"] == offered[1], "a different definition was wrapped than the one picked"
+    # `source_scope`, not `scope`, since K1b. `scope` says where the WRAP is,
+    # and in project mode that is the top level of our own file, so it is None
+    # for every `--from`. `source_scope` says which of the three definitions was
+    # copied, which is the thing `--from` picked and the thing this test is
+    # about. Reading `scope` here compared None to a path and reported it as
+    # "a different definition was wrapped" — true of the wrap's location, and
+    # nothing to do with the selection.
+    assert state["source_scope"] == offered[1], (
+        "a different definition was wrapped than the one picked"
+    )
     assert state["original_entry"]["args"] == ["-y", "b"], "the picked entry is not the one used"
 
 
@@ -1843,7 +1852,8 @@ def test_a_from_row_with_a_space_in_the_path_can_be_pasted(tmp_path, kit_home, c
     assert kit.main(["setup", "srv", "--src-config", str(path), "--from", picked]) == 0
     capsys.readouterr()
     state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
-    assert state["scope"] == "/Users/x/Client Work/app"
+    # `source_scope` since K1b — see the sibling above.
+    assert state["source_scope"] == "/Users/x/Client Work/app"
 
 
 def test_the_approval_step_names_both_prompts(tmp_path, kit_home, project_mode, capsys):
@@ -5371,7 +5381,9 @@ def test_setup_with_no_tenant_labels_the_events_with_the_server_name(tmp_path, k
     assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
     out, _err = capsys.readouterr()
 
-    entry = json.loads(path.read_text())["mcpServers"]["notion"]
+    # See the sibling below: the labels live on the entry setup wrote, which
+    # project mode puts in `kit.MCP_PATH`.
+    entry = _wrapped_entry("notion")
     assert entry["env"]["BATON_TENANT_ID"] == "notion"
     assert entry["env"]["BATON_VENDOR_ID"] == "notion"
     assert "trial-" not in out, f"a random trial label is still being minted:\n{out}"
@@ -5398,7 +5410,10 @@ def test_the_tenant_flag_still_works_for_the_rigs_that_pass_it(tmp_path, kit_hom
     question must not remove the override."""
     path = _config(tmp_path, GLOBAL_ONLY)
     assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t2-kit-run"]) == 0
-    entry = json.loads(path.read_text())["mcpServers"]["notion"]
+    # `_wrapped_entry`, not `path`, since K1b: the labels are on the entry setup
+    # WROTE, and project mode writes it to `kit.MCP_PATH` and leaves the source
+    # untouched. Reading `path` here returned their original, unlabelled entry.
+    entry = _wrapped_entry("notion")
     assert entry["env"]["BATON_TENANT_ID"] == "t2-kit-run"
     assert entry["env"]["BATON_VENDOR_ID"] == "notion", "the override must not move vendor too"
 
