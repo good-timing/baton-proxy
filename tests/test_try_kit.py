@@ -146,6 +146,21 @@ PROJECT_SCOPED = {
 
 NO_ENV = {"mcpServers": {"plain": {"command": "./run.sh", "args": []}}}
 
+# Both modes owe the `THE WRAP IS GONE` row, so every clobber test runs twice.
+# Pinning them to one mode was the tempting fix at K1b and it is the wrong one:
+# `--in-place` is where every K8-refused and OAuth-blocked prospect lands, so
+# dropping its coverage would leave the row untested for the people most likely
+# to meet it.
+#
+# ⚠ Defined up here, not beside `_clobber`, because a DECORATOR is evaluated at
+# import time: with it next to its helpers the first test to use it sat 700
+# lines earlier and the whole module failed to collect. A collection error looks
+# nothing like a test failure, and the set-diff is what caught it — the run
+# reported "1 red" and it was the file, not a test.
+_BOTH_MODES = pytest.mark.parametrize(
+    "in_place", [pytest.param(True, id="in-place"), pytest.param(False, id="project")]
+)
+
 # The remote shape. SECURITY.md §7's removal GUARANTEE is only ever as wide as
 # this corpus, so the http class enters it here rather than in a test of its own.
 # Both credential forms, because they take different paths through the redaction
@@ -3646,16 +3661,21 @@ def test_receipt_with_no_state_is_not_served_the_has_state_checklist(kit_home, c
     assert "kit.py setup" in out, f"nothing tells the person where to go next:\n{out}"
 
 
-def test_receipt_branch_two_the_wrap_is_gone(tmp_path, kit_home, capsys):
-    """State, but the entry in the config is not the one setup wrote — the
-    client rewrites this file continuously, and a hand-restore is common.
+@_BOTH_MODES
+def test_receipt_branch_two_the_wrap_is_gone(tmp_path, kit_home, capsys, in_place):
+    """State, but the entry holding the wrap is not the one setup wrote.
 
     Without this branch the agent sees "no events", walks the restart checklist,
-    and lands on a machine where the proxy was never in the path at all."""
-    path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
-    capsys.readouterr()
-    path.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")  # restored by hand
+    and lands on a machine where the proxy was never in the path at all.
+
+    ⚠ The CAUSE differs by mode and the docstring used to name only one of them.
+    In place: their client rewrites `~/.claude.json` continuously, so a
+    hand-restore is common and it happens TO them. In project mode nothing
+    rewrites our file — `CLAUDE.md:223` says so and it is true — so it goes
+    missing only because a person removed it. Rarer, identical consequence, and
+    harder for them to connect to capture stopping. See `_clobber`."""
+    path = _wrapped(tmp_path, kit_home, capsys, in_place=in_place)
+    _clobber(path)
 
     out = _receipt_output(capsys)
     assert "THE WRAP IS GONE" in out
@@ -4381,11 +4401,48 @@ def _write_events(kit_home, *sessions: tuple[str, int]) -> None:
     )
 
 
-def _wrapped(tmp_path, kit_home, capsys, scope_key: str | None = None):
+def _wrapped(tmp_path, kit_home, capsys, scope_key: str | None = None, *, in_place: bool = False):
+    """Wrap `notion` and return THE FILE THAT HOLDS THE WRAP.
+
+    ⚠ It used to return the source config unconditionally, which was the same
+    file under the old default and is not any more. Callers that clobber the
+    wrap need the file setup actually wrote, or they edit a file the receipt no
+    longer looks at and the row under test never fires.
+    """
     path = _project_config(tmp_path, scope_key) if scope_key else _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    args = ["setup", "notion", "--src-config", str(path), "--tenant", "t"]
+    if in_place:
+        args.append("--in-place")
+    assert kit.main(args) == 0
     capsys.readouterr()
-    return path
+    return path if in_place else kit.MCP_PATH
+
+
+def _clobber(path: Path, scope_key: str | None = None) -> None:
+    """Replace the wrapped entry with an unwrapped one, in the shape that file has.
+
+    This is the hand-restore the `THE WRAP IS GONE` row exists for, and the two
+    modes reach it by different routes — which is why both are parametrized
+    rather than one standing in for the other:
+
+    - **in place**: their client rewrites `~/.claude.json` continuously, so this
+      happens TO them and is the original reason the row was built.
+    - **project**: nothing rewrites our file — `CLAUDE.md:223` says so, and it
+      is true. It goes missing because a PERSON removes it: setup's own leftover
+      refusal (`kit.py:2045`) tells them deleting it is safe, `git clean -x`
+      takes it, or an uninstall half-runs. Rarer, same consequence, and the
+      person is even less likely to connect it to capture stopping.
+    """
+    if scope_key is None:
+        payload = {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
+    else:
+        payload = {
+            "mcpServers": {},
+            "projects": {
+                scope_key: {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
+            },
+        }
+    path.write_text(canonical(payload), encoding="utf-8")
 
 
 def test_daves_run_no_longer_reports_a_dead_session_as_a_statistic(tmp_path, kit_home, capsys):
@@ -4467,7 +4524,8 @@ def test_an_empty_file_under_a_global_wrap_invents_no_directory(global_config, k
     assert "loads in" not in checklist, checklist
 
 
-def test_the_six_receipt_rows_are_mutually_exclusive(tmp_path, kit_home, capsys):
+@_BOTH_MODES
+def test_the_six_receipt_rows_are_mutually_exclusive(tmp_path, kit_home, capsys, in_place):
     """The property that makes the doc's table a table, over every row at once.
 
     It has failed twice on this file, both times because a case nobody ran had
@@ -4479,6 +4537,12 @@ def test_the_six_receipt_rows_are_mutually_exclusive(tmp_path, kit_home, capsys)
     def fresh() -> None:
         (kit_home / "events.jsonl").unlink(missing_ok=True)
         (kit_home / "state.json").unlink(missing_ok=True)
+        # ⚠ And the wrap file, since K1b. Every case here re-runs setup, and
+        # project mode REFUSES when `.mcp.json` is present with no state file —
+        # correctly, since that is an unaccountable leftover. Without this line
+        # case 4 never wraps, and the row it is checking is asserted against a
+        # refusal instead of a wrap.
+        kit.MCP_PATH.unlink(missing_ok=True)
 
     # 1 — nothing here at all.
     fresh()
@@ -4489,25 +4553,15 @@ def test_the_six_receipt_rows_are_mutually_exclusive(tmp_path, kit_home, capsys)
     _write_events(kit_home, ("d1e2f3a4", 2))
     assert _fired(_receipt_output(capsys)) == [STATE_CLEARED_MARKER]
 
-    # 3 — wrapped, then restored by hand.
+    # 3 — wrapped, then the wrap goes (see `_clobber`: how differs by mode).
     fresh()
-    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key)
-    path.write_text(
-        canonical(
-            {
-                "mcpServers": {},
-                "projects": {
-                    key: {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key, in_place=in_place)
+    _clobber(path, key if in_place else None)
     assert _fired(_receipt_output(capsys)) == ["THE WRAP IS GONE"]
 
     # 4 — wrapped, still wrapped, nothing landed.
     fresh()
-    _wrapped(tmp_path, kit_home, capsys, scope_key=key)
+    _wrapped(tmp_path, kit_home, capsys, scope_key=key, in_place=in_place)
     assert _fired(_receipt_output(capsys)) == ["No events have been captured yet"]
 
     # 5 — connected, never called.
@@ -4614,52 +4668,33 @@ def test_section_5_says_the_same_thing_where_intent_is_listed():
     )
 
 
-def test_a_clobbered_wrap_wins_over_the_nothing_called_it_row(tmp_path, kit_home, capsys):
+@_BOTH_MODES
+def test_a_clobbered_wrap_wins_over_the_nothing_called_it_row(tmp_path, kit_home, capsys, in_place):
     """Row 3 is checked only when the file is EMPTY, which is one case too few.
 
-    The client rewrites this config continuously — that is why the row exists at
-    all. Setup runs, a session starts and records its tool-surface snapshot, the
-    client then restores the entry, and every call after that goes to the
-    unwrapped server. The file is no longer empty, so row 3 was never consulted
-    and row 5 fired instead: an affirmative diagnosis naming two causes, neither
-    of which is true, sending the person to `/mcp` to hunt a duplicate that does
-    not exist. The old code printed bare counts here, so this is worse than what
-    it replaced."""
+    Setup runs, a session starts and records its tool-surface snapshot, the wrap
+    then goes (see `_clobber` for how, per mode), and every call after that goes
+    to the unwrapped server. The file is no longer empty, so row 3 was never
+    consulted and row 5 fired instead: an affirmative diagnosis naming two
+    causes, neither of which is true, sending the person to `/mcp` to hunt a
+    duplicate that does not exist. The old code printed bare counts here, so
+    this is worse than what it replaced."""
     key = "/Users/someone/work/app"
-    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key)
+    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key, in_place=in_place)
     _write_events(kit_home, ("bee5d1a2", 0))
-    path.write_text(
-        canonical(
-            {
-                "mcpServers": {},
-                "projects": {
-                    key: {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    _clobber(path, key if in_place else None)
     out = _receipt_output(capsys)
     assert _fired(out) == ["THE WRAP IS GONE"], _fired(out)
 
 
-def test_a_wrap_clobbered_after_a_real_capture_still_says_so(tmp_path, kit_home, capsys):
+@_BOTH_MODES
+def test_a_wrap_clobbered_after_a_real_capture_still_says_so(tmp_path, kit_home, capsys, in_place):
     """The same row, with calls in the file. Capture STOPPED, which is the fact
     worth saying, and it is invisible in a total that only ever grows."""
     key = "/Users/someone/work/app"
-    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key)
+    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key, in_place=in_place)
     _write_events(kit_home, ("d1e2f3a4", 2))
-    path.write_text(
-        canonical(
-            {
-                "mcpServers": {},
-                "projects": {
-                    key: {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    _clobber(path, key if in_place else None)
     out = _receipt_output(capsys)
     assert _fired(out) == ["THE WRAP IS GONE"], _fired(out)
     assert _counts_shown(out), "what was captured before it broke still counts:\n" + out
@@ -4965,24 +5000,17 @@ def test_a_resource_only_capture_is_still_worth_uploading(tmp_path, kit_home, ca
     assert kit.SETUP_URL in out, f"a real capture was given no way out:\n{out}"
 
 
-def test_the_offer_survives_a_wrap_that_was_clobbered_after_capturing(tmp_path, kit_home, capsys):
+@_BOTH_MODES
+def test_the_offer_survives_a_wrap_that_was_clobbered_after_capturing(
+    tmp_path, kit_home, capsys, in_place
+):
     """Capture STOPPED, but what was captured before it stopped is real and is
     the whole reason to upload anything. The banner says the wrap is gone; the
     closing block still has to hand over the file."""
     key = "/Users/someone/work/app"
-    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key)
+    path = _wrapped(tmp_path, kit_home, capsys, scope_key=key, in_place=in_place)
     _write_events(kit_home, ("d1e2f3a4", 2))
-    path.write_text(
-        canonical(
-            {
-                "mcpServers": {},
-                "projects": {
-                    key: {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    _clobber(path, key if in_place else None)
     out = _receipt_output(capsys)
     assert _fired(out) == ["THE WRAP IS GONE"], _fired(out)
     assert kit.SETUP_URL in out, f"a real capture lost its ending to the banner:\n{out}"
