@@ -1338,28 +1338,85 @@ def test_receipt_and_uninstall_reject_the_config_file_flag(cmd, tmp_path, kit_ho
     assert exc.value.code == 2
 
 
-def test_the_global_flag_is_accepted_and_changes_nothing_yet(tmp_path, kit_home, capsys):
+def test_the_global_flag_is_accepted_and_changes_nothing_yet(
+    tmp_path, kit_home, monkeypatch, capsys
+):
     """K3 lands before K1, so `--global` names the behaviour the kit already
-    has. Both runs must produce the same config byte-for-byte.
+    has. Both runs must land in the same place.
 
     Landing the flag first is what keeps the K1 commit honest: when the default
-    flips to writing a project `.mcp.json`, this test is the one that has to
-    change, and changing it is the diff saying out loud that `--global` is now
-    the only way to get the old behaviour. A flag added in the same commit as
-    the flip would have nothing to compare against."""
-    (tmp_path / "plain").mkdir()
-    (tmp_path / "flagged").mkdir()
-    plain = _config(tmp_path / "plain", GLOBAL_ONLY)
-    flagged = _config(tmp_path / "flagged", GLOBAL_ONLY)
+    flips to writing a project `.mcp.json`, this test has to change, and
+    changing it is the diff saying out loud that `--global` became the only
+    route to the old behaviour.
 
-    assert kit.main(["setup", "notion", "--config-file", str(plain)]) == 0
+    **Driven through DISCOVERY, not `--config-file`, and that is the whole
+    point of the test.** The first version passed `--config-file` on both legs.
+    Review found it would have stayed green through the flip: `--config-file`
+    pins the write target, so if K1 changes only what happens with no
+    `--config-file`, both legs keep editing the file they were handed, the
+    bytes keep matching, and the tripwire never fires. A test that cannot fail
+    when the thing it guards changes is not guarding it.
+
+    So the plain leg goes through `search_paths` with HOME redirected, and the
+    assertion is on `state.json` — the recorded `scope` and `config_path` are
+    the artifacts K1 must change, and config bytes alone would miss them."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    (home / ".claude.json").write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
+
+    assert kit.main(["setup", "notion"]) == 0
+    plain_state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
+    plain_config = (home / ".claude.json").read_text(encoding="utf-8")
+
+    # Both legs start from the same untouched config. Without this the second
+    # run meets the entry the first one wrapped and refuses it as someone
+    # else's wrap, which is a real refusal but not the thing under test.
     kit.STATE_PATH.unlink()
-    assert kit.main(["setup", "notion", "--global", "--config-file", str(flagged)]) == 0
+    (home / ".claude.json").write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
+
+    assert kit.main(["setup", "notion", "--global"]) == 0
+    flagged_state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
+    flagged_config = (home / ".claude.json").read_text(encoding="utf-8")
     capsys.readouterr()
 
-    assert flagged.read_bytes() == plain.read_bytes(), (
-        "`--global` is documented as today's behaviour, so today it must be a no-op"
+    assert (
+        flagged_state["config_path"]
+        == plain_state["config_path"]
+        == str((home / ".claude.json").resolve())
+    ), "today both routes write the person's own config"
+    assert flagged_state["scope"] == plain_state["scope"] is None
+    assert flagged_config == plain_config, "the two routes produce the same config today"
+    assert plain_config != canonical(GLOBAL_ONLY), (
+        "the entry really was wrapped IN PLACE; if the config came back unchanged "
+        "this test would pass without either route having done anything"
     )
+
+
+def test_the_global_flag_reaches_the_code_under_its_own_name(monkeypatch):
+    """`dest="global_scope"` is load-bearing and nothing read it.
+
+    `args.global` is a syntax error — `global` is a Python keyword — so the
+    `dest` is not style. It is the only way the flag can be read at all.
+    Dropping it leaves argparse happy and every other test green while K1's one
+    consumer breaks. The comment beside the flag states this; this holds it.
+
+    Asserted on the namespace `main` actually hands the command, because that is
+    the contract K1 consumes."""
+    seen = {}
+
+    def _capture(args):
+        seen["global_scope"] = getattr(args, "global_scope", "ATTRIBUTE MISSING")
+        return 0
+
+    monkeypatch.setattr(kit, "cmd_setup", _capture)
+
+    assert kit.main(["setup", "notion", "--global"]) == 0
+    assert seen["global_scope"] is True, "`--global` must arrive as `global_scope`"
+
+    assert kit.main(["setup", "notion"]) == 0
+    assert seen["global_scope"] is False, "and default to False, not to absent"
 
 
 def test_the_global_flag_is_setup_only(tmp_path, kit_home):

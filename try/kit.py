@@ -2016,8 +2016,13 @@ def main(argv: list[str] | None = None) -> int:
         "--global",
         dest="global_scope",
         action="store_true",
-        help="edit your Claude config in place, the way setup worked before 0.7.0, "
-        "instead of writing a project .mcp.json in this checkout",
+        # Phrased in TODAY's terms, and it moves with the default in K1. The
+        # first version described the world AFTER the flip — "instead of writing
+        # a project .mcp.json" — which is a false statement about what a plain
+        # `setup` does right now, printed by `--help`, in a kit whose whole
+        # posture is not making that class of statement. It also named a
+        # release, 0.7.0, that exists nowhere else in this repo.
+        help="wrap the entry in the config file it already lives in (what setup does today)",
     )
     p_setup.add_argument("--config-file", help="config to use instead of searching")
     p_setup.add_argument("--tenant", help="label for this trial (default: the server's name)")
