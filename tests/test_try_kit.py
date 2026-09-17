@@ -832,6 +832,21 @@ def test_the_four_forks_are_asked_the_same_way_and_the_text_form_is_complete():
     # where the next surface will look for it: an option that exists in prose
     # and not in the chooser has not been offered.
     assert "every option a section names even if you expect it to be false" in section
+    # V1, 2026-09-17. The rule named three slots — prose above, labels, the
+    # question — and the chooser has a fourth. With nothing said about the row
+    # under each option, the agent filled it with the prose again, expanded, and
+    # the operator's words were "these options and their verbose descriptions
+    # are really confusing to make a decision". The facts were disclosed twice
+    # and the choice got harder, which is the opposite of what a chooser is for.
+    assert "The row under each option is one line" in section, (
+        "the per-option row is unspecified again, so the facts go in twice"
+    )
+    assert "It is not a second copy of the prose" in section, (
+        "the row no longer forbids restating the prose, which is the failure V1 saw"
+    )
+    assert "belongs above, once" in section, (
+        "the rule no longer says where a fact common to every option goes"
+    )
 
 
 def test_claude_md_routes_on_both_intent_rows_by_name():

@@ -140,13 +140,16 @@ What a reviewer should know about the edit:
 - **The change reaches the next session your client starts, not the one running
   now.** A client binds its server set at startup. Nothing needs to be quit; a
   new terminal is enough.
-- **The whole config file is backed up first** to `try/config-backup.<timestamp>.json`,
-  and the original entry is recorded byte for byte in `try/state.json`. Both are
-  created `0600`, because they hold a copy of your `env` block.
-- **Formatting and permissions are preserved.** The kit reuses the indent it
-  finds and rewrites one entry; it writes via a temporary file and an atomic
-  rename, and copies the original mode onto the replacement. Both are covered by
-  tests.
+- **The original entry is recorded byte for byte** in `try/state.json`, created
+  `0600` because it holds a copy of your `env` block. **A default run writes no
+  backup of your config**, because it does not write your config at all — the
+  `try/config-backup.<timestamp>.json` file of §7 is written only by
+  `--in-place`, which does.
+- **Formatting and permissions are preserved, under `--in-place`.** Rewriting
+  one entry inside a file you own is the case that needs care: the kit reuses
+  the indent it finds, writes via a temporary file and an atomic rename, and
+  copies the original mode onto the replacement. Both are covered by tests. A
+  default run creates a new file instead and none of this applies to it.
 - **Uninstall restores into the file as it is then**, not by copying the backup
   over it, because your client rewrites that file continuously. It prints the
   restored entry, then re-reads the file and compares every byte against what

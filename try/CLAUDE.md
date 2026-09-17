@@ -76,6 +76,13 @@ section names even if you expect it to be false for this person, and a question
 that says what it is about and what happens next. Without a chooser, ask in
 text with the question alone on the last line.
 
+**The row under each option is one line, and it is for what makes that option
+different.** It is not a second copy of the prose. They have just read the
+prose; a longer restatement inside every row is what turns a chooser into
+something harder to decide from than a plain list. Name the axis the rows
+differ on and stop — transport, scope, whether a credential gets copied. A
+fact that is true of every option belongs above, once.
+
 ## Start by finding out where you are
 
 The person may be at any point in the trial. The first thing to run is
