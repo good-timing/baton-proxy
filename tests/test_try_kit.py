@@ -4235,13 +4235,27 @@ def global_config(tmp_path, monkeypatch):
     return path
 
 
-def test_setup_names_the_project_directory_the_wrapped_entry_loads_in(tmp_path, kit_home, capsys):
-    """Finding 11, at the sink that produced it."""
+@_BOTH_MODES
+def test_setup_names_the_project_directory_the_wrapped_entry_loads_in(
+    tmp_path, kit_home, capsys, in_place
+):
+    """Finding 11, at the sink that produced it.
+
+    ⚠ The CLAIM is unchanged by K1b and the ANSWER is not: name the directory
+    the wrapped entry actually loads in. In place that is still their own
+    project key, because the entry never moves. In project mode the entry was
+    copied into our checkout, so the checkout is the only right answer and
+    naming their key would send them to a session that loads the ORIGINAL
+    server — finding 11 again, pointing the other way."""
     key = "/Users/someone/work/app"
     path = _project_config(tmp_path, key)
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    args = ["setup", "notion", "--src-config", str(path), "--tenant", "t"]
+    if in_place:
+        args.append("--in-place")
+    assert kit.main(args) == 0
     out, _err = capsys.readouterr()
-    assert f"cd {key} && claude" in out, f"the handoff never names the project path:\n{out}"
+    loads_in = key if in_place else str(kit.MCP_PATH.parent)
+    assert f"cd {loads_in} && claude" in out, f"the handoff never names {loads_in}:\n{out}"
 
 
 def test_the_handoff_never_offers_the_kits_own_directory_as_the_place_to_start(
@@ -4275,30 +4289,59 @@ def test_the_cd_is_dropped_when_they_are_already_in_the_project_directory(
 ):
     """Dave: "When the current directory already matches the project key, drop
     the `cd`." Telling someone to cd to where they are reads as a step they got
-    wrong."""
+    wrong.
+
+    ⚠ `--in-place` only, and NOT because project mode cannot reach the state —
+    because it does not implement the rule. Measured at K1b: `start_where`
+    applies the already-there check inside its `scope is not None` branch, and
+    project mode goes through `scope is None`, which emits a `cd` unconditionally.
+    Running setup from the checkout root and then reading the handover gets
+    `cd <the directory you are standing in> && claude`.
+
+    Left as a finding rather than fixed here, because extending Dave's rule is a
+    judgment about what a prospect reads and there is an argument on the other
+    side: the handover is for a SECOND terminal, which opens in their default
+    directory rather than wherever setup ran, so the `cd` is useful even when
+    the setup process was already there. That argument would also retire the
+    rule for the in-place case, which Dave asked for — so it is one decision
+    about both branches, not a gap to close quietly. → backlog.
+    """
     here = (tmp_path / "work").resolve()
     here.mkdir()
     monkeypatch.chdir(here)
     path = _project_config(tmp_path, str(here))
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    assert (
+        kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t", "--in-place"]) == 0
+    )
     out, _err = capsys.readouterr()
     assert "cd " not in out, f"told to cd to the directory they are standing in:\n{out}"
     assert "second terminal" in out
 
 
-def test_the_already_wrapped_path_hands_over_the_same_directory(tmp_path, kit_home, capsys):
+@_BOTH_MODES
+def test_the_already_wrapped_path_hands_over_the_same_directory(
+    tmp_path, kit_home, capsys, in_place
+):
     """Cold re-entry is the normal case on a multi-day trial, not a fallback:
     windows close, laptops sleep. Someone who re-runs setup gets "already
     wrapped" — and used to get no handoff at all, which is the state the person
-    is in precisely when they have lost the first window."""
+    is in precisely when they have lost the first window.
+
+    "The SAME directory" is the whole assertion, so it reads the state rather
+    than a constant: the re-entry path must reach the same answer the first run
+    did, in whichever mode that run used."""
     key = "/Users/someone/work/app"
     path = _project_config(tmp_path, key)
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    args = ["setup", "notion", "--src-config", str(path), "--tenant", "t"]
+    if in_place:
+        args.append("--in-place")
+    assert kit.main(args) == 0
     capsys.readouterr()
-    assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
+    assert kit.main(args) == 0, "the re-entry run is the same command, run again"
     out, _err = capsys.readouterr()
+    loads_in = key if in_place else str(kit.MCP_PATH.parent)
     assert "Already wrapped" in out
-    assert f"cd {key} && claude" in out, f"the second run hands over nothing:\n{out}"
+    assert f"cd {loads_in} && claude" in out, f"the second run hands over nothing:\n{out}"
 
 
 def test_every_scope_hands_over_the_line_the_doc_tells_the_agent_to_relay():
@@ -4418,6 +4461,24 @@ def _wrapped(tmp_path, kit_home, capsys, scope_key: str | None = None, *, in_pla
     return path if in_place else kit.MCP_PATH
 
 
+def _directory_question(checklist: str) -> str:
+    """The directory named by the checklist's "…this entry loads in?" step, alone.
+
+    ⚠ Exists because `<dir> in checklist` is a lie here. The checklist can carry
+    the same directory on the APPROVAL step, so a search over the whole block
+    stays green while this step names somewhere else entirely — proven with a
+    mutant that did exactly that. Sliced to the one step, so the assertion can
+    only be satisfied by the line it is about
+    → [[feedback_string_slicing_a_document_measures_the_wrong_thing]].
+    """
+    start = checklist.index("loads in")
+    step = checklist[start:]
+    step = step[: step.index("A session started anywhere else")]
+    # The directory is the step's own line, under the question.
+    lines = [ln.strip() for ln in step.splitlines() if ln.strip()]
+    return lines[1] if len(lines) > 1 else ""
+
+
 def _clobber(path: Path, scope_key: str | None = None) -> None:
     """Replace the wrapped entry with an unwrapped one, in the shape that file has.
 
@@ -4489,21 +4550,35 @@ def test_an_ended_trial_that_captured_nothing_is_still_the_ended_trial_branch(ki
     assert _fired(out) == [STATE_CLEARED_MARKER], _fired(out)
 
 
-def test_an_empty_file_under_a_project_scoped_wrap_names_the_directory(tmp_path, kit_home, capsys):
+@_BOTH_MODES
+def test_an_empty_file_under_a_project_scoped_wrap_names_the_directory(
+    tmp_path, kit_home, capsys, in_place
+):
     """Row 4, carrying finding 11's other half. `receipt` is where someone lands
     when the trial produced nothing, so the checklist has to ask the question
     the wrong-directory bug makes decisive — and it can only ask it when the
-    entry is project-scoped."""
+    wrap is scoped to a directory at all.
+
+    Project mode makes that ALWAYS true, which is why both modes run here: in
+    place it depends on their entry having a project key, and in project mode
+    our own file always has one. The directory differs; the question does not."""
     key = "/Users/someone/work/app"
-    _wrapped(tmp_path, kit_home, capsys, scope_key=key)
+    _wrapped(tmp_path, kit_home, capsys, scope_key=key, in_place=in_place)
     out = _receipt_output(capsys)
     assert _fired(out) == ["No events have been captured yet"], _fired(out)
-    # Scoped to the checklist: the header already prints the project key as part
+    # Scoped to the checklist: the header already prints the directory as part
     # of the config location, so asserting over the whole output would pass
     # without the checklist ever asking the question.
     checklist = out[out.index("No events have been captured yet") :]
+    loads_in = key if in_place else str(kit.MCP_PATH.parent)
     assert "loads in" in checklist, f"the checklist never asks the question:\n{checklist}"
-    assert key in checklist, f"it asks, but never names the directory:\n{checklist}"
+    # ⚠ Scoped to the STEP, not the checklist. `loads_in in checklist` passed
+    # under a mutant that made this step name the wrong directory, because the
+    # APPROVAL step above it names the same directory and satisfied the search.
+    # An assertion that another line can satisfy is not testing this one.
+    assert _directory_question(checklist) == loads_in, (
+        f"the directory question names the wrong place:\n{checklist}"
+    )
 
 
 def test_an_empty_file_under_a_global_wrap_invents_no_directory(global_config, kit_home, capsys):
@@ -4728,18 +4803,31 @@ def test_a_project_config_file_is_not_described_as_loading_everywhere(tmp_path, 
     assert str(path.parent) in out, f"the directory that file belongs to is not named:\n{out}"
 
 
+@_BOTH_MODES
 def test_the_checklist_asks_the_directory_question_for_a_project_config_file(
-    tmp_path, kit_home, capsys
+    tmp_path, kit_home, capsys, in_place
 ):
     """The receipt's half of the same claim: someone whose file is empty gets
     the checklist, and for a non-global config the directory question is the one
-    that resolves it."""
+    that resolves it.
+
+    The source here is a `.mcp.json` of THEIRS, reached through `--src-config`.
+    In place, the wrap stays in it and the directory is its own folder. In
+    project mode the entry is copied out, so the directory is our checkout —
+    naming their folder would be the wrong-directory bug with an extra step."""
     path = _mcp_json(tmp_path)
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    args = ["setup", "notion", "--src-config", str(path), "--tenant", "t"]
+    if in_place:
+        args.append("--in-place")
+    assert kit.main(args) == 0
     capsys.readouterr()
     out = _receipt_output(capsys)
     checklist = out[out.index("No events have been captured yet") :]
-    assert str(path.parent) in checklist, f"the checklist never names it:\n{checklist}"
+    loads_in = str(path.parent) if in_place else str(kit.MCP_PATH.parent)
+    # Scoped to the step — see the sibling above for why the looser form lies.
+    assert _directory_question(checklist) == loads_in, (
+        f"the directory question names the wrong place:\n{checklist}"
+    )
 
 
 def test_the_global_claim_survives_for_the_config_that_is_actually_global(
@@ -4761,23 +4849,41 @@ def test_the_global_claim_survives_for_the_config_that_is_actually_global(
     assert "cd " not in out, out
 
 
+@_BOTH_MODES
 def test_a_project_path_with_a_space_is_handed_over_as_a_runnable_command(
-    tmp_path, kit_home, capsys
+    tmp_path, kit_home, capsys, monkeypatch, in_place
 ):
     """`cd /Users/x/Google Drive/app && claude` cds to `/Users/x/Google` and
     starts the client in the wrong directory — which loads global scope and
     captures nothing, the exact failure this line was added to prevent. Parsed
     with the shell's own rules rather than string-matched, so the assertion is
-    that the command WORKS, not that it looks quoted."""
+    that the command WORKS, not that it looks quoted.
+
+    ⚠ Project mode does NOT retire this case, it moves it. The quoted path
+    becomes OUR checkout, and a checkout is somewhere the person chose — the
+    paste tells them to clone "into the directory I'm in", which on macOS is
+    routinely `~/Google Drive/...` or `~/Client Work/...`. So the project row
+    redirects `kit.MCP_PATH` into a directory with a space rather than skipping.
+    Without that it would assert quoting against a tmp path that has none, and
+    pass whether or not the kit quotes anything."""
     import shlex
 
     key = str(tmp_path / "Google Drive" / "app")
     path = _project_config(tmp_path, key)
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    args = ["setup", "notion", "--src-config", str(path), "--tenant", "t"]
+    if in_place:
+        args.append("--in-place")
+    else:
+        spaced = tmp_path / "Client Work" / "baton-proxy"
+        spaced.mkdir(parents=True)
+        monkeypatch.setattr(kit, "MCP_PATH", spaced / ".mcp.json")
+    assert kit.main(args) == 0
     out, _err = capsys.readouterr()
     line = next(ln for ln in out.splitlines() if "&& claude" in ln)
     argv = shlex.split(line)
-    assert argv[:2] == ["cd", key], f"the handed-over command cds elsewhere: {argv}"
+    loads_in = key if in_place else str(kit.MCP_PATH.parent)
+    assert argv[:2] == ["cd", loads_in], f"the handed-over command cds elsewhere: {argv}"
+    assert " " in loads_in, "the case is only a quoting test if the path has a space"
 
 
 # --- Review finding: a call is not only a tool call -------------------------
