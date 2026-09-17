@@ -5536,7 +5536,18 @@ def test_the_agent_does_not_open_a_terminal_for_them():
     assert "CLAUDE_CODE_CHILD_SESSION" in step, (
         "the reason is gone, so the prohibition reads as taste and will be overruled"
     )
-    assert "open -a Terminal" not in step, "the agent is told to open a terminal again"
+    # The INSTRUCTION form, not the mention. A prohibition has to name the
+    # command it forbids, so `"open -a Terminal" not in step` fails on the
+    # paragraph doing the forbidding — which is what it did, one commit after
+    # it was written. Pin the shape that would actually tell an agent to run
+    # it: a platform heading followed by `run`.
+    assert not re.search(r"\*\*On macOS\*\*,\s*run\s*`open -a Terminal", step), (
+        "the agent is instructed to open a terminal again"
+    )
+    assert "Do not open a terminal" in step, (
+        "the paragraph stopped forbidding it, so naming the command is now an example "
+        "rather than a prohibition"
+    )
     assert "Continue without using this MCP server" in step, (
         "the hand-over no longer warns that the approval prompt's DEFAULT captures "
         "nothing, which is the cheapest way for a trial to produce a silent zero"
