@@ -4875,6 +4875,91 @@ def test_the_two_receipt_rows_are_relayed_apart():
 
 
 # =============================================================================
+# Moving the entry — the failure project scope introduces (2026-09-17).
+#
+# Every other guard in this file protects a wrap that happens IN PLACE. Project
+# scope copies the entry into `baton-proxy/.mcp.json`, and the client then
+# launches the server from a directory the person never chose. What breaks is
+# invisible at setup and shows up in their next session, which is the class the
+# kit refuses rather than ships.
+#
+# The two shapes below are not one rule with two spellings. A relative path is
+# visible in the text of the entry. A `${CLAUDE_PROJECT_DIR}` reference is not a
+# path at all and would pass any slash-hunting check — it breaks because the
+# client resolves it to the scoped directory, which is the thing that changed.
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "entry,expected_fragment",
+    [
+        ({"command": "./server.sh"}, "relative path"),
+        ({"command": "../bin/server"}, "relative path"),
+        ({"command": "bin/server"}, "relative path"),
+        ({"command": "node", "args": ["./index.js"]}, "argument 1"),
+        ({"command": "node", "args": ["--flag", "../lib/main.js"]}, "argument 2"),
+        ({"command": "node", "env": {"DB": "./data.sqlite"}}, "`DB` environment value"),
+        ({"command": "${CLAUDE_PROJECT_DIR:-.}/bin/server"}, "CLAUDE_PROJECT_DIR"),
+        ({"command": "node", "args": ["${CLAUDE_PROJECT_DIR}/index.js"]}, "CLAUDE_PROJECT_DIR"),
+        ({"command": "node", "env": {"ROOT": "${CLAUDE_PROJECT_DIR:-.}"}}, "CLAUDE_PROJECT_DIR"),
+        (
+            {"type": "http", "url": "${CLAUDE_PROJECT_DIR}/sock", "headers": {}},
+            "CLAUDE_PROJECT_DIR",
+        ),
+    ],
+)
+def test_an_entry_that_resolves_against_a_directory_is_named(entry, expected_fragment):
+    """Each of these would wrap cleanly, print success, and die later."""
+    reason = kit.cwd_dependent_reason(entry)
+    assert reason is not None, f"{entry} moved to another directory would break, unnoticed"
+    assert expected_fragment in reason, f"the reason for {entry} does not say which part: {reason}"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"command": "node", "args": ["/abs/path/index.js"]},
+        {"command": "/usr/local/bin/server"},
+        {"command": "python3", "args": ["-m", "my_server"]},
+        # The one that makes the narrow rule necessary rather than merely safe:
+        # an npm scope carries a separator and is not a path. Refusing this
+        # would refuse the most common MCP entry there is.
+        {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]},
+        {"command": "node", "env": {"TOKEN": "${MY_TOKEN}"}},
+        {"type": "http", "url": "https://example.com/mcp"},
+    ],
+)
+def test_an_entry_that_travels_is_left_alone(entry):
+    """A refusal here costs a trial that would have worked."""
+    assert kit.cwd_dependent_reason(entry) is None, f"{entry} travels fine and was refused"
+
+
+def test_the_guard_reads_the_original_entry_not_the_wrapped_one():
+    """The order this runs in is load-bearing, so it is pinned rather than
+    described.
+
+    `build_wrapped_entry` demotes the command into `args` and puts
+    `sys.executable` — an absolute path — into `command`. The two fields are
+    held to DIFFERENT rules: `command` is a path if it has a separator at all,
+    an argument only if it starts with `./` or `../`. So a demoted `bin/server`
+    passes every check it is then subject to, and the entry ships.
+
+    `bin/server` rather than `./server.sh` on purpose: the `./` form survives
+    the move as an argument the narrow rule still catches, so it would pass this
+    test while proving nothing. This is the case where running the guard in the
+    wrong order actually loses the refusal."""
+    original = {"command": "bin/server"}
+    wrapped = kit.build_wrapped_entry(original, interpreter="/usr/bin/python3.13", **WRAP_ARGS)
+
+    assert kit.cwd_dependent_reason(original) is not None
+    assert "bin/server" in wrapped["args"], "the relative path is still in there"
+    assert kit.cwd_dependent_reason(wrapped) is None, (
+        "the wrapped entry hides the relative path from the wider command rule — "
+        "which is why the guard must run before the wrap, not after"
+    )
+
+
+# =============================================================================
 # 0.6.0: the kit sends nothing, and the console holds a copy of the paste.
 #
 # Two facts about this release, and each one is a claim some other repository or

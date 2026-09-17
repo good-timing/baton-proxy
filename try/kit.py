@@ -489,6 +489,80 @@ def not_wrappable_reason(entry: dict) -> str:
     return "no usable launch command"
 
 
+_PROJECT_DIR_REF = re.compile(r"\$\{CLAUDE_PROJECT_DIR\b")
+
+
+def _relative_path_like(value: str) -> bool:
+    """Is this string unambiguously a path that resolves against a cwd?
+
+    Deliberately narrow, and the narrowness is the point: this decides whether
+    to REFUSE, so a false positive blocks a trial that would have worked. Only
+    ``./`` and ``../`` qualify. A bare separator does not, because
+    ``@modelcontextprotocol/server-filesystem`` — the argument of the single
+    most common MCP entry there is — carries one and is an npm package name,
+    not a path. ``command`` gets a wider rule at the call site, where a
+    separator IS a path by definition."""
+    return value.startswith("./") or value.startswith("../")
+
+
+def cwd_dependent_reason(entry: dict) -> str | None:
+    """Why copying this entry into another directory would break it, or None.
+
+    The guard that project scope makes necessary. ``kit.py``'s wrap has always
+    been in place: ``start_where`` says so in its own docstring — "the kit wraps
+    in place and never moves an entry between scopes, so whatever directory rule
+    they already had is the one that survives the trial." Writing the entry into
+    ``baton-proxy/.mcp.json`` moves it, and the client then launches the server
+    from somewhere else. A relative path resolves against the new place, the
+    server dies, and it dies in their NEXT session rather than in front of us —
+    the same delayed failure ``not_wrappable_reason`` exists to prevent.
+
+    Two classes, both verified against ``code.claude.com/docs/en/mcp.md`` on
+    2026-09-17 rather than recalled:
+
+    - **A relative path.** There is no ``cwd`` field on a server entry, and the
+      working directory a stdio server is launched in is not documented at all.
+      So a relative path is already unreliable; moving it makes it wrong.
+    - **A ``${CLAUDE_PROJECT_DIR}`` reference.** The docs: *"Claude Code sets
+      ``CLAUDE_PROJECT_DIR`` in the spawned server's environment to the project
+      root"*, and expansion happens in ``command``, ``args``, ``env``, ``url``
+      and ``headers``. The project root IS the directory the entry is scoped to,
+      so this one reference means something different in ``baton-proxy/`` than
+      it meant where they wrote it. It is the case a slash-hunting check cannot
+      see, and the only reason it is here is that the docs were read.
+
+    Runs on the ORIGINAL entry, before ``build_wrapped_entry`` demotes the
+    command into ``args`` and the paths stop being where a reader expects them.
+    """
+    command = entry.get("command")
+    if isinstance(command, str) and command:
+        # Wider than `_relative_path_like`: any separator at all. A command with
+        # a slash in it is a path — `node` and `python3` are resolved against
+        # PATH and travel fine, `./server.sh` and `bin/server` do not.
+        if not Path(command).is_absolute() and ("/" in command or os.sep in command):
+            return f"its launch command is a relative path (`{command}`)"
+
+    for i, arg in enumerate(str(a) for a in entry.get("args") or []):
+        if _relative_path_like(arg):
+            return f"argument {i + 1} is a relative path (`{arg}`)"
+
+    env = entry.get("env")
+    for key, value in (env if isinstance(env, dict) else {}).items():
+        if isinstance(value, str) and _relative_path_like(value):
+            return f"its `{key}` environment value is a relative path (`{value}`)"
+
+    # Checked last and over the whole entry, because the reference can sit in
+    # any of the five expanded fields and the reason is the same wherever it is.
+    for field in ("command", "args", "env", "url", "headers"):
+        if _PROJECT_DIR_REF.search(json.dumps(entry.get(field), ensure_ascii=False)):
+            return (
+                f"its `{field}` refers to ${{CLAUDE_PROJECT_DIR}}, which Claude Code "
+                "sets to\n  the directory the entry is scoped to — a different "
+                "directory once the entry\n  is copied"
+            )
+    return None
+
+
 def is_proxy_invocation(cmd: list[str]) -> bool:
     """Does this command LEAD with a baton-proxy launch, in the two head forms?
 
