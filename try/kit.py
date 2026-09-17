@@ -1326,6 +1326,7 @@ _NOT_CAPTURING_STEPS = (
     "in your client too — which you would have noticed.",
 )
 
+
 # Project mode only, and it goes FIRST, because it is the only cause on this
 # list the person may already have produced by answering a question — and the
 # only one with a switch they can see.
@@ -1339,14 +1340,45 @@ _NOT_CAPTURING_STEPS = (
 # Without this step the checklist sends someone who dismissed that prompt off to
 # check restarts and directories — none of which is the reason, and all of which
 # read as the kit not knowing what it did.
-_APPROVAL_STEP = (
-    "Was the server approved when Claude Code asked? A project config is not\n"
-    "trusted automatically: the first interactive session started in that folder\n"
-    "asks, and a prompt that was dismissed or declined leaves the server switched\n"
-    "off. `claude mcp list` shows it as pending approval, and\n"
-    "`claude mcp reset-project-choices` clears a previous answer so you are asked\n"
-    "again."
-)
+def approval_step(folder: Path) -> str:
+    """The project-config approval question, naming BOTH prompts.
+
+    Corrected 2026-09-17 after review, against the same doc page: there are two
+    gates, not one, and the step named only the second.
+
+    - **Trusting the workspace.** The person is starting Claude Code in a folder
+      they cloned minutes ago and have never opened. The docs tie approvals to
+      it: `claude mcp list` and `claude mcp get` read `.mcp.json` approvals "only
+      from settings files that aren't checked into the repository until you trust
+      the workspace by running `claude` in it and accepting the workspace trust
+      dialog."
+    - **Approving the server.** "For security reasons, Claude Code prompts for
+      approval in interactive sessions before using project-scoped servers from
+      `.mcp.json` files."
+
+    `claude mcp reset-project-choices` clears the SECOND only, so a step that
+    named one prompt and one command sent someone who declined the first to run
+    something that could not help them.
+
+    `claude mcp list` is read in a directory, and this checklist already has a
+    step devoted to people being in the wrong one, so the folder is named here
+    rather than assumed.
+
+    "declined" and "not answered", not "dismissed": the word "dismissed" was in
+    the first version under a comment claiming the step was verified line by
+    line against the docs, and it was not in the docs.
+    """
+    return (
+        "Were the two prompts answered? Starting Claude Code in a folder for the\n"
+        "first time asks whether you trust it, and a project config's servers are\n"
+        "then approved separately before they can be used. A prompt that was\n"
+        "declined or not answered leaves the server switched off.\n"
+        f"  cd {shlex.quote(str(folder))} && claude mcp list\n"
+        "shows whether the server is still pending. To be asked the SECOND one\n"
+        "again, run this in the same folder:\n"
+        "  claude mcp reset-project-choices\n"
+        "The trust answer is given by starting Claude Code in the folder."
+    )
 
 
 def entry_home(scope: str | None, config_path: str | Path) -> Path | None:
@@ -1380,6 +1412,25 @@ def scope_selector(scope: str | None) -> str:
     return "global" if scope is None else scope
 
 
+def needs_approval(scope: str | None, config_path: str | Path) -> bool:
+    """Does Claude Code gate this entry behind the project-config prompts?
+
+    The rule is about the FILE, not about which mode this kit ran in — the
+    version that asked `mode == MODE_PROJECT` got both edges wrong. It missed
+    `--global --config-file <repo>/.mcp.json`, which wraps a project-scoped
+    server in a real `.mcp.json` and is gated exactly the same way. And its
+    justification for the other edge — that an entry the person already had "was
+    approved long ago, if it ever needed to be" — assumed they had used that
+    server in that folder, which this kit never checks.
+
+    True for the top level of a config that is not `~/.claude.json`, which is
+    what a project `.mcp.json` is. A project KEY inside `~/.claude.json` is a
+    different thing: it is their own user-level file, and the docs gate
+    `.mcp.json` files, not those.
+    """
+    return scope is None and not is_global_config(config_path)
+
+
 def not_capturing(scope: str | None, config_path: str | Path, mode: str = MODE_GLOBAL) -> str:
     """The empty-file checklist, with the questions that apply to this wrap.
 
@@ -1388,10 +1439,9 @@ def not_capturing(scope: str | None, config_path: str | Path, mode: str = MODE_G
     project config reached with `--config-file`. Both load for one directory;
     only `~/.claude.json` loads for all of them.
 
-    The approval question applies only in project mode, and only there because
-    that is the only mode in which this kit created the project config being
-    approved. An entry the person already had in a project scope of their own
-    was approved long ago, if it ever needed to be."""
+    The approval question applies to a project `.mcp.json`; see
+    ``needs_approval``. ``mode`` is no longer what decides it and is kept only
+    because callers pass it."""
     steps = list(_NOT_CAPTURING_STEPS)
     home = entry_home(scope, config_path)
     where = None if home is None else str(home)
@@ -1403,8 +1453,8 @@ def not_capturing(scope: str | None, config_path: str | Path, mode: str = MODE_G
             "A session started anywhere else loads your global servers only — the\n"
             "wrap never runs, and nothing is captured.",
         )
-    if mode == MODE_PROJECT:
-        steps.insert(0, _APPROVAL_STEP)
+    if needs_approval(scope, config_path) and home is not None:
+        steps.insert(0, approval_step(home))
     body = "".join(
         f"  {n}. {step}\n".replace("\n", "\n     ", step.count("\n"))
         for n, step in enumerate(steps, start=1)
@@ -1841,7 +1891,14 @@ def cmd_setup(args: argparse.Namespace) -> int:
             + (", ".join(names) or "none")
             + "\n  → check the name, or pass --config-file <path>."
         )
-    if len(matches) > 1 and args.from_scope:
+    # Filtered whenever `--from` was given, NOT only when there is more than one
+    # match. Gating it on the duplicate meant a `--from` that matched nothing was
+    # silently ignored the moment the duplicate went away: someone reuses the
+    # command the refusal taught them, on another machine or after tidying their
+    # config, and the kit wraps a definition they did not pick. That is the
+    # outcome the "matched nothing" refusal exists to prevent, and the gate meant
+    # it could not fire in the one case that reaches real people.
+    if args.from_scope:
         matches = [m for m in matches if scope_selector(m[2]) == args.from_scope]
     if len(matches) > 1:
         # A CHOICE, not a dead end. This refusal used to end with "rename one of
@@ -1853,8 +1910,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
         #
         # Every row now prints the flag that picks it. The kit still does not
         # choose; it just stops being the only thing standing in the way.
+        # shlex.quote, for the reason `_cd_to` states: `/Users/x/Client Work/app`
+        # is an ordinary macOS path, and an unquoted row pasted back gives
+        # "unrecognized arguments: Work/app". The promise this refusal makes is
+        # that the printed string is the string that works.
         where = "\n".join(
-            f"    --from {scope_selector(s):<28} {describe(p, s)}" for p, _t, s, _n, _e in matches
+            f"    --from {shlex.quote(scope_selector(s)):<30} {describe(p, s)}"
+            for p, _t, s, _n, _e in matches
         )
         raise Refuse(
             f"`{args.server}` is defined in more than one place:\n{where}\n"
@@ -2361,9 +2423,13 @@ def main(argv: list[str] | None = None) -> int:
     # have been a separate decision about a need that has not gone away.
     p_setup.add_argument(
         "--config-file",
-        help="read the servers from this config instead of searching for "
-        "~/.claude.json. With --global it is also the file that gets edited; "
-        "otherwise it is only read.",
+        # Worded for the build that SHIPS, and it moves with the default in K1b
+        # — the same mistake the --global help made and was corrected for. With
+        # DEFAULT_MODE still global, a bare --config-file edits the file it is
+        # given, so saying "otherwise it is only read" would have had `--help`
+        # contradict itself and tell someone their file was safe when it was not.
+        help="config to read the servers from, instead of searching for "
+        "~/.claude.json. It is also the file the wrap is written into.",
     )
     p_setup.add_argument(
         "--from",

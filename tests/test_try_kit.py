@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -1512,15 +1513,21 @@ def test_config_file_is_read_only_unless_global_is_asked_for(
     before = read_only.read_bytes()
 
     assert kit.main(["setup", "notion", "--config-file", str(read_only)]) == 0
+    # Read BEFORE the state file is cleared. The first version of this test
+    # asserted `str(read_only) not in edited.read_text()` after unlinking it,
+    # which is true no matter what the kit does — one run's config path would
+    # never appear in another run's config file. Deleting source_config_path
+    # entirely left it green.
+    read_only_state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
     kit.STATE_PATH.unlink()
     assert kit.main(["setup", "notion", "--global", "--config-file", str(edited)]) == 0
     capsys.readouterr()
 
     assert read_only.read_bytes() == before, "project mode wrote to the config it was handed"
     assert edited.read_bytes() != before, "--global must edit the file it was handed"
-    # And the read-only run still recorded where it read from, which is the only
-    # trace that their file was involved at all.
-    assert str(read_only) not in edited.read_text(encoding="utf-8")
+    assert read_only_state["source_config_path"] == str(read_only), (
+        "the only record that their file was read at all"
+    )
 
 
 THREE_PLAYWRIGHTS = {
@@ -1561,8 +1568,11 @@ def test_a_duplicate_name_is_a_choice_and_never_a_rename(tmp_path, kit_home, cap
     rows = [ln for ln in err.splitlines() if ln.strip().startswith("--from ")]
     assert len(rows) == 3, f"every candidate must print its own selector:\n{err}"
 
-    # Take the offer exactly as printed, the way a person would.
-    offered = [ln.split("--from ", 1)[1].split()[0] for ln in rows]
+    # Parsed with shlex, the way a shell would. `.split()[0]` was the first
+    # version and it is why the suite could not see that the rows were unquoted:
+    # the test's parser had the same bug as the code, so a path with a space
+    # round-tripped in the test and broke when pasted.
+    offered = [shlex.split(ln.split("--from ", 1)[1])[0] for ln in rows]
     assert sorted(offered) == ["/Users/b/work/a", "/Users/b/work/b", "/Users/b/work/c"]
 
     assert kit.main(["setup", "playwright", "--config-file", str(path), "--from", offered[1]]) == 0
@@ -1608,6 +1618,124 @@ def test_a_from_value_that_matches_nothing_says_so(tmp_path, kit_home, capsys):
     assert "/typo" in err
 
 
+def test_a_wrong_from_is_refused_even_when_only_one_server_matches(tmp_path, kit_home, capsys):
+    """The dangerous half, and the one the first version could not reach.
+
+    `--from` was filtered only when there was more than one match, so with a
+    single candidate it was never read and never checked. The failure is not
+    hypothetical: the refusal TEACHES people this flag, they save the command,
+    and then they run it against a config where the duplicate has been tidied
+    away or on another machine. The kit wraps a definition they did not pick and
+    says nothing — which is precisely what the matched-nothing refusal exists to
+    prevent, unable to fire in the one case that reaches a person."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    before = path.read_bytes()
+
+    rc = kit.main(["setup", "notion", "--config-file", str(path), "--from", "/stale/path"])
+
+    assert rc == 1, "a --from that matches nothing was ignored because there was no duplicate"
+    assert "/stale/path" in capsys.readouterr().err
+    assert path.read_bytes() == before, "something was wrapped despite the pick not matching"
+    assert not kit.STATE_PATH.exists()
+
+
+def test_a_from_row_with_a_space_in_the_path_can_be_pasted(tmp_path, kit_home, capsys):
+    """`/Users/x/Client Work/app` is an ordinary macOS path, and `_cd_to` already
+    quotes for exactly this reason. Unquoted, the row the kit prints gives
+    `unrecognized arguments: Work/app` when pasted back — so the refusal's whole
+    promise, that the printed string is the string that works, fails on the
+    machines it was written for.
+
+    Asserted by feeding the printed row through `shlex.split` and handing the
+    result straight to the kit, which is what a shell does."""
+    data = {
+        "projects": {
+            "/Users/x/Client Work/app": {"mcpServers": {"srv": {"command": "npx"}}},
+            "/Users/x/other": {"mcpServers": {"srv": {"command": "npx"}}},
+        }
+    }
+    path = _config(tmp_path, data)
+
+    assert kit.main(["setup", "srv", "--config-file", str(path)]) == 1
+    err = capsys.readouterr().err
+
+    row = next(ln for ln in err.splitlines() if "Client Work" in ln)
+    picked = shlex.split(row.split("--from ", 1)[1])[0]
+    assert picked == "/Users/x/Client Work/app", f"the printed row does not survive a shell: {row}"
+
+    assert kit.main(["setup", "srv", "--config-file", str(path), "--from", picked]) == 0
+    capsys.readouterr()
+    state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
+    assert state["scope"] == "/Users/x/Client Work/app"
+
+
+def test_the_approval_step_names_both_prompts(tmp_path, kit_home, project_mode, capsys):
+    """There are two gates and the step named one.
+
+    The person is starting Claude Code in a folder they cloned minutes ago, so
+    they meet the workspace trust dialog first and the server approval second.
+    `claude mcp reset-project-choices` clears only the second — so someone who
+    declined the first was being sent to run a command that could not help them.
+
+    `claude mcp list` is read in a directory, and this checklist already carries
+    a step for people being in the wrong one, so the folder is named."""
+    _setup_project(tmp_path)
+    capsys.readouterr()
+
+    assert kit.main(["receipt"]) == 0
+    out = capsys.readouterr().out
+
+    # Pinned on the sentence that DESCRIBES the first prompt, not on the word
+    # "trust": a later line says "The trust answer is given by...", so looking
+    # for the word alone stayed green with the first prompt deleted entirely.
+    assert "whether you trust it" in out, "the workspace trust prompt is not described"
+    assert "two prompts" in out, "the step does not say there are two"
+    assert "SECOND" in out, "which of the two prompts that command clears is not said"
+    # Both commands must survive as ONE pasteable line. The first version broke
+    # `reset-project-choices` across a line ending, which is how this test caught
+    # it: a command a person cannot copy is not an instruction.
+    lines = [ln.strip() for ln in out.splitlines()]
+    assert "claude mcp reset-project-choices" in lines, (
+        f"the command is not on a line of its own: {out}"
+    )
+    assert any(
+        ln.startswith("cd ") and str(project_mode.parent) in ln and "claude mcp list" in ln
+        for ln in lines
+    ), "`claude mcp list` is cwd-sensitive and the folder to run it in is not given"
+    assert "dismissed" not in out, (
+        "the docs do not say 'dismissed'; the first version asserted it had been "
+        "verified against them line by line"
+    )
+
+
+def test_a_global_wrap_into_a_project_mcp_json_still_asks_about_approval(
+    tmp_path, kit_home, capsys
+):
+    """The gate is about the FILE, not about which mode this kit ran in.
+
+    `--global --config-file <repo>/.mcp.json` wraps a project-scoped server
+    inside a real `.mcp.json`, which Claude Code gates the same way. Keying the
+    step on our own mode missed it, and handed someone a four-step checklist
+    with the actual cause left out."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    their_project_config = repo / ".mcp.json"
+    their_project_config.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
+
+    assert (
+        kit.main(["setup", "notion", "--global", "--config-file", str(their_project_config)]) == 0
+    )
+    capsys.readouterr()
+
+    assert kit.main(["receipt"]) == 0
+    out = capsys.readouterr().out
+
+    assert "No events" in out, "this test only means something on the empty-file path"
+    assert "reset-project-choices" in out, (
+        "a project .mcp.json is approval-gated whichever mode this kit used to write it"
+    )
+
+
 def test_receipt_finds_the_wrap_and_asks_about_approval_in_project_mode(
     tmp_path, kit_home, project_mode, capsys
 ):
@@ -1637,21 +1765,39 @@ def test_receipt_finds_the_wrap_and_asks_about_approval_in_project_mode(
     assert "reset-project-choices" in out, "no way given to undo a declined prompt"
 
 
-def test_the_approval_question_is_not_asked_of_a_global_wrap(tmp_path, kit_home, capsys):
-    """The step is project-mode only, and the reason is not tidiness: an entry
-    already in the person's own config was approved long ago if it ever needed
-    to be. Asking anyway is the same class of defect as the directory question
-    that this checklist was split up to avoid — a decisive-sounding step that is
-    simply false for the wrap in front of them."""
-    path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+@pytest.mark.parametrize("data,where", [(GLOBAL_ONLY, None), (PROJECT_SCOPED, "project key")])
+def test_the_approval_question_is_not_asked_of_an_entry_in_their_own_config(
+    tmp_path, kit_home, monkeypatch, capsys, data, where
+):
+    """Neither shape inside `~/.claude.json` is approval-gated.
+
+    The docs gate `.mcp.json` FILES. The top level of `~/.claude.json` loads
+    everywhere and is never prompted for; a project KEY inside it is their own
+    user-level file, not a project config file, and is not prompted for either.
+    Asking anyway is the class of defect this checklist was split up to avoid —
+    a decisive-sounding step that is simply false for the wrap in front of them.
+
+    Driven through a real `~/.claude.json` rather than `--config-file`, which is
+    what the first version of this test got wrong: it pointed `--config-file` at
+    a path in a tmp dir and called the result a global wrap, when by the kit's
+    own `is_global_config` that file is a project config. The test name said
+    global; the fixture was not."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    (home / ".claude.json").write_text(canonical(data), encoding="utf-8")
+
+    assert kit.main(["setup", "notion"]) == 0
     capsys.readouterr()
 
     assert kit.main(["receipt"]) == 0
     out = capsys.readouterr().out
 
     assert "No events" in out, "this test only means something on the empty-file path"
-    assert "reset-project-choices" not in out, "a global wrap has no project approval to give"
+    assert "reset-project-choices" not in out, (
+        f"an entry at a {where or 'top level'} of their own config has no project approval to give"
+    )
 
 
 def test_a_vanished_project_file_is_not_blamed_on_their_client(
