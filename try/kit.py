@@ -92,10 +92,16 @@ MODE_PROJECT = "project"
 # rather than inside the commit that builds the feature.
 DEFAULT_MODE = MODE_GLOBAL
 
-# Bumped when the shape of state.json changes. `mode` is read with a default of
-# MODE_GLOBAL rather than gated on this, so a state file written by an older kit
-# on a real machine still uninstalls.
-STATE_VERSION = 1
+# The shape of state.json. 2 adds `mode`, `source_config_path` and
+# `source_scope`, and gives `scope: None` a second meaning — the top level of
+# the project config this kit writes, rather than of theirs.
+#
+# ⚠ Nothing reads this field, here or anywhere. It is a record for a person
+# looking at the file, not a compatibility gate, so bumping it does not protect
+# an older kit from a newer state file. What actually carries compatibility is
+# `state.get("mode", MODE_GLOBAL)`: a state file written before `mode` existed
+# is a real machine mid-trial, and every one of those is global.
+STATE_VERSION = 2
 
 # Names a baton-proxy invocation can appear under in someone's config.
 _PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
@@ -1120,7 +1126,12 @@ def apply_unwrap(config_text: str, state: dict) -> tuple[str, dict]:
     except (KeyError, TypeError):
         raise Refuse(
             f"the config no longer has the block that held `{name}`"
-            + (f" (project {scope})" if scope else " (global mcpServers)")
+            # `describe`, not a second hand-written version of it. This branch
+            # said "(global mcpServers)" for any `scope is None`, which is the
+            # same false sentence describe() was just fixed for, surviving in
+            # the twin position — and here it would name ~/.claude.json to
+            # someone whose entry was never in it.
+            + f" ({describe(Path(state['config_path']), scope)})"
             + ".\n  → nothing was changed. Restore this entry by hand:\n\n"
             + entry_json(state["original_entry"])
             + STATE_POINTER
@@ -2100,6 +2111,91 @@ def checkout_note(verified: bool) -> str:
     )
 
 
+def _print_left_behind() -> None:
+    """What uninstall leaves on the machine, named rather than left to be found.
+
+    The sentence about `config-backup.*` is the reason this section exists: it
+    is a full copy of the config, every server's credentials included. In
+    project mode no backup is written — there was no write to their file to
+    make recoverable — so the glob finds none and the sentence must not claim
+    one. It is built from what is actually there.
+    """
+    left = []
+    if EVENTS_PATH.exists():
+        left.append(f"  {EVENTS_PATH}  ({human_size(EVENTS_PATH.stat().st_size)})")
+    backups = sorted(TRY_DIR.glob("config-backup.*.json"))
+    left.extend(f"  {b}" for b in backups)
+    if not left:
+        return
+    note = "\nDeliberately left in place"
+    if backups:
+        note += (
+            ". `config-backup.*` is a full copy of your config, every server's credentials included"
+        )
+    print(note + ":")
+    print("\n".join(left))
+
+
+def remove_project_config(state: dict) -> str:
+    """Take our entry out of the project config, and say what happened.
+
+    The project-mode counterpart to ``apply_unwrap``, and deliberately not a
+    restore. There is nothing to put back: in this mode their own config was
+    never written, so "undo" means removing the file this kit added rather than
+    reversing an edit to a file they own.
+
+    Three outcomes, because the file can be in three states by the time someone
+    runs uninstall, and two of them are ways a person can get stuck:
+
+    - **Gone already.** Not an error. Setup's own refusal for a leftover file
+      tells them deleting it is safe, so someone who followed that advice and
+      then ran uninstall must not be met with "cannot read". The wrap is off,
+      which is what they asked for.
+    - **Holding our entry and nothing else.** The file is deleted outright. It
+      exists only because this kit wrote it.
+    - **Holding something else too.** Only our key is removed and the file is
+      rewritten. Deleting it whole would throw away servers someone added by
+      hand after setup — their work, in a file we introduced but do not own the
+      whole of.
+
+    An entry that is no longer the one setup wrote is left alone and reported,
+    on the same principle ``apply_unwrap`` refuses an edited entry: the case
+    where guessing is worst is the case where someone has been in there.
+    """
+    path = Path(state["config_path"])
+    name = state["server_name"]
+    if not path.exists():
+        return f"{path} was already gone; nothing to remove."
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        servers = data.get("mcpServers") or {}
+    except (OSError, json.JSONDecodeError) as e:
+        raise Refuse(
+            f"cannot read {path}: {e}\n"
+            "  → this file belongs to the kit and holds no original of yours; your own\n"
+            "    config was never changed. Deleting it by hand finishes the uninstall."
+        ) from None
+
+    current = servers.get(name)
+    if current is None:
+        others = ", ".join(sorted(servers)) or "nothing"
+        return f"`{name}` was not in {path} (it holds {others}); nothing to remove."
+    if current != state["wrapped_entry"]:
+        raise Refuse(
+            f"`{name}` in {path} is not the entry setup wrote — it has been edited\n"
+            "  since. Refusing to delete someone's edit.\n"
+            "  → your own config was never changed by this mode, so nothing of yours is\n"
+            "    waiting to be restored. Delete the file by hand when you are done with it."
+        )
+
+    del servers[name]
+    if servers:
+        write_atomically(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        return f"Removed `{name}` from {path}, which still holds {', '.join(sorted(servers))}."
+    path.unlink()
+    return f"Deleted {path}. It held only the wrapped entry, and this kit wrote it."
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
     if not STATE_PATH.exists():
         raise Refuse(
@@ -2109,6 +2205,24 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         )
     state = load_state()
     path = Path(state["config_path"])
+
+    # Absent means a state file written before `mode` existed, which is a real
+    # machine mid-trial, and those are all global.
+    if state.get("mode", MODE_GLOBAL) == MODE_PROJECT:
+        what = remove_project_config(state)
+        STATE_PATH.unlink()
+        print(what)
+        print(
+            f"\n  Your own config was never changed by this trial — the entry was copied\n"
+            f"  out of {state['source_config_path']} and left exactly as it was.\n"
+            "  There is nothing to restore."
+        )
+        print(f"\n{UNINSTALL_NOTE}")
+        _print_left_behind()
+        print()
+        print(checkout_note(True))
+        return 0
+
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
@@ -2141,17 +2255,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
             f"  {STATE_PATH} has been KEPT so the original is not lost. Compare by hand."
         )
     print(f"\n{UNINSTALL_NOTE if verified else UNVERIFIED_NOTE}")
-    left = []
-    if EVENTS_PATH.exists():
-        left.append(f"  {EVENTS_PATH}  ({human_size(EVENTS_PATH.stat().st_size)})")
-    for b in sorted(TRY_DIR.glob("config-backup.*.json")):
-        left.append(f"  {b}")
-    if left:
-        print(
-            "\nDeliberately left in place. `config-backup.*` is a full copy of your config, "
-            "every server's credentials included:"
-        )
-        print("\n".join(left))
+    _print_left_behind()
     print()
     print(checkout_note(verified))
     return 0

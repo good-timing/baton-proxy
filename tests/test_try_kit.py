@@ -1493,6 +1493,181 @@ def test_project_mode_tells_them_where_to_start_the_client(
     )
 
 
+def _setup_project(tmp_path, data=None, server="notion"):
+    """A completed project-mode setup, for the uninstall tests below."""
+    path = _config(tmp_path, GLOBAL_ONLY if data is None else data)
+    assert kit.main(["setup", server, "--config-file", str(path)]) == 0
+    return path
+
+
+def test_uninstall_in_project_mode_deletes_our_file_and_restores_nothing(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """Uninstall is a REMOVAL here, not a restore, and that is the whole
+    difference K4 exists for.
+
+    Before this, uninstall read `config_path` — which is our own `.mcp.json` —
+    and wrote `original_entry` into it. That "succeeded": the verify compared
+    the file against itself and passed, so state.json was deleted and the kit
+    reported a restore. What it left was a file the person never had, holding a
+    verbatim copy of their server entry including `env`, git-ignored so it never
+    appeared in `git status`, absent from the list of things left behind, and
+    still registering that server for any session started in the checkout. The
+    next `setup` then hit the leftover-file refusal — so every project-mode
+    trial ended somewhere the kit refused to work."""
+    their_config = _setup_project(tmp_path)
+    before = their_config.read_bytes()
+    # An events file, so the "Deliberately left in place" section actually
+    # prints. Without one it returns early, and the backup assertion below
+    # passes because nothing was printed at all rather than because the
+    # sentence is right — which is how it first passed.
+    kit.EVENTS_PATH.write_text('{"kind": "tool_call"}\n', encoding="utf-8")
+    capsys.readouterr()
+
+    assert kit.main(["uninstall"]) == 0
+    out = capsys.readouterr().out
+
+    assert "Deliberately left in place" in out, "the section under test did not print"
+    assert str(kit.EVENTS_PATH) in out, "the capture is left behind and must be named"
+
+    assert not project_mode.exists(), "the file this kit added is still on their machine"
+    assert their_config.read_bytes() == before, "their config was touched on the way out"
+    assert not kit.STATE_PATH.exists(), "the trial is over; the state file is cleared"
+    assert "nothing to restore" in out.lower(), (
+        "a 'restore' here would be a claim about a file of theirs that was never written"
+    )
+    assert "config-backup" not in out, "project mode writes no backup, so none is left behind"
+
+    # And the kit is usable again, which is the half that was actually broken:
+    # the leftover file made the next setup refuse.
+    assert kit.main(["setup", "notion", "--config-file", str(their_config)]) == 0
+
+
+def test_uninstall_after_they_deleted_the_file_themselves_is_not_an_error(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """Setup's leftover refusal tells them deleting this file is safe. Someone
+    who does that and then runs uninstall must not be met with `cannot read`
+    about the file the kit told them to delete — a dead end the kit walked them
+    into itself."""
+    _setup_project(tmp_path)
+    project_mode.unlink()
+    capsys.readouterr()
+
+    assert kit.main(["uninstall"]) == 0
+    assert "already gone" in capsys.readouterr().out
+    assert not kit.STATE_PATH.exists()
+
+
+def test_uninstall_keeps_servers_someone_added_to_our_file(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """The file is ours, but not everything in it is. Someone who added a second
+    server to it by hand has work in there, and deleting the file whole would
+    throw it away — so only our key is removed."""
+    _setup_project(tmp_path)
+    data = json.loads(project_mode.read_text(encoding="utf-8"))
+    data["mcpServers"]["theirs"] = {"command": "node", "args": ["/abs/x.js"]}
+    project_mode.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert kit.main(["uninstall"]) == 0
+
+    assert project_mode.exists(), "a file holding someone else's server was deleted"
+    kept = json.loads(project_mode.read_text(encoding="utf-8"))["mcpServers"]
+    assert list(kept) == ["theirs"], "our entry should be the only one removed"
+
+
+def test_uninstall_refuses_to_delete_an_entry_someone_edited(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """Same principle as `apply_unwrap` refusing an edited entry: the case where
+    someone has been in there by hand is the case where guessing is worst. The
+    refusal says their own config was never touched, because that is the
+    question a person reading it actually has."""
+    _setup_project(tmp_path)
+    data = json.loads(project_mode.read_text(encoding="utf-8"))
+    data["mcpServers"]["notion"]["args"].append("--their-edit")
+    project_mode.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    capsys.readouterr()
+
+    rc = kit.main(["uninstall"])
+    err = capsys.readouterr().err
+
+    assert rc == 1
+    assert project_mode.exists(), "their edit was deleted"
+    assert kit.STATE_PATH.exists(), "state is the only record; it must survive a refusal"
+    assert "never changed by this mode" in err
+
+
+def test_a_state_file_from_before_mode_existed_uninstalls_as_global(
+    tmp_path, kit_home, monkeypatch, capsys
+):
+    """The back-compat guarantee, which was documented and untested.
+
+    `state.get("mode", MODE_GLOBAL)` is the whole mechanism: nothing reads
+    STATE_VERSION, so the default on that one `.get` is what carries a trial
+    started under an older kit. Someone mid-trial who pulls a newer checkout has
+    a state file with no `mode` key and a wrap sitting in their own config.
+
+    Defaulting the other way is the dangerous direction and it is the one no
+    test caught: project mode would try to REMOVE an entry from `~/.claude.json`
+    treating it as a file the kit had added, and leave the real wrap in place —
+    reporting success while the person is still wrapped.
+
+    Driven with DEFAULT_MODE flipped, so the default under test is the `.get`'s
+    and not the module's."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    before = path.read_bytes()
+    assert kit.main(["setup", "notion", "--global", "--config-file", str(path)]) == 0
+
+    state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
+    del state["mode"]
+    kit.STATE_PATH.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(kit, "DEFAULT_MODE", kit.MODE_PROJECT)
+    capsys.readouterr()
+
+    assert kit.main(["uninstall"]) == 0
+    out = capsys.readouterr().out
+
+    assert path.read_bytes() == before, (
+        "a pre-`mode` state file was treated as project mode: the wrap was left in "
+        "their config and uninstall reported success"
+    )
+    assert "Restored" in out, "the global path restores; it does not remove a file"
+
+
+def test_global_mode_still_restores_when_the_default_is_project(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """`--global` must keep meaning `--global` after the flip.
+
+    The `args.global_scope` half of the mode expression had no coverage: with
+    DEFAULT_MODE global, no argv could reach project mode, so mutating the line
+    to `mode = DEFAULT_MODE` left the whole suite green. After K1b that mutation
+    makes `--global` write a project config instead — and `--global` is the only
+    escape the cwd-dependency refusal offers, so it would send someone who was
+    correctly refused straight back into the same failure.
+
+    Driven with DEFAULT_MODE already flipped, which is the only arrangement in
+    which this can fail."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    before = path.read_bytes()
+
+    assert kit.main(["setup", "notion", "--global", "--config-file", str(path)]) == 0
+    capsys.readouterr()
+
+    assert not project_mode.exists(), "`--global` wrote a project config"
+    assert path.read_bytes() != before, "`--global` must wrap the entry in place"
+    state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
+    assert state["mode"] == kit.MODE_GLOBAL
+    assert state["config_path"] == str(path)
+
+    assert kit.main(["uninstall"]) == 0
+    assert path.read_bytes() == before, "the global path still restores byte-for-byte"
+
+
 def test_setup_returns_zero_through_main(tmp_path, kit_home, capsys):
     """The success leg of the 0/1/2 contract, driven the way the agent drives
     it. `cmd_setup` returning 0 is already implied by other tests; that `main`
