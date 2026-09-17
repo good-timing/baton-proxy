@@ -168,8 +168,32 @@ command under it. Relay both as printed.
 **The folder is the whole of it.** The wrap is a project config, so it loads
 only for a session started in the directory setup named. A terminal opened
 anywhere else gets their ordinary server and captures nothing, and that looks
-exactly like a broken install. Fill in the real folder below; do not relay the
-placeholder. Then end your message with this, and nothing after it:
+exactly like a broken install.
+
+**On macOS**, run `open -a Terminal /full/path/to/baton-proxy` with the real
+path first. It opens a window already sitting in that folder, which is what
+turns the next step into typing one word instead of pasting a path. Say that
+you did it, in the message below, and still give them the `cd` line: `-a
+Terminal` opens Terminal.app specifically, so someone who lives in iTerm or
+another terminal gets a window they did not ask for, and the line is what they
+will use instead.
+
+**On Linux**, open nothing. There is no portable command, and the ones that
+look close either need a desktop environment you cannot detect or open the
+folder in a file manager. The `cd` line is the whole instruction there.
+
+Fill in the real folder below; do not relay the placeholder. Then end your
+message with this, and nothing after it:
+
+> Leave this window open. I've opened a terminal in the right folder — start
+> Claude Code there with `claude`. If you'd rather use your own terminal, run
+> `cd <folder>` first. Starting it anywhere else will not record anything. Use
+> the MCP server the way you normally would. This window still has the
+> unwrapped one; the new terminal gets the wrapped one. Come back here when you
+> are done.
+
+On Linux, drop the first sentence about the terminal you opened and give the
+`cd` line as the instruction:
 
 > Leave this window open. Open a second terminal, run `cd <folder>`, and start
 > Claude Code there. Use the MCP server the way you normally would. Starting it

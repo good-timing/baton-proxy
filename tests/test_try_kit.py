@@ -5495,6 +5495,41 @@ def test_the_handover_line_carries_the_folder_the_wrap_loads_in():
     )
 
 
+def test_the_terminal_the_agent_opens_is_platform_split_and_never_the_only_route():
+    """T7, shaped like the `open -R` split in the ending and for the same reason.
+
+    macOS has a command that puts them in the right folder; Linux has none that
+    is portable, so the two platforms get different instructions and the doc
+    has to say which is which. What is NOT like `open -R`: Finder is the only
+    file manager on a Mac, and Terminal.app is not the only terminal. `open -a
+    Terminal` opens Terminal specifically, so a person who lives in iTerm gets
+    a window they did not ask for. The `cd` line therefore stays in the message
+    on both platforms — the opened window is a convenience, never the route.
+
+    That is the assertion worth having. A later edit that drops the `cd` line
+    because "we open the terminal for them now" would work on the machine it
+    was written on and strand everyone else."""
+    flat = _flat(_doc_section("**3. Hand them a second terminal", "## While it runs"))
+    assert "**On macOS**, run `open -a Terminal" in flat, (
+        "the macOS branch no longer opens a terminal in the folder"
+    )
+    assert "**On Linux**, open nothing" in flat, (
+        "Linux is not split out, so the agent will try a macOS-only command there"
+    )
+    assert "opens Terminal.app specifically" in flat, (
+        "the doc no longer says the opened window may not be their terminal, which "
+        "is the reason the cd line has to survive"
+    )
+    assert "If you'd rather use your own terminal, run" in flat, (
+        "the macOS message dropped the cd line, so anyone not using Terminal.app is "
+        "left with a window they will not use and no path to type"
+    )
+    assert "On Linux, drop the first sentence about the terminal you opened" in flat, (
+        "the Linux message is not given, so the agent will claim it opened a terminal "
+        "on a platform where it opened nothing"
+    )
+
+
 def test_claude_md_makes_a_refusal_stick_for_the_config_commands():
     """Try once, then hand over. The model cannot see its own permission mode,
     so a refusal is the only detector it has. Handing over without ever trying
