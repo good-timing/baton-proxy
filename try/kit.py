@@ -1976,6 +1976,16 @@ def main(argv: list[str] | None = None) -> int:
 
     p_setup = sub.add_parser("setup", help="wrap one configured MCP server")
     p_setup.add_argument("server", nargs="?", help="name of the server entry to wrap")
+    # `dest` is not optional here: `args.global` is a syntax error, because
+    # `global` is a Python keyword. argparse would accept the flag and build a
+    # namespace nothing can read with attribute access.
+    p_setup.add_argument(
+        "--global",
+        dest="global_scope",
+        action="store_true",
+        help="edit your Claude config in place, the way setup worked before 0.7.0, "
+        "instead of writing a project .mcp.json in this checkout",
+    )
     p_setup.add_argument("--config-file", help="config to use instead of searching")
     p_setup.add_argument("--tenant", help="label for this trial (default: the server's name)")
     p_setup.add_argument("--vendor", help="label for the wrapped server (default: its name)")

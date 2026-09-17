@@ -1338,6 +1338,41 @@ def test_receipt_and_uninstall_reject_the_config_file_flag(cmd, tmp_path, kit_ho
     assert exc.value.code == 2
 
 
+def test_the_global_flag_is_accepted_and_changes_nothing_yet(tmp_path, kit_home, capsys):
+    """K3 lands before K1, so `--global` names the behaviour the kit already
+    has. Both runs must produce the same config byte-for-byte.
+
+    Landing the flag first is what keeps the K1 commit honest: when the default
+    flips to writing a project `.mcp.json`, this test is the one that has to
+    change, and changing it is the diff saying out loud that `--global` is now
+    the only way to get the old behaviour. A flag added in the same commit as
+    the flip would have nothing to compare against."""
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "flagged").mkdir()
+    plain = _config(tmp_path / "plain", GLOBAL_ONLY)
+    flagged = _config(tmp_path / "flagged", GLOBAL_ONLY)
+
+    assert kit.main(["setup", "notion", "--config-file", str(plain)]) == 0
+    kit.STATE_PATH.unlink()
+    assert kit.main(["setup", "notion", "--global", "--config-file", str(flagged)]) == 0
+    capsys.readouterr()
+
+    assert flagged.read_bytes() == plain.read_bytes(), (
+        "`--global` is documented as today's behaviour, so today it must be a no-op"
+    )
+
+
+def test_the_global_flag_is_setup_only(tmp_path, kit_home):
+    """Same reason `--config-file` is setup-only (see above): `uninstall` and
+    `receipt` read the scope out of `state.json` rather than being told it
+    again, and a second place to say it is a second place to say it wrongly.
+    argparse SystemExit(2), not a Refuse."""
+    for cmd in ("receipt", "uninstall"):
+        with pytest.raises(SystemExit) as exc:
+            kit.main([cmd, "--global"])
+        assert exc.value.code == 2, f"`{cmd} --global` is a usage error, not a refusal"
+
+
 def test_no_subcommand_is_a_usage_error(kit_home):
     """`add_subparsers(required=True)`. A bare `kit.py` must not print a receipt
     or, worse, do something."""
