@@ -5459,6 +5459,42 @@ def test_claude_md_tells_the_agent_to_fill_in_the_real_path_on_a_refusal():
     ), "the closing sentences of the refusal paragraph changed"
 
 
+def test_the_handover_line_carries_the_folder_the_wrap_loads_in():
+    """The last thing the person reads has to name where to start the client.
+
+    K1b makes this the most likely way a drive captures nothing. A project
+    config loads only for a session started in its own directory, so a terminal
+    opened anywhere else gets their ordinary server — and the result is
+    indistinguishable from a broken install. `kit.py` prints a `cd` line and
+    `receipt` carries a whole checklist item for it (`start_where`, and item 3
+    of the empty-capture list), but CLAUDE.md told the agent to END its message
+    with a block that said "start Claude Code there" and named no folder. Under
+    the global default "there" was true, because a global entry loads wherever
+    you start. Nothing pinned the block, so the flip falsified it in silence.
+
+    Pinned as meaning, not spelling: the closing block must carry a `cd`, must
+    carry a substitution the agent is told to fill in, and must say what
+    starting elsewhere costs."""
+    md = _claude_md()
+    step = _doc_section("**3. Hand them a second terminal", "## While it runs")
+    flat = _flat(step)
+    assert "cd <folder>" in step, (
+        "the closing hand-over block no longer tells them to cd anywhere, so a "
+        "terminal opened outside the checkout captures nothing"
+    )
+    assert "do not relay the placeholder" in flat, (
+        "the agent is not told `<folder>` is a placeholder, and it will be relayed literally"
+    )
+    assert "anywhere else will not record anything" in flat, (
+        "the block no longer says what starting in the wrong folder costs, which is "
+        "the sentence that makes the cd worth obeying"
+    )
+    assert "start Claude Code there, and\n> use" not in md, (
+        "the pre-K1b block is back: it says `there` with no folder, which was only "
+        "true while the wrap was global"
+    )
+
+
 def test_claude_md_makes_a_refusal_stick_for_the_config_commands():
     """Try once, then hand over. The model cannot see its own permission mode,
     so a refusal is the only detector it has. Handing over without ever trying

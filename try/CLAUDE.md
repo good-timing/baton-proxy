@@ -162,12 +162,24 @@ That is their MCP server's own sign-in, not ours. The port is their server's and
 the access goes where it always went. Baton never asks for credentials.
 
 **3. Hand them a second terminal, and stay in this one.** Setup prints a line
-beginning `Open a second terminal` that says where to start it; relay that as
-printed. Then end your message with this, and nothing after it:
+beginning `Open a second terminal` that says where to start it, and a `cd`
+command under it. Relay both as printed.
 
-> Leave this window open. Open a second terminal, start Claude Code there, and
-> use the MCP server the way you normally would. This window still has the unwrapped
+**The folder is the whole of it.** The wrap is a project config, so it loads
+only for a session started in the directory setup named. A terminal opened
+anywhere else gets their ordinary server and captures nothing, and that looks
+exactly like a broken install. Fill in the real folder below; do not relay the
+placeholder. Then end your message with this, and nothing after it:
+
+> Leave this window open. Open a second terminal, run `cd <folder>`, and start
+> Claude Code there. Use the MCP server the way you normally would. Starting it
+> anywhere else will not record anything. This window still has the unwrapped
 > one; the new terminal gets the wrapped one. Come back here when you are done.
+
+Their first start in that folder asks two questions: whether they trust the
+folder, and then whether to approve the server it defines. Both have to be
+answered before anything is captured. Do not pre-empt them — say so only if
+they come back with nothing recorded, where the receipt's checklist covers it.
 
 ## While it runs
 
