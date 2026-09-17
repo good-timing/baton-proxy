@@ -1031,11 +1031,17 @@ def test_backup_mode_is_fixed_even_when_the_file_already_exists(tmp_path):
 
 def test_setup_writes_its_backup_0600_from_a_0644_config(tmp_path, kit_home, capsys):
     """The two above prove nothing if setup stops calling the helper. This is
-    the path SECURITY.md describes, driven from a config other users can read."""
+    the path SECURITY.md describes, driven from a config other users can read.
+
+    `--in-place` since K1b: there is no backup on the default path, because
+    project mode never writes their config and a backup of a file nothing
+    touches would be the reassurance without the risk. This pins the mode that
+    does write, which is the only mode SECURITY.md's backup paragraph is
+    about."""
     path = _config(tmp_path, GLOBAL_ONLY)
     path.chmod(0o644)
     before = path.read_bytes()
-    assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--in-place"]) == 0
     (backup,) = kit_home.glob("config-backup.*.json")
     assert backup.stat().st_mode & 0o777 == 0o600
     assert backup.read_bytes() == before
@@ -4216,7 +4222,9 @@ def test_a_global_entry_is_not_given_an_invented_directory(global_config, kit_ho
     """A global entry loads wherever they start from, so naming a directory
     would be a fresh false instruction rather than the same one corrected."""
     path = global_config
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    assert (
+        kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t", "--in-place"]) == 0
+    )
     out, _err = capsys.readouterr()
     assert "cd " not in out, f"a global wrap was told to cd somewhere:\n{out}"
     assert "second terminal" in out
@@ -4425,7 +4433,12 @@ def test_an_empty_file_under_a_global_wrap_invents_no_directory(global_config, k
     """The same checklist must not grow a step that is false. A global entry
     loads wherever they start, so "start it from X" would be a new wrong
     instruction replacing the one just fixed."""
-    assert kit.main(["setup", "notion", "--src-config", str(global_config), "--tenant", "t"]) == 0
+    assert (
+        kit.main(
+            ["setup", "notion", "--src-config", str(global_config), "--tenant", "t", "--in-place"]
+        )
+        == 0
+    )
     capsys.readouterr()
     out = _receipt_output(capsys)
     assert _fired(out) == ["No events have been captured yet"], _fired(out)
@@ -4685,7 +4698,9 @@ def test_the_global_claim_survives_for_the_config_that_is_actually_global(
     path = home / ".claude.json"
     path.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    assert (
+        kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t", "--in-place"]) == 0
+    )
     out, _err = capsys.readouterr()
     assert "loads wherever you start from" in out, out
     assert "cd " not in out, out
@@ -4783,9 +4798,15 @@ def test_uninstall_does_not_promise_a_restore_it_could_not_verify(
     will use your original server again", which is the claim the line above just
     withdrew. The note it replaced was neutral about what would load, so this
     was introduced by the rewrite, in the one output where being wrong is
-    expensive: the person is being asked to check a config by hand."""
+    expensive: the person is being asked to check a config by hand.
+
+    `--in-place` since K1b: there is nothing to restore on the default path, so
+    `restored_matches_on_disk` is only ever consulted for a wrap that edited
+    their config. This is the only mode that can reach the branch."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    assert (
+        kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t", "--in-place"]) == 0
+    )
     capsys.readouterr()
     monkeypatch.setattr(kit, "restored_matches_on_disk", lambda *_a, **_k: False)
     assert kit.main(["uninstall"]) == 0
@@ -4819,9 +4840,14 @@ def test_uninstall_says_what_the_backups_it_leaves_behind_hold(tmp_path, kit_hom
     config, literal credentials included. The decision was to keep them, as
     evidence of a write we cannot see, and make the header honest. So this pins
     the words and the behaviour together: the backup is named under the header
-    and is still on disk, and `state.json` is deleted exactly as before."""
+    and is still on disk, and `state.json` is deleted exactly as before.
+
+    `--in-place` since K1b: only that mode leaves a `config-backup.*` behind,
+    so only that mode owes the sentence saying what one holds."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    assert (
+        kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t", "--in-place"]) == 0
+    )
     capsys.readouterr()
     (backup,) = kit_home.glob("config-backup.*.json")
     assert kit.main(["uninstall"]) == 0
