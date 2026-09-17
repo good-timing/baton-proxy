@@ -76,7 +76,25 @@ SRC_DIR = CHECKOUT / "src"
 EVENTS_PATH = TRY_DIR / "events.jsonl"
 STATE_PATH = TRY_DIR / "state.json"
 
+# The project config this kit writes in project mode. CHECKOUT, not TRY_DIR:
+# a project file applies to its exact directory only, so it has to sit beside
+# the folder the person is told to start Claude Code in. A `try/.mcp.json` would
+# load for sessions started in `try/`, which is where the KIT runs and not where
+# the person runs their client.
+MCP_PATH = CHECKOUT / ".mcp.json"
 
+MODE_GLOBAL = "global"
+MODE_PROJECT = "project"
+
+# Which mode a plain `setup` uses. Still MODE_GLOBAL: the project path is built
+# and tested, and K1b flips this one name. Keeping the flip to a constant means
+# the ~79 tests that drive setup's default can be triaged in their own commit
+# rather than inside the commit that builds the feature.
+DEFAULT_MODE = MODE_GLOBAL
+
+# Bumped when the shape of state.json changes. `mode` is read with a default of
+# MODE_GLOBAL rather than gated on this, so a state file written by an older kit
+# on a real machine still uninstalls.
 STATE_VERSION = 1
 
 # Names a baton-proxy invocation can appear under in someone's config.
@@ -1024,6 +1042,66 @@ def apply_wrap(
     return dumps_like(data, config_text), state
 
 
+def build_project_config(
+    original: dict,
+    *,
+    name: str,
+    source_path: Path,
+    source_scope: str | None,
+    tenant_id: str,
+    vendor_id: str,
+    src_dir: str,
+    events_path: str,
+    interpreter: str = sys.executable,
+) -> tuple[str, dict]:
+    """The project-mode twin of ``apply_wrap``. Returns ``(file_text, state)``.
+
+    Deliberately NOT routed through ``apply_wrap``. That function's job is
+    surgery on a config the person owns: it parses their text, replaces one
+    entry inside it, and re-serialises in the shape it arrived in, because
+    ``~/.claude.json`` holds far more than MCP servers and belongs to another
+    tool. None of that applies here. This file is ours, it is new every time,
+    and it holds exactly one entry — so it is built, not edited.
+
+    The state it returns carries BOTH locations, and that is the point of the
+    shape. ``config_path``/``scope`` say where the wrap lives, which is what
+    ``receipt`` checks and ``uninstall`` removes. ``source_config_path``/
+    ``source_scope`` say where the entry was COPIED FROM, which is the only
+    record that their own config was read and not touched — and the sentence
+    the trial has to be able to say honestly.
+    """
+    wrapped = build_wrapped_entry(
+        original,
+        tenant_id=tenant_id,
+        vendor_id=vendor_id,
+        src_dir=src_dir,
+        events_path=events_path,
+        interpreter=interpreter,
+    )
+    # `mcpServers` at the top level: the project-config shape Claude Code reads.
+    # Two spaces and a trailing newline, like every other file this kit writes.
+    text = json.dumps({"mcpServers": {name: wrapped}}, indent=2, ensure_ascii=False) + "\n"
+    state = {
+        "version": STATE_VERSION,
+        "mode": MODE_PROJECT,
+        "wrapped_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        # None, because the entry sits at the TOP LEVEL of the file we write.
+        # `wrap_still_present` and `apply_unwrap` both read the entry back with
+        # `entry_at(data, scope)`, and anything else here would send them
+        # looking in a `projects` block this file does not have.
+        "scope": None,
+        "server_name": name,
+        "original_entry": original,
+        "wrapped_entry": wrapped,
+        "tenant_id": tenant_id,
+        "vendor_id": vendor_id,
+        "events_path": events_path,
+        "source_config_path": str(source_path),
+        "source_scope": source_scope,
+    }
+    return text, state
+
+
 def apply_unwrap(config_text: str, state: dict) -> tuple[str, dict]:
     """Reverse exactly what apply_wrap did. Returns ``(new_config_text, restored)``.
 
@@ -1441,7 +1519,20 @@ def discover(explicit: str | None) -> list[tuple[Path, str, str | None, str, dic
 
 
 def describe(path: Path, scope: str | None) -> str:
-    return f"{path}" + (f" · project {scope}" if scope else " · global mcpServers")
+    """Where an entry lives, in one line, for a person reading it.
+
+    The third branch is not new cosmetics for the project file this kit now
+    writes — it is the same false sentence `is_global_config` was added to
+    stop, still being printed by this function. `scope is None` means "the top
+    level of whatever file was read", and for a project `.mcp.json` reached with
+    `--config-file` that top level loads for ONE directory. Calling it "global
+    mcpServers" told the person the opposite, in the line that names the file
+    the kit is about to change."""
+    if scope is not None:
+        return f"{path} · project {scope}"
+    if is_global_config(path):
+        return f"{path} · global mcpServers"
+    return f"{path} · project config, loaded for sessions started in {path.parent}"
 
 
 def is_global_config(config_path: str | Path) -> bool:
@@ -1522,14 +1613,23 @@ def start_where(scope: str | None, config_path: str | Path) -> str:
     )
 
 
-def write_atomically(path: Path, text: str) -> None:
+def write_atomically(path: Path, text: str, *, default_mode: int = 0o600) -> None:
     """Write via a temp file in the same directory, then ``os.replace``.
 
     ``write_text`` truncates before it writes, so a crash mid-write leaves the
     user with a truncated ``~/.claude.json``. The backup makes that recoverable,
     but only if they find this document and read it; ``os.replace`` is atomic on
-    the same filesystem and makes the window zero instead."""
-    mode = path.stat().st_mode & 0o777
+    the same filesystem and makes the window zero instead.
+
+    ``default_mode`` is used when the file does not exist yet, which happens for
+    the project config this kit writes in project mode — every other caller is
+    rewriting a file that is already there. 0600 rather than the umask default,
+    for the same reason ``write_state_file`` and ``write_backup`` are 0600: the
+    entry is copied verbatim, so if their original carried a literal token
+    rather than a ``${VAR}`` reference, that token is now in a file this kit
+    created. A new 0644 file would publish it to every account on the box.
+    """
+    mode = path.stat().st_mode & 0o777 if path.exists() else default_mode
     tmp = path.with_name(path.name + ".baton-tmp")
     # Created 0600 BEFORE any content is written, then set to the original
     # file's mode. Writing first and chmod-ing after would leave the whole of
@@ -1737,28 +1837,85 @@ def cmd_setup(args: argparse.Namespace) -> int:
             "  → run this from a full checkout: the kit points PYTHONPATH at that folder."
         )
 
-    new_text, state = apply_wrap(
-        text,
-        scope=scope,
-        name=name,
-        tenant_id=tenant,
-        vendor_id=vendor,
-        src_dir=str(SRC_DIR),
-        events_path=str(EVENTS_PATH),
-    )
-    state["config_path"] = str(path)
+    mode = MODE_GLOBAL if args.global_scope else DEFAULT_MODE
 
-    # Back up the WHOLE file before touching it. `~/.claude.json` holds far more
-    # than MCP servers, and a bad write on a machine we will never see is
-    # unrecoverable for us. The backup is evidence; uninstall does not read it.
-    backup = TRY_DIR / f"config-backup.{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
-    write_backup(path, backup)
+    if mode == MODE_PROJECT:
+        # BEFORE build_wrapped_entry, which is the ordering the guard's own test
+        # pins: the wrap demotes the command into `args`, and a guard run after
+        # it names a position the person's entry does not have.
+        reason = cwd_dependent_reason(entry, base=entry_home(scope, path))
+        if reason is not None:
+            raise Refuse(
+                f"`{name}` cannot be copied into a project config: {reason}.\n"
+                "  This trial writes a new config file in this checkout and leaves yours\n"
+                "  alone, so the client would launch the server from a different\n"
+                "  directory and that path would stop resolving — in your NEXT session,\n"
+                "  not now.\n"
+                "  → run setup again with --global to wrap the entry where it already is,\n"
+                "    which does not move it. Nothing changed."
+            )
+        # Ours, in our own checkout, and the kit is the only thing that writes
+        # it — so an existing one with no state file is a leftover we cannot
+        # reason about rather than a config someone owns. Named as ours, with
+        # the one deletion CLAUDE.md can permit.
+        if MCP_PATH.exists():
+            raise Refuse(
+                f"{MCP_PATH} is already here, and there is no state file saying this kit\n"
+                "  wrote it. That is a leftover from an earlier trial whose state was\n"
+                "  cleared.\n"
+                "  → this file belongs to the kit, inside the kit's own checkout, and\n"
+                "    deleting it is safe. Delete it and run setup again. Nothing in your\n"
+                "    own config has been changed."
+            )
+        new_text, state = build_project_config(
+            entry,
+            name=name,
+            source_path=path,
+            source_scope=scope,
+            tenant_id=tenant,
+            vendor_id=vendor,
+            src_dir=str(SRC_DIR),
+            events_path=str(EVENTS_PATH),
+        )
+        state["config_path"] = str(MCP_PATH)
+        # No backup: nothing of theirs is being overwritten. The backup exists
+        # because the global path rewrites a file holding every credential they
+        # own, and not writing that file is the point of this mode.
+        write_atomically(MCP_PATH, new_text)
+        write_state_file(state)
+        path, scope = MCP_PATH, None
+        backup = None
+    else:
+        new_text, state = apply_wrap(
+            text,
+            scope=scope,
+            name=name,
+            tenant_id=tenant,
+            vendor_id=vendor,
+            src_dir=str(SRC_DIR),
+            events_path=str(EVENTS_PATH),
+        )
+        state["mode"] = MODE_GLOBAL
+        state["config_path"] = str(path)
 
-    write_atomically(path, new_text)
-    write_state_file(state)
+        # Back up the WHOLE file before touching it. `~/.claude.json` holds far
+        # more than MCP servers, and a bad write on a machine we will never see
+        # is unrecoverable for us. The backup is evidence; uninstall does not
+        # read it.
+        backup = TRY_DIR / f"config-backup.{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
+        write_backup(path, backup)
+
+        write_atomically(path, new_text)
+        write_state_file(state)
 
     print(f"Wrapped `{name}` in {describe(path, scope)}")
-    print(f"  backup:  {backup}")
+    if mode == MODE_PROJECT:
+        print(
+            f"  copied from: {describe(Path(state['source_config_path']), state['source_scope'])}"
+        )
+        print("  your own config was read, not changed.")
+    if backup is not None:
+        print(f"  backup:  {backup}")
     print(f"  events:  {EVENTS_PATH}")
     print(f"  tenant:  {tenant}   vendor: {vendor}")
     print("\nThe entry now reads:\n")

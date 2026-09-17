@@ -1314,6 +1314,185 @@ def _config(tmp_path, data) -> Path:
     return path
 
 
+# =============================================================================
+# Project mode — the trial stops editing their config (K1a, 2026-09-17).
+#
+# Built with the default still MODE_GLOBAL, so every test above keeps
+# describing the kit as it ships and these describe the path K1b will switch to.
+# `project_mode` below is the opt-in; at the flip it becomes the default and
+# these tests stay exactly as they are.
+# =============================================================================
+
+
+@pytest.fixture
+def project_mode(tmp_path, monkeypatch):
+    """Turn on project mode and put its output somewhere disposable.
+
+    MCP_PATH is `CHECKOUT/.mcp.json` — a real path in this working tree — so
+    without the redirect a test run writes a project config into the repo and
+    the next `claude` started here loads it."""
+    monkeypatch.setattr(kit, "DEFAULT_MODE", kit.MODE_PROJECT)
+    monkeypatch.setattr(kit, "MCP_PATH", tmp_path / "checkout" / ".mcp.json")
+    (tmp_path / "checkout").mkdir()
+    return tmp_path / "checkout" / ".mcp.json"
+
+
+def test_project_mode_writes_our_file_and_leaves_theirs_byte_identical(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """The decision, as one assertion: their config is not written.
+
+    Byte equality rather than "the entry is still there" — the promise made to
+    three prospects is about the FILE, and a kit that reformatted it or
+    reordered a key while preserving the entry would have broken that promise
+    while passing a semantic check."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    before = path.read_bytes()
+
+    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    capsys.readouterr()
+
+    assert path.read_bytes() == before, "their config was written to in project mode"
+    assert project_mode.exists(), "the project config was not written"
+
+    written = json.loads(project_mode.read_text(encoding="utf-8"))
+    assert list(written) == ["mcpServers"], "a project config is `mcpServers` at the top level"
+    assert list(written["mcpServers"]) == ["notion"], "the key name is theirs and must not change"
+    assert kit.is_wrapped(written["mcpServers"]["notion"]), "the entry we wrote is not wrapped"
+
+    # No backup, because nothing of theirs was overwritten. The backup exists to
+    # make a bad write recoverable, and the whole point of this mode is that
+    # there is no write to their file to recover from.
+    assert not list(kit_home.glob("config-backup.*.json"))
+
+
+def test_the_project_config_is_0600_because_it_can_hold_their_token(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """A new file on their disk, and `build_wrapped_entry` copies `env`
+    verbatim — so an entry whose original carried a literal token rather than a
+    `${VAR}` reference puts that token in a file this kit created.
+
+    `write_atomically` took its mode from the file it was replacing, which is
+    right for every other caller and has nothing to read when the file is new.
+    Under the usual umask that is 0644, which republishes a credential that was
+    0600 in `~/.claude.json` to every account on the box — the same mode slip
+    `write_state_file` and `write_backup` each document having made."""
+    path = _config(
+        tmp_path,
+        {"mcpServers": {"srv": {"command": "npx", "env": {"TOKEN": "xoxb-REAL-SECRET"}}}},
+    )
+
+    assert kit.main(["setup", "srv", "--config-file", str(path)]) == 0
+    capsys.readouterr()
+
+    assert project_mode.stat().st_mode & 0o777 == 0o600, (
+        "the project config is world-readable and holds a literal token"
+    )
+    assert "xoxb-REAL-SECRET" in project_mode.read_text(encoding="utf-8"), (
+        "the token must really be in there, or this test passes for the wrong reason"
+    )
+
+
+def test_project_mode_records_both_where_it_wrote_and_where_it_read(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """state.json carries two locations, and each has one reader.
+
+    `config_path`/`scope` are where the wrap LIVES — what receipt checks and
+    uninstall removes. `source_config_path`/`source_scope` are where it was
+    copied FROM, and that pair is the only record that their config was read
+    and not touched.
+
+    `scope` must be None: the entry sits at the top level of the file we write,
+    and `wrap_still_present` and `apply_unwrap` both look the entry up with
+    `entry_at(data, scope)`. Anything else sends them into a `projects` block
+    this file does not have, and the failure reads as "THE WRAP IS GONE"."""
+    path = _config(tmp_path, PROJECT_SCOPED)
+
+    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    capsys.readouterr()
+    state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
+
+    assert state["mode"] == kit.MODE_PROJECT
+    assert state["config_path"] == str(project_mode)
+    assert state["scope"] is None, "the entry is at the top level of the file we wrote"
+    assert state["source_config_path"] == str(path)
+    assert state["source_scope"] == "/Users/someone/work/app", "copied from a project key"
+
+    assert kit.wrap_still_present(state), (
+        "receipt must find the wrap it just wrote; if `scope` is wrong this is "
+        "where it reports THE WRAP IS GONE on a trial that is working"
+    )
+
+
+def test_project_mode_refuses_to_move_a_relative_path_and_names_the_way_out(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """The K8 guard at its call site, which is the part no test could reach.
+
+    Three things, and each fails differently if the wiring is wrong. That the
+    guard is CALLED at all — the pure function has always passed its own tests
+    with no caller. That it runs BEFORE the wrap: afterwards the relative path
+    has moved into `args`, so the refusal would say "argument 4" of an entry
+    whose fourth argument does not exist. And that the way out is `--global`,
+    never a hand-edit — the kit telling Bharath to rename an entry by hand in
+    the file he had just said he would not touch is why this thread exists."""
+    path = _config(tmp_path, {"mcpServers": {"srv": {"command": "bin/server"}}})
+
+    rc = kit.main(["setup", "srv", "--config-file", str(path)])
+    err = capsys.readouterr().err
+
+    assert rc == 1, "a relative path must not be copied into another directory"
+    assert not project_mode.exists(), "nothing may be written when setup refuses"
+    assert not kit.STATE_PATH.exists()
+    assert "launch command" in err, f"the guard ran after the wrap: {err}"
+    assert "argument" not in err, f"the refusal names a position they do not have: {err}"
+    assert "--global" in err, "the way out is the other mode"
+    assert "by hand" not in err, "never the sentence that stopped Bharath"
+
+
+def test_project_mode_refuses_a_leftover_file_it_cannot_account_for(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """An `.mcp.json` with no state file is a trial whose state was cleared.
+
+    Refused rather than overwritten: the kit does not silently replace a config
+    file, even its own. It is the one deletion `try/CLAUDE.md` can permit, so
+    the refusal says the file is ours and in our own checkout — the two facts
+    that make deleting it safe to recommend."""
+    project_mode.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    path = _config(tmp_path, GLOBAL_ONLY)
+    before = path.read_bytes()
+
+    rc = kit.main(["setup", "notion", "--config-file", str(path)])
+    err = capsys.readouterr().err
+
+    assert rc == 1
+    assert path.read_bytes() == before, "their config must not be touched on this path either"
+    assert "deleting it is safe" in err, f"the way out is not stated: {err}"
+
+
+def test_project_mode_tells_them_where_to_start_the_client(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """A project config loads for its own directory only, so the handover line
+    has to name the checkout. Getting this wrong is the 2026-08-28 defect
+    `start_where` was written for: the person starts a session somewhere else,
+    the wrap never runs, and the file stays empty for a reason they cannot see."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+
+    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    out = capsys.readouterr().out
+
+    assert str(project_mode.parent) in out, "the second terminal is not pointed at the checkout"
+    assert "your own config was read, not changed" in out.lower()
+    assert "registered globally" not in out, (
+        "a project config does not load wherever you start from, and saying so "
+        "is the sentence that makes the trial capture nothing"
+    )
+
+
 def test_setup_returns_zero_through_main(tmp_path, kit_home, capsys):
     """The success leg of the 0/1/2 contract, driven the way the agent drives
     it. `cmd_setup` returning 0 is already implied by other tests; that `main`
