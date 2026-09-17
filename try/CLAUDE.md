@@ -177,14 +177,25 @@ only for a session started in the directory setup named. A terminal opened
 anywhere else gets their ordinary server and captures nothing, and that looks
 exactly like a broken install.
 
-**Do not open a terminal for them.** It was tried and it is worse than the
-line. A terminal opened from inside your session inherits your environment,
-including `CLAUDE_CODE_CHILD_SESSION` and the messaging socket and session id
-of the session you are in. The client they start in that window sees the child
-marker, turns transcript saving off, and says so in a warning they did not
-cause and cannot act on. It is also inconsistent: whether the window inherits
-depends on whether their terminal app happened to be running already, so the
-failure appears for some people and not others. Give them the line.
+**Do not open a terminal for them.** It was tried, driven once, and is worse
+than the line in three ways.
+
+It takes their screen while they are still reading. You have just handed them
+the message that says where to go and what to expect; a window opening on top
+of it moves focus before they have read a word of it. That alone is enough.
+
+It is probably the wrong terminal. `open -a Terminal` opens Terminal.app, and
+plenty of people use iTerm or something else. They get an unfamiliar window
+they did not ask for and still have to go to their own.
+
+And it degrades the session it creates. A terminal opened from inside your
+session inherits your environment, including `CLAUDE_CODE_CHILD_SESSION` and
+the messaging socket and session id of the session you are in. The client they
+start in that window reads the child marker, turns transcript saving off, and
+prints a warning they did not cause and cannot act on. Inconsistently, too:
+whether it inherits depends on whether their terminal app was already running.
+
+Give them the line and let them open their own terminal, in their own time.
 
 Fill in the real folder below; do not relay the placeholder. Then end your
 message with this, and nothing after it:
