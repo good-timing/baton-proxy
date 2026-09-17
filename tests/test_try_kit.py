@@ -1493,6 +1493,77 @@ def test_project_mode_tells_them_where_to_start_the_client(
     )
 
 
+def test_receipt_finds_the_wrap_and_asks_about_approval_in_project_mode(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """K5. Two things receipt owes a project-mode trial.
+
+    It has to FIND the wrap — `wrap_still_present` reads the file we wrote, and
+    getting that wrong reports THE WRAP IS GONE on a trial that is working.
+
+    And when nothing has been captured, its checklist has to name the one cause
+    the person may already have produced by answering a question. A project
+    config is not trusted automatically; the prompt can be dismissed, and every
+    other step on the list then sends them to look at restarts and directories.
+    Verified against the docs on 2026-09-17, including the two commands that let
+    them check and undo it."""
+    _setup_project(tmp_path)
+    capsys.readouterr()
+
+    assert kit.main(["receipt"]) == 0
+    out = capsys.readouterr().out
+
+    assert "THE WRAP IS GONE" not in out, "receipt cannot find the wrap it just wrote"
+    assert str(project_mode) in out, "the config row does not name the file in use"
+    assert "global mcpServers" not in out, "our project file is not the global config"
+
+    assert "approved" in out, "the approval prompt is not on the checklist"
+    assert "claude mcp list" in out, "no way given to check whether it is pending"
+    assert "reset-project-choices" in out, "no way given to undo a declined prompt"
+
+
+def test_the_approval_question_is_not_asked_of_a_global_wrap(tmp_path, kit_home, capsys):
+    """The step is project-mode only, and the reason is not tidiness: an entry
+    already in the person's own config was approved long ago if it ever needed
+    to be. Asking anyway is the same class of defect as the directory question
+    that this checklist was split up to avoid — a decisive-sounding step that is
+    simply false for the wrap in front of them."""
+    path = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    capsys.readouterr()
+
+    assert kit.main(["receipt"]) == 0
+    out = capsys.readouterr().out
+
+    assert "No events" in out, "this test only means something on the empty-file path"
+    assert "reset-project-choices" not in out, "a global wrap has no project approval to give"
+
+
+def test_a_vanished_project_file_is_not_blamed_on_their_client(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """THE WRAP IS GONE names a cause, and the cause differs by mode.
+
+    In global mode the usual one is the client itself, which rewrites
+    `~/.claude.json` continuously and may put the entry back — so "changed or
+    restored" is right there. In project mode the file is ours, in our own
+    checkout, and no client maintains it. Saying "restored" would send someone
+    to inspect a config that was never part of this."""
+    _setup_project(tmp_path)
+    kit.EVENTS_PATH.write_text('{"kind": "tool_call_start", "session_id": "s"}\n', encoding="utf-8")
+    project_mode.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    capsys.readouterr()
+
+    assert kit.main(["receipt"]) == 0
+    out = capsys.readouterr().out
+
+    assert "THE WRAP IS GONE" in out
+    assert "this kit's own" in out, "the person is not told whose file changed"
+    assert "restored" not in out, (
+        "'restored' points at a config this mode never wrote; nothing was restored"
+    )
+
+
 def _setup_project(tmp_path, data=None, server="notion"):
     """A completed project-mode setup, for the uninstall tests below."""
     path = _config(tmp_path, GLOBAL_ONLY if data is None else data)

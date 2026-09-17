@@ -1326,6 +1326,28 @@ _NOT_CAPTURING_STEPS = (
     "in your client too — which you would have noticed.",
 )
 
+# Project mode only, and it goes FIRST, because it is the only cause on this
+# list the person may already have produced by answering a question — and the
+# only one with a switch they can see.
+#
+# Verified against `code.claude.com/docs/en/mcp.md` on 2026-09-17, not recalled:
+# "For security reasons, Claude Code prompts for approval in interactive
+# sessions before using project-scoped servers from `.mcp.json` files." A server
+# waiting on that answer shows in `claude mcp list` as "Pending approval", and
+# `claude mcp reset-project-choices` clears a previous answer.
+#
+# Without this step the checklist sends someone who dismissed that prompt off to
+# check restarts and directories — none of which is the reason, and all of which
+# read as the kit not knowing what it did.
+_APPROVAL_STEP = (
+    "Was the server approved when Claude Code asked? A project config is not\n"
+    "trusted automatically: the first interactive session started in that folder\n"
+    "asks, and a prompt that was dismissed or declined leaves the server switched\n"
+    "off. `claude mcp list` shows it as pending approval, and\n"
+    "`claude mcp reset-project-choices` clears a previous answer so you are asked\n"
+    "again."
+)
+
 
 def entry_home(scope: str | None, config_path: str | Path) -> Path | None:
     """The one directory this entry loads for, or None if it loads everywhere.
@@ -1348,13 +1370,18 @@ def entry_home(scope: str | None, config_path: str | Path) -> Path | None:
     return Path(config_path).parent
 
 
-def not_capturing(scope: str | None, config_path: str | Path) -> str:
-    """The empty-file checklist, with the directory question when it applies.
+def not_capturing(scope: str | None, config_path: str | Path, mode: str = MODE_GLOBAL) -> str:
+    """The empty-file checklist, with the questions that apply to this wrap.
 
-    It applies whenever the entry is not in the global config — a project scope
-    inside `~/.claude.json`, or the top level of a project config reached with
-    `--config-file`. Both load for one directory; only `~/.claude.json` loads
-    for all of them."""
+    The directory question applies whenever the entry is not in the global
+    config — a project scope inside `~/.claude.json`, or the top level of a
+    project config reached with `--config-file`. Both load for one directory;
+    only `~/.claude.json` loads for all of them.
+
+    The approval question applies only in project mode, and only there because
+    that is the only mode in which this kit created the project config being
+    approved. An entry the person already had in a project scope of their own
+    was approved long ago, if it ever needed to be."""
     steps = list(_NOT_CAPTURING_STEPS)
     home = entry_home(scope, config_path)
     where = None if home is None else str(home)
@@ -1366,6 +1393,8 @@ def not_capturing(scope: str | None, config_path: str | Path) -> str:
             "A session started anywhere else loads your global servers only — the\n"
             "wrap never runs, and nothing is captured.",
         )
+    if mode == MODE_PROJECT:
+        steps.insert(0, _APPROVAL_STEP)
     body = "".join(
         f"  {n}. {step}\n".replace("\n", "\n     ", step.count("\n"))
         for n, step in enumerate(steps, start=1)
@@ -1412,11 +1441,22 @@ def wrap_is_gone(state: dict, *, had_events: bool) -> str:
         if had_events
         else "Nothing has been passing through the proxy."
     )
+    # The CAUSE differs by mode, and naming the wrong one sends someone looking
+    # in the wrong file. In global mode the usual cause is the client itself:
+    # it rewrites `~/.claude.json` continuously and may put the entry back. In
+    # project mode the file is ours, in our own checkout, and no client
+    # maintains it — so it changed because a person changed or deleted it, and
+    # saying "restored" would point them at a config that was never touched.
+    cause = (
+        "is no longer the entry setup wrote. That file is this kit's own, so it\n"
+        "was edited or deleted by hand — your own config was never part of this."
+        if state.get("mode", MODE_GLOBAL) == MODE_PROJECT
+        else "is no longer the entry setup wrote — it has been changed or restored\nsince."
+    )
     return (
         f"THE WRAP IS GONE. `{state['server_name']}` in\n"
         f"  {describe(Path(state['config_path']), state['scope'])}\n"
-        f"is no longer the entry setup wrote — it has been changed or restored\n"
-        f"since. {since}\n\n"
+        f"{cause} {since}\n\n"
         "  → run `python3 kit.py uninstall` to clear the stale state, then\n"
         "    setup again if you still want the trial.\n"
     )
@@ -2005,7 +2045,11 @@ def cmd_receipt(args: argparse.Namespace) -> int:
         # server name and config path printed above — neither of which exists
         # without state. Serving it here fired two of the doc's branches at once
         # and sent the reader back to the command they had just run.
-        print(not_capturing(state["scope"], state["config_path"]) if state else NOT_SET_UP)
+        print(
+            not_capturing(state["scope"], state["config_path"], state.get("mode", MODE_GLOBAL))
+            if state
+            else NOT_SET_UP
+        )
         return 0
 
     s = summarize(events, events_path.stat().st_size)
