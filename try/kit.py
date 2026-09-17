@@ -86,11 +86,16 @@ MCP_PATH = CHECKOUT / ".mcp.json"
 MODE_GLOBAL = "global"
 MODE_PROJECT = "project"
 
-# Which mode a plain `setup` uses. Still MODE_GLOBAL: the project path is built
-# and tested, and K1b flips this one name. Keeping the flip to a constant means
-# the ~79 tests that drive setup's default can be triaged in their own commit
-# rather than inside the commit that builds the feature.
-DEFAULT_MODE = MODE_GLOBAL
+# Which mode a plain `setup` uses. MODE_PROJECT since K1b: setup writes
+# `.mcp.json` in this checkout and only READS their config. `--in-place` is the
+# way back to the old behaviour.
+#
+# ⚠ The triage of the ~79 tests that drive setup's default is NOT in this
+# commit. Flipping the constant and triaging its fallout were split so the V1
+# hand-drive could run against true text first — a drive against the old
+# default tests the mode we are replacing. The suite is red until that triage
+# lands; the failure manifest is in the commit body.
+DEFAULT_MODE = MODE_PROJECT
 
 # The shape of state.json. 2 adds `mode`, `source_config_path` and
 # `source_scope`, and gives `scope: None` a second meaning — the top level of
