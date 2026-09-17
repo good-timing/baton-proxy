@@ -1226,6 +1226,27 @@ _NOT_CAPTURING_STEPS = (
 )
 
 
+def entry_home(scope: str | None, config_path: str | Path) -> Path | None:
+    """The one directory this entry loads for, or None if it loads everywhere.
+
+    Three cases, and the kit had this logic written out by hand in each place
+    that needed it — `not_capturing` and `start_where` — with a third copy due
+    when the K8 guard needed a base to resolve paths against. One answer, three
+    readers:
+
+    - A **project scope** inside `~/.claude.json`: the scope key IS the path.
+    - The **top level of a project config**, reached with `--config-file`: the
+      file's own directory.
+    - The **global config**: None. `~/.claude.json`'s top level loads wherever a
+      session starts, which is the whole distinction `is_global_config` draws.
+    """
+    if scope is not None:
+        return Path(scope)
+    if is_global_config(config_path):
+        return None
+    return Path(config_path).parent
+
+
 def not_capturing(scope: str | None, config_path: str | Path) -> str:
     """The empty-file checklist, with the directory question when it applies.
 
@@ -1234,11 +1255,8 @@ def not_capturing(scope: str | None, config_path: str | Path) -> str:
     `--config-file`. Both load for one directory; only `~/.claude.json` loads
     for all of them."""
     steps = list(_NOT_CAPTURING_STEPS)
-    where = (
-        scope
-        if scope is not None
-        else (None if is_global_config(config_path) else str(Path(config_path).parent))
-    )
+    home = entry_home(scope, config_path)
+    where = None if home is None else str(home)
     if where is not None:
         steps.insert(
             1,
@@ -1452,7 +1470,10 @@ def start_where(scope: str | None, config_path: str | Path) -> str:
     client starts. Only their config decides the second one — the kit wraps in
     place and never moves an entry between scopes, so whatever directory rule
     they already had is the one that survives the trial."""
-    if scope is None and is_global_config(config_path):
+    # `entry_home(...) is None` is exactly "loads wherever you start from", which
+    # is what this branch is about. Same condition as before, read off the one
+    # helper now rather than spelled out here for the third time.
+    if entry_home(scope, config_path) is None:
         return (
             "Open a second terminal and start Claude Code the way you normally do.\n"
             "This entry is registered globally, so it loads wherever you start from."
