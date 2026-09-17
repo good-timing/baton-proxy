@@ -2865,6 +2865,27 @@ def _restore_kit_home(saved) -> None:
         setattr(kit, name, value)
 
 
+def _wrapped_entry(name: str) -> dict:
+    """Read the entry `setup` just wrote, out of the file it actually wrote to.
+
+    ⚠ Both composed-run fixtures used to read this back out of the SOURCE config
+    they had handed to `--src-config`. Under the old global default that file
+    WAS the one setup rewrote, so the read worked by coincidence rather than by
+    rule. Project mode copies the entry into `kit.MCP_PATH` and leaves the
+    source alone, so the same line returned the ORIGINAL, unwrapped entry: the
+    bridge raised `KeyError: 'command'` on a remote entry that has no command,
+    and the stdio run launched the fixture directly with no proxy in its path —
+    which reported itself as "nothing captured the tool surface", a capture
+    failure blamed on the wrap rather than on the fixture.
+
+    Read the file directly rather than through `kit.read_state` and `entry_at`.
+    These are the tests that prove the wrap launches and observes, so the read
+    that feeds them must not run through the kit code they are grading.
+    """
+    data = json.loads(kit.MCP_PATH.read_text(encoding="utf-8"))
+    return data["mcpServers"][name]
+
+
 def _drive(entry: dict, messages: list[dict], *, timeout: int = 20) -> tuple[str, str]:
     """Launch `entry` the way an MCP client does and drive one session.
 
@@ -2930,7 +2951,7 @@ def stdio_run(tmp_path_factory):
             ]
         )
         assert rc == 0
-        entry = json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"]["fixture"]
+        entry = _wrapped_entry("fixture")
         stdout, stderr, returncode = _drive(entry, _SESSION)
         # `communicate()` returns after the proxy exits, which joins its drain
         # thread — every queued event is on disk by now, so no sleep.
@@ -3129,7 +3150,7 @@ def bridge_run(request, tmp_path_factory):
             ]
         )
         assert rc == 0
-        entry = json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"]["remote"]
+        entry = _wrapped_entry("remote")
 
         launch = dict(entry)
         if shape == "reference":
