@@ -2236,59 +2236,103 @@ def test_receipt_and_uninstall_reject_the_config_file_flag(cmd, tmp_path, kit_ho
     assert exc.value.code == 2
 
 
-def test_the_in_place_flag_is_accepted_and_changes_nothing_yet(
+def test_the_two_setup_routes_now_diverge_and_only_one_touches_their_config(
     tmp_path, kit_home, monkeypatch, capsys
 ):
-    """K3 lands before K1, so `--in-place` names the behaviour the kit already
-    has. Both runs must land in the same place.
+    """THE K1b TRIPWIRE, FIRED. This test used to be called
+    `test_the_in_place_flag_is_accepted_and_changes_nothing_yet` and asserted
+    that both routes landed in the same place, because K3 shipped the flag
+    before K1 changed anything. Its own docstring said what would happen:
 
-    Landing the flag first is what keeps the K1 commit honest: when the default
-    flips to writing a project `.mcp.json`, this test has to change, and
-    changing it is the diff saying out loud that `--in-place` became the only
-    route to the old behaviour.
+        "when the default flips to writing a project `.mcp.json`, this test has
+        to change, and changing it is the diff saying out loud that
+        `--in-place` became the only route to the old behaviour."
 
-    **Driven through DISCOVERY, not `--src-config`, and that is the whole
-    point of the test.** The first version passed `--src-config` on both legs.
-    Review found it would have stayed green through the flip: `--src-config`
-    pins the write target, so if K1 changes only what happens with no
-    `--src-config`, both legs keep editing the file they were handed, the
-    bytes keep matching, and the tripwire never fires. A test that cannot fail
-    when the thing it guards changes is not guarding it.
+    This is that diff. The assertion is inverted rather than deleted: the two
+    routes must now DIVERGE, and the divergence is the feature.
 
-    So the plain leg goes through `search_paths` with HOME redirected, and the
-    assertion is on `state.json` — the recorded `scope` and `config_path` are
-    the artifacts K1 must change, and config bytes alone would miss them."""
+    **Still driven through DISCOVERY, not `--src-config`, and that is still the
+    whole point.** An earlier version passed `--src-config` on both legs and
+    review found it would have survived the flip unchanged: `--src-config` pins
+    the write target, so both legs keep editing the file they were handed and
+    the tripwire never fires. Reading `state.json` rather than config bytes is
+    the other half — `scope` and `config_path` are the artifacts that move."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    (home / ".claude.json").write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
+    their_config = home / ".claude.json"
+    their_config.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
 
     assert kit.main(["setup", "notion"]) == 0
     plain_state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
-    plain_config = (home / ".claude.json").read_text(encoding="utf-8")
+    plain_config = their_config.read_text(encoding="utf-8")
 
     # Both legs start from the same untouched config. Without this the second
     # run meets the entry the first one wrapped and refuses it as someone
     # else's wrap, which is a real refusal but not the thing under test.
     kit.STATE_PATH.unlink()
-    (home / ".claude.json").write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
+    kit.MCP_PATH.unlink(missing_ok=True)
+    their_config.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
 
     assert kit.main(["setup", "notion", "--in-place"]) == 0
     flagged_state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
-    flagged_config = (home / ".claude.json").read_text(encoding="utf-8")
+    flagged_config = their_config.read_text(encoding="utf-8")
     capsys.readouterr()
 
-    assert (
-        flagged_state["config_path"]
-        == plain_state["config_path"]
-        == str((home / ".claude.json").resolve())
-    ), "today both routes write the person's own config"
-    assert flagged_state["scope"] == plain_state["scope"] is None
-    assert flagged_config == plain_config, "the two routes produce the same config today"
-    assert plain_config != canonical(GLOBAL_ONLY), (
-        "the entry really was wrapped IN PLACE; if the config came back unchanged "
-        "this test would pass without either route having done anything"
+    # The default now writes OUR file and leaves theirs byte-for-byte alone.
+    assert plain_state["config_path"] == str(kit.MCP_PATH)
+    assert plain_state["source_config_path"] == str(their_config.resolve())
+    assert plain_config == canonical(GLOBAL_ONLY), (
+        "the default route CHANGED their config; leaving it untouched is the feature"
+    )
+
+    # `--in-place` is now the only route to the old behaviour.
+    assert flagged_state["config_path"] == str(their_config.resolve())
+    assert flagged_state["scope"] is None
+    assert flagged_config != canonical(GLOBAL_ONLY), (
+        "the --in-place route did not wrap anything; without this the test passes "
+        "on a run that did nothing at all"
+    )
+
+    # And the two really are different, stated directly rather than inferred
+    # from the two halves above.
+    assert plain_state["config_path"] != flagged_state["config_path"]
+
+
+# The help sentence each default owes. Phase C's own note: the pairing was held
+# true by a COMMENT ("moves with the default in K1b") doing a test's job, and
+# fixing the stale wording in 2f4a244 reddened nothing.
+_IN_PLACE_HELP_FOR_DEFAULT = {
+    "project": "instead of writing a project config in this checkout",
+    "global": "(what setup does today)",
+}
+
+
+def test_the_in_place_help_says_what_the_current_default_is(capsys):
+    """`--help` must describe the route the person is NOT on, correctly.
+
+    This has been wrong in both directions already. Before K1b the help said
+    `--in-place` was "(what setup does today)", which was true; the flip made it
+    false and `--help` printed a false statement about a plain `setup` until
+    2f4a244 fixed it — and fixing it reddened NOTHING, which is why this exists.
+
+    Keyed off `kit.DEFAULT_MODE`, so flipping the constant without moving the
+    sentence is what fails, rather than the sentence being pinned to a literal
+    that a future flip would simply be edited to match."""
+    expected = _IN_PLACE_HELP_FOR_DEFAULT[kit.DEFAULT_MODE]
+    other = next(v for k, v in _IN_PLACE_HELP_FOR_DEFAULT.items() if k != kit.DEFAULT_MODE)
+
+    with pytest.raises(SystemExit) as e:
+        kit.main(["setup", "--help"])
+    assert e.value.code == 0
+    help_text = capsys.readouterr().out
+
+    assert expected in " ".join(help_text.split()), (
+        f"`--in-place`'s help does not describe the {kit.DEFAULT_MODE!r} default:\n{help_text}"
+    )
+    assert other not in " ".join(help_text.split()), (
+        f"`--in-place`'s help still describes the OTHER default:\n{help_text}"
     )
 
 
