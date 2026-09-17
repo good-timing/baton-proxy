@@ -5890,15 +5890,8 @@ def test_claude_md_makes_a_refusal_stick_for_the_config_commands():
     assert "in every mode" not in rule, "the rule still says the agent always keeps receipt"
 
 
-def test_receipt_reads_the_config_only_once_a_wrap_is_in_place(
-    tmp_path, kit_home, capsys, monkeypatch
-):
-    """The refusal rule hands `receipt` over only once a wrap is in place, on the
-    grounds that before then it touches no config. That is a claim about the
-    code, so it is measured here rather than trusted: every file `receipt` reads
-    is recorded, with no wrap and then with one. The second half is also what
-    shows the recorder can see a config read at all."""
-    config = _config(tmp_path, GLOBAL_ONLY).resolve()
+def _recording_reads(monkeypatch) -> list[str]:
+    """Record every file `Path.read_text` opens, resolved."""
     reads: list[str] = []
     real_read_text = Path.read_text
 
@@ -5907,13 +5900,66 @@ def test_receipt_reads_the_config_only_once_a_wrap_is_in_place(
         return real_read_text(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", recording_read_text)
+    return reads
+
+
+def test_receipt_reads_the_config_only_once_a_wrap_is_in_place(
+    tmp_path, kit_home, capsys, monkeypatch
+):
+    """The refusal rule hands `receipt` over only once a wrap is in place, on the
+    grounds that before then it touches no config. That is a claim about the
+    code, so it is measured here rather than trusted: every file `receipt` reads
+    is recorded, with no wrap and then with one. The second half is also what
+    shows the recorder can see a config read at all.
+
+    `--in-place` since K1b. In project mode the answer is not "once a wrap is in
+    place" but NEVER, which is a different claim and gets its own test below."""
+    config = _config(tmp_path, GLOBAL_ONLY).resolve()
+    reads = _recording_reads(monkeypatch)
     _receipt_output(capsys)
     assert str(config) not in reads, "receipt read the config with no wrap in place"
-    assert kit.main(["setup", "notion", "--src-config", str(config), "--tenant", "t"]) == 0
+    assert (
+        kit.main(["setup", "notion", "--src-config", str(config), "--tenant", "t", "--in-place"])
+        == 0
+    )
     capsys.readouterr()
     reads.clear()
     _receipt_output(capsys)
     assert str(config) in reads, "receipt no longer reads the config once a wrap is in place"
+
+
+def test_in_project_mode_receipt_never_opens_their_config(tmp_path, kit_home, capsys, monkeypatch):
+    """G1. `CLAUDE.md:135`: "`setup` is the only command that opens their
+    config. `receipt` and `uninstall` read and write only the kit's own files."
+
+    That sentence is what makes the `!` hand-over shrink to ONE command in
+    project mode, and the agent is told to keep running the other two itself. If
+    `receipt` reached for their config, the agent would be refused on a command
+    the doc promises is safe — and it would look like a kit fault rather than a
+    doc fault.
+
+    ⚠ Say it in the narrow form and no wider. Project mode does NOT mean "we
+    never read their config": `setup` reads it, that is K2, and `PROMPT.md:50`
+    tells the person so. The claim here is about `receipt` only, and the sibling
+    above pins the in-place answer, which is different rather than weaker.
+
+    The wrap file IS read — asserted, because "no reads at all" would pass on a
+    receipt that did nothing."""
+    config = _config(tmp_path, GLOBAL_ONLY).resolve()
+    assert kit.main(["setup", "notion", "--src-config", str(config), "--tenant", "t"]) == 0
+    capsys.readouterr()
+
+    reads = _recording_reads(monkeypatch)
+    out = _receipt_output(capsys)
+
+    assert str(config) not in reads, (
+        f"receipt opened their config in project mode; CLAUDE.md:135 says it does not:\n{reads}"
+    )
+    assert str(kit.MCP_PATH.resolve()) in reads, (
+        "receipt did not read the wrap file either — without this the assertion above "
+        f"passes on a receipt that read nothing at all:\n{reads}"
+    )
+    assert "THE WRAP IS GONE" not in out, "the receipt did not find the wrap it just wrote"
 
 
 @pytest.mark.parametrize(
