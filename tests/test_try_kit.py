@@ -4945,6 +4945,24 @@ def test_a_project_dir_reference_is_reported_as_itself_not_as_a_path(entry):
     )
 
 
+def test_the_command_field_gets_no_npm_exemption():
+    """`command` and `args` run the same rule with different widths, and this is
+    the only row where the two disagree.
+
+    Without it the width parameter is decoration: a mutation flipping `command`
+    to the argument rule passed every other test in this file. The input is
+    deliberately unusual — a directory literally named `@scope` — because the
+    realistic inputs are exactly the ones that cannot tell the two rules apart.
+    What is being pinned is the reason for the difference, not the input: an
+    argument may be an npm package name, and `command` is the executable, so a
+    separator in it is a path and there is nothing else it could be."""
+    as_command = kit.cwd_dependent_reason({"command": "@scope/bin/server"})
+    as_argument = kit.cwd_dependent_reason({"command": "npx", "args": ["@scope/bin/server"]})
+
+    assert as_command is not None, "a command with a separator in it is a path"
+    assert as_argument is None, "the same string as an argument is an npm spec and travels"
+
+
 def test_a_file_in_the_entrys_own_directory_is_caught_without_a_separator(tmp_path):
     """`node server.js`, where `server.js` sits in the project the entry is
     scoped to. Nothing about the shape of `server.js` says path, so this is the
@@ -4954,8 +4972,9 @@ def test_a_file_in_the_entrys_own_directory_is_caught_without_a_separator(tmp_pa
     (tmp_path / "server.js").write_text("// their server\n")
     entry = {"command": "node", "args": ["server.js"]}
 
-    assert kit.cwd_dependent_reason(entry, base=tmp_path) is not None
-    assert "names a file" in kit.cwd_dependent_reason(entry, base=tmp_path)
+    reason = kit.cwd_dependent_reason(entry, base=tmp_path)
+    assert reason is not None
+    assert "names a file" in reason
     # Same entry, no base to check against: undetectable, and claiming otherwise
     # would be the guard reporting a fact it cannot know.
     assert kit.cwd_dependent_reason(entry) is None
@@ -4963,9 +4982,32 @@ def test_a_file_in_the_entrys_own_directory_is_caught_without_a_separator(tmp_pa
     assert kit.cwd_dependent_reason(entry, base=tmp_path / "elsewhere") is None
 
 
+def test_the_same_bare_filename_is_caught_in_env_as_in_args(tmp_path):
+    """The two fields are checked by the same pair of rules, or the guard has a
+    blind position. Review found `_names_a_file_in` wired to `args` only, so
+    this exact string was refused as an argument and passed as an environment
+    value — a difference with no reason behind it, in a guard whose whole job is
+    that a path stops resolving when the entry moves."""
+    (tmp_path / "data.sqlite").write_text("")
+
+    as_arg = kit.cwd_dependent_reason({"command": "node", "args": ["data.sqlite"]}, base=tmp_path)
+    as_env = kit.cwd_dependent_reason(
+        {"command": "node", "env": {"DB": "data.sqlite"}}, base=tmp_path
+    )
+
+    assert as_arg is not None, "the argument form is the one that already worked"
+    assert as_env is not None, "the same filename in `env` is the same broken path"
+    assert "`DB`" in as_env, f"the reason does not say which variable: {as_env}"
+
+
 @pytest.mark.parametrize(
     "entry",
     [
+        # An absolute path that contains an `=`. The argument rule splits on the
+        # last `=` to see through `--config=logs/app.json`, and once `command`
+        # was routed through that same rule this one started being refused for
+        # being relative when it is absolute. The whole value is tested first.
+        {"command": "/opt/my=dir/bin/server"},
         {"command": "node", "args": ["/abs/path/index.js"]},
         {"command": "/usr/local/bin/server"},
         {"command": "python3", "args": ["-m", "my_server"]},

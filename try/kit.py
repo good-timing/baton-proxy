@@ -500,7 +500,7 @@ def _path_candidate(value: str) -> str:
     return value.rsplit("=", 1)[-1] if "=" in value else value
 
 
-def _relative_path_like(value: str) -> bool:
+def _relative_path_like(value: str, *, exempt_npm_and_url: bool = True) -> bool:
     """Does this string resolve against a working directory?
 
     Widened 2026-09-17 after review: the first version took only `./` and `../`,
@@ -519,9 +519,26 @@ def _relative_path_like(value: str) -> bool:
     Everything else with a separator and no absolute root is treated as a path.
     That direction is deliberate: a false positive costs a trial that would have
     worked and says `--global` in the same breath, while a false negative is a
-    server that dies in their next session with nothing pointing at the cause."""
+    server that dies in their next session with nothing pointing at the cause.
+
+    ``exempt_npm_and_url`` is False for the ``command`` field, where neither
+    exemption can apply: a command is the executable, so a separator in it is a
+    path by definition, and neither an npm spec nor a URL is launchable. It is a
+    parameter rather than a second copy of the rule so the two callers cannot
+    drift — the width difference is deliberate, the rule underneath is one rule.
+    """
+    # The WHOLE value first, before the `=` split. `/opt/my=dir/bin/server` is an
+    # absolute path that happens to contain an `=`; splitting it would leave
+    # `dir/bin/server`, which has a separator and no root, and the entry would be
+    # refused for being relative when it is not. Caught by probing the refactor
+    # that introduced it rather than by a test, so here is the test: it is the
+    # first row of `test_an_entry_that_travels_is_left_alone`.
+    if Path(value).is_absolute():
+        return False
     candidate = _path_candidate(value)
-    if not candidate or candidate.startswith("@") or "://" in candidate:
+    if not candidate:
+        return False
+    if exempt_npm_and_url and (candidate.startswith("@") or "://" in candidate):
         return False
     if Path(candidate).is_absolute():
         return False
@@ -594,19 +611,21 @@ def cwd_dependent_reason(entry: dict, base: Path | None = None) -> str | None:
     # made one without hardcoding their project root.
     for field in ("command", "args", "env", "url", "headers"):
         if _PROJECT_DIR_REF.search(json.dumps(entry.get(field), ensure_ascii=False)):
+            # A bare fragment, like `not_wrappable_reason`'s. The caller composes
+            # the sentence and owns the line breaks; this returned its own
+            # indentation for a layout that did not exist yet.
             return (
-                f"its `{field}` refers to ${{CLAUDE_PROJECT_DIR}}, which Claude Code "
-                "sets to\n  the directory the entry is scoped to — a different "
-                "directory once the entry\n  is copied"
+                f"its `{field}` refers to ${{CLAUDE_PROJECT_DIR}}, which Claude Code sets "
+                "to the directory the entry is scoped to — a different directory once "
+                "the entry is copied"
             )
 
     command = entry.get("command")
-    if isinstance(command, str) and command:
-        # Wider than `_relative_path_like`: a separator is enough, with no
-        # exemptions. A command with a slash in it is a path by definition —
-        # `node` and `python3` resolve against PATH and travel fine.
-        if not Path(command).is_absolute() and ("/" in command or os.sep in command):
-            return f"its launch command is a relative path (`{command}`)"
+    # The same rule as the arguments get, minus the two exemptions — a command
+    # with a slash in it is a path by definition, while `node` and `python3`
+    # resolve against PATH and travel fine.
+    if isinstance(command, str) and _relative_path_like(command, exempt_npm_and_url=False):
+        return f"its launch command is a relative path (`{command}`)"
 
     for i, arg in enumerate(str(a) for a in entry.get("args") or []):
         if _relative_path_like(arg):
@@ -616,8 +635,16 @@ def cwd_dependent_reason(entry: dict, base: Path | None = None) -> str | None:
 
     env = entry.get("env")
     for key, value in (env if isinstance(env, dict) else {}).items():
-        if isinstance(value, str) and _relative_path_like(value):
+        if not isinstance(value, str):
+            continue
+        if _relative_path_like(value):
             return f"its `{key}` environment value is a relative path (`{value}`)"
+        # Applied to env as well as args. Review found it on args only, which
+        # left `{"DB": "data.sqlite"}` — a bare filename sitting in the entry's
+        # own directory — passing while the identical string in `args` was
+        # caught. Each field is a position that can be missed; this one was.
+        if _names_a_file_in(base, value):
+            return f"its `{key}` environment value names a file in the entry's own directory (`{value}`)"
     return None
 
 
