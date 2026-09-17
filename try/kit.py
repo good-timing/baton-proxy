@@ -2468,15 +2468,16 @@ def main(argv: list[str] | None = None) -> int:
     # that recommended the pair said nothing about it. This name states the
     # write, which is the whole point of it.
     #
-    # The help is still phrased in TODAY's terms and moves with the default in
-    # K1b. An earlier version described the world AFTER the flip, which was a
-    # false statement about what a plain `setup` does, printed by `--help`.
+    # Moved at K1b, as the comment above it required. "(what setup does today)"
+    # was true only while the default was global; the flip made `--help` print
+    # a false statement about a plain `setup`, which is the same defect the
+    # earlier version had in the other direction.
     p_setup.add_argument(
         "--in-place",
         dest="in_place",
         action="store_true",
         help="wrap the entry where it already lives, editing that config file in "
-        "place (what setup does today)",
+        "place, instead of writing a project config in this checkout",
     )
     # K9, reopened and settled 2026-09-17: the flag stays, under a name that
     # says which direction it points. As `--config-file` it named a file and said

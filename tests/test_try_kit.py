@@ -57,10 +57,17 @@ def _no_project_config_left_by_the_whole_run():
     past it: the per-test guard was proven against a function-scoped mutant and
     only ever discriminated that class.
 
-    Session scope catches any writer at any scope. The entry check fails a run
-    that STARTS poisoned, because a stale file also changes results — setup
-    refuses on a leftover it cannot account for, so a poisoned run reports
-    failures that say nothing about the code.
+    Session scope catches a writer at any scope — but only one that LEAVES THE
+    FILE BEHIND. A fixture that ran setup and then uninstall would hold a live
+    `.mcp.json` in the checkout for its whole lifetime and remove it on the way
+    out, and neither guard would say a word. No such fixture exists today; the
+    limit is recorded so the pair is not read as proof that nothing can write
+    that path. Note too that after any leak the per-test guard sees
+    `existed=True` and is blind for the rest of the run.
+
+    The entry check fails a run that STARTS poisoned, because a stale file also
+    changes results — setup refuses on a leftover it cannot account for, so a
+    poisoned run reports failures that say nothing about the code.
     """
     if _REAL_MCP_PATH.exists():
         raise AssertionError(
@@ -1373,13 +1380,25 @@ def kit_home(tmp_path, monkeypatch):
     working tree, K7's `.gitignore` hides it from `git status`, the next
     `claude` started here loads it, and the following run fails on the leftover
     rather than on anything real.
+
+    ⚠ MCP_PATH goes in a CHECKOUT dir beside the kit home, never inside it.
+    In production `MCP_PATH.parent` is the checkout root and `TRY_DIR` is
+    `try/` below it, so the two are never the same directory — `kit.py:79-83`
+    says a `try/.mcp.json` is wrong, and `start_where` exists to stop the kit
+    offering its own directory as the place to start the client. A first cut
+    here used `home / ".mcp.json"`, making `MCP_PATH.parent == TRY_DIR`, and
+    `test_the_handoff_never_offers_the_kits_own_directory_as_the_place_to_start`
+    failed with `cd <tmp>/kit-home && claude` in the output — a red caused by
+    the fixture that read as fallout from the K1b flip.
     """
     home = tmp_path / "kit-home"
     home.mkdir()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir(exist_ok=True)
     monkeypatch.setattr(kit, "TRY_DIR", home)
     monkeypatch.setattr(kit, "STATE_PATH", home / "state.json")
     monkeypatch.setattr(kit, "EVENTS_PATH", home / "events.jsonl")
-    monkeypatch.setattr(kit, "MCP_PATH", home / ".mcp.json")
+    monkeypatch.setattr(kit, "MCP_PATH", checkout / ".mcp.json")
     return home
 
 
@@ -1401,23 +1420,29 @@ def _config(tmp_path, data) -> Path:
 
 @pytest.fixture
 def project_mode(tmp_path, monkeypatch, kit_home):
-    """Turn on project mode and put its output in a checkout-shaped tmp dir.
+    """Turn on project mode and hand back the file it writes.
 
     MCP_PATH is `CHECKOUT/.mcp.json` — a real path in this working tree — so
     without a redirect a test run writes a project config into the repo and
     the next `claude` started here loads it. `kit_home` now redirects it for
-    every test; this one moves it again, to a directory that is not the kit's
-    own, because these tests are about a file the checkout ROOT holds.
+    every test, to this same `tmp_path/checkout/`; what this fixture still owns
+    is turning the mode on and RETURNING the path, which its callers assert on.
 
     ⚠ `kit_home` is requested rather than left to signature order. Both
-    fixtures set MCP_PATH and the last one wins, so the order has to be
-    declared: every caller happens to list `kit_home` first today, and a new
-    test written the other way round would silently get the wrong path.
+    fixtures set MCP_PATH, and while they now agree on the value, a future
+    change to either would be decided by whichever ran last. Declaring the
+    dependency makes that order a fact rather than a coincidence of every
+    caller happening to list `kit_home` first.
+
+    ⚠ `exist_ok` because `kit_home` creates this directory first, by the same
+    dependency. Without it the fixture raises FileExistsError on every test
+    that uses it.
     """
+    checkout = tmp_path / "checkout"
+    checkout.mkdir(exist_ok=True)
     monkeypatch.setattr(kit, "DEFAULT_MODE", kit.MODE_PROJECT)
-    monkeypatch.setattr(kit, "MCP_PATH", tmp_path / "checkout" / ".mcp.json")
-    (tmp_path / "checkout").mkdir()
-    return tmp_path / "checkout" / ".mcp.json"
+    monkeypatch.setattr(kit, "MCP_PATH", checkout / ".mcp.json")
+    return checkout / ".mcp.json"
 
 
 def test_project_mode_writes_our_file_and_leaves_theirs_byte_identical(
@@ -2801,12 +2826,17 @@ def _kit_home_at(home: Path):
     function fixture, so the file already existed by the time the guard looked,
     and the leak read as run-to-run flakiness in the counts.
     """
+    # mkdir FIRST. Callers do `saved = _kit_home_at(home)` outside their `try`,
+    # so anything that raises after the assignments leaves all four globals
+    # pointed at a tmp dir for the rest of the session with no restore to
+    # reach. Creating the directory before the first assignment keeps the
+    # mutating half of this function free of failure points.
+    (home / "checkout").mkdir(exist_ok=True)
     saved = tuple(getattr(kit, n) for n in _KIT_HOME_GLOBALS)
     kit.TRY_DIR = home
     kit.STATE_PATH = home / "state.json"
     kit.EVENTS_PATH = home / "events.jsonl"
     kit.MCP_PATH = home / "checkout" / ".mcp.json"
-    (home / "checkout").mkdir(exist_ok=True)
     return saved
 
 
