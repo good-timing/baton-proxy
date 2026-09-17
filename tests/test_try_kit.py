@@ -1791,6 +1791,41 @@ def test_section_9_excludes_every_artifact_the_kit_can_leave_behind():
             )
 
 
+def test_the_project_config_the_kit_writes_is_git_ignored():
+    """K7. `MCP_PATH` is the checkout root's own `.mcp.json`, and the kit writes
+    it in project mode with the person's `env` copied verbatim — so it can hold
+    a literal credential. A prospect's clone is a git checkout; an untracked
+    file appearing in `git status` after setup is one more thing they did not
+    ask for, and one they could commit.
+
+    Anchored with a leading slash, and that is asserted rather than assumed: an
+    unanchored `.mcp.json` would also hide one a contributor legitimately adds
+    somewhere else in the tree.
+
+    Note this belongs to the ROOT .gitignore, not `try/.gitignore`. That file is
+    pinned byte-for-byte against TRIAL_ARTIFACTS, which is the list §9's audit
+    grep excludes — and §9 greps `src/ try/`, which this file sits outside of.
+    """
+    rules = [
+        line.strip()
+        for line in (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    assert "/.mcp.json" in rules, (
+        "the project config setup writes is not ignored; it can carry a literal "
+        "token copied out of the person's own config"
+    )
+    assert ".mcp.json" not in rules, "an unanchored rule would hide a legitimate one elsewhere"
+
+    # The rule as git actually reads it, not as we read it.
+    root_file = REPO_ROOT / kit.MCP_PATH.name
+    assert kit.MCP_PATH == REPO_ROOT / ".mcp.json", "MCP_PATH moved; this rule no longer covers it"
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", str(root_file)], cwd=REPO_ROOT
+    ).returncode
+    assert ignored == 0, f"git does not ignore {root_file}"
+
+
 # The two tests a plain `git clone` cannot run. §9.5's suite prints "2 skipped"
 # with no reason attached, and a reviewer reading a security document does not
 # get to guess which two. The only skip in the suite is the `event_schema`

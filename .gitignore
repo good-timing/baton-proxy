@@ -11,3 +11,12 @@ dist/
 # Local exploratory work — examples/ is the published equivalent
 spikes/
 baton-report.md
+
+# The project config `try/kit.py setup` writes in project mode. Anchored with a
+# leading slash: this is the checkout root's own file, and an unanchored
+# `.mcp.json` would also hide one a contributor legitimately adds elsewhere.
+# It can hold a literal credential copied out of the person's own config, so it
+# is never a file to commit — and a prospect's clone is a git checkout, where an
+# untracked file showing up in `git status` after setup is one more thing they
+# did not ask for.
+/.mcp.json
