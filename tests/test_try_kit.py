@@ -1958,14 +1958,24 @@ def test_the_approval_question_is_not_asked_of_an_entry_in_their_own_config(
     what the first version of this test got wrong: it pointed `--src-config` at
     a path in a tmp dir and called the result a global wrap, when by the kit's
     own `is_global_config` that file is a project config. The test name said
-    global; the fixture was not."""
+    global; the fixture was not.
+
+    ⚠ `--in-place` since K1b, and the flag is doing more than keeping a mode
+    green. The claim here is about an entry that STAYS in `~/.claude.json`, and
+    only `--in-place` leaves it there. The default COPIES it into a `.mcp.json`,
+    which is exactly the shape the docs gate — so the answer legitimately flips
+    to "yes, approval is asked", and asserting the old answer on the new default
+    would pin a sentence that is false in front of a prospect. The project side
+    is its own test: `test_receipt_finds_the_wrap_and_asks_about_approval_in_project_mode`
+    (:1916), which asserts `reset-project-choices` IS offered. This one is the
+    control for the case where their entry never moves."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     (home / ".claude.json").write_text(canonical(data), encoding="utf-8")
 
-    assert kit.main(["setup", "notion"]) == 0
+    assert kit.main(["setup", "notion", "--in-place"]) == 0
     capsys.readouterr()
 
     assert kit.main(["receipt"]) == 0
@@ -4870,9 +4880,18 @@ def test_the_unverified_branch_does_not_tell_you_to_delete_the_record(
     so "delete the folder and you are done" would talk someone into destroying
     their recovery record one line under a warning that the restore did not
     match. Nothing-was-installed is still true and still said; what changes is
-    the instruction."""
+    the instruction.
+
+    `--in-place` since K1b, for the same reason as its twin above: `cmd_uninstall`
+    returns through `_finish_uninstall(verified=True)` before
+    `restored_matches_on_disk` is ever called in project mode, so the branch this
+    monkeypatch reaches for is unreachable there. Project mode has no restore to
+    leave unverified — it deletes a file of ours instead of rewriting one of
+    theirs."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    assert (
+        kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t", "--in-place"]) == 0
+    )
     capsys.readouterr()
     monkeypatch.setattr(kit, "restored_matches_on_disk", lambda *_a, **_k: False)
     assert kit.main(["uninstall"]) == 0
@@ -5704,15 +5723,40 @@ def test_receipt_reads_the_config_only_once_a_wrap_is_in_place(
     assert str(config) in reads, "receipt no longer reads the config once a wrap is in place"
 
 
-def test_setup_does_not_tell_them_to_check_early(tmp_path, kit_home, capsys):
+@pytest.mark.parametrize(
+    "extra,kept",
+    [
+        pytest.param(
+            ["--in-place"],
+            ("backup:", "events:", "tenant:"),
+            id="in-place",
+        ),
+        pytest.param(
+            [],
+            ("copied from:", "your own config was read, not changed.", "events:", "tenant:"),
+            id="project",
+        ),
+    ],
+)
+def test_setup_does_not_tell_them_to_check_early(tmp_path, kit_home, capsys, extra, kept):
     """Watched live after 0.6.4: `CLAUDE.md` had lost the day-one receipt nag and
     setup still printed its own copy. It told the person the wrap may well be
     broken before they had used it once, and handed them a check the ending
     already makes: saying they are done runs `receipt`, which states what landed
     or that nothing did. Pinned on both setup paths, together with the rest of
-    the printout, which has to survive the cut."""
+    the printout, which has to survive the cut.
+
+    ⚠ Parametrized by MODE at K1b rather than pinned to `--in-place`, because
+    only the `kept` list is mode-bound and the day-one nag is not. `backup:` is
+    printed by the mode that writes a backup, and project mode writes none — so
+    pinning this whole test to `--in-place` would have stopped checking the nag
+    on the path every prospect now takes, to keep one line in the kept list.
+
+    The project row pins two lines nothing else pins, and they are the two the
+    feature exists to be able to say: `copied from:` and `your own config was
+    read, not changed.`"""
     path = _config(tmp_path, GLOBAL_ONLY)
-    args = ["setup", "notion", "--src-config", str(path), "--tenant", "t"]
+    args = ["setup", "notion", "--src-config", str(path), "--tenant", "t", *extra]
     assert kit.main(args) == 0
     first, _err = capsys.readouterr()
     assert kit.main(args) == 0
@@ -5724,8 +5768,8 @@ def test_setup_does_not_tell_them_to_check_early(tmp_path, kit_home, capsys):
         assert kit.come_back() in out and kit.ENDING_NOTE in out, (
             f"the cut took more than the day-one lines:\n{out}"
         )
-    for kept in ("backup:", "events:", "tenant:", kit.RESTART_NOTE):
-        assert kept in first, f"the cut took {kept!r} with it:\n{first}"
+    for line in (*kept, kit.RESTART_NOTE):
+        assert line in first, f"the cut took {line!r} with it:\n{first}"
 
 
 def test_step_2_does_not_reprint_what_the_person_watched_print():
