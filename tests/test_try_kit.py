@@ -42,6 +42,70 @@ def _load_kit():
 
 kit = _load_kit()
 
+# The real one, off `__file__`, captured before any fixture redirects it. The
+# guard below is the only thing that may read it.
+_REAL_MCP_PATH = kit.MCP_PATH
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_project_config_left_by_the_whole_run():
+    """The same rule as the per-test guard, for writers it cannot see.
+
+    A module-scoped fixture is set up BEFORE any function-scoped one, so by the
+    time the per-test guard first looks the file already exists and it reads
+    that as "not mine". That is exactly how `stdio_run` and `bridge_run` leaked
+    past it: the per-test guard was proven against a function-scoped mutant and
+    only ever discriminated that class.
+
+    Session scope catches any writer at any scope. The entry check fails a run
+    that STARTS poisoned, because a stale file also changes results — setup
+    refuses on a leftover it cannot account for, so a poisoned run reports
+    failures that say nothing about the code.
+    """
+    if _REAL_MCP_PATH.exists():
+        raise AssertionError(
+            f"{_REAL_MCP_PATH} exists before the run. A previous run leaked it, or a "
+            "real trial is set up in this checkout. Remove it (or finish the trial "
+            "with `uninstall`) — results from a poisoned run mean nothing."
+        )
+    yield
+    if _REAL_MCP_PATH.exists():
+        _REAL_MCP_PATH.unlink()
+        raise AssertionError(
+            f"the run wrote {_REAL_MCP_PATH}, a real file in the working tree that "
+            "`claude` loads, and no single test owned up to it — so the writer is "
+            "scoped above the per-test guard. Redirect kit.MCP_PATH in whichever "
+            "module- or session-scoped fixture calls setup. (File removed.)"
+        )
+
+
+@pytest.fixture(autouse=True)
+def _no_project_config_in_the_working_tree():
+    """Fail the test that writes a `.mcp.json` into this checkout.
+
+    K1b found this the expensive way: the flip sent every setup test down the
+    project path, `kit_home` did not redirect MCP_PATH yet, and the suite wrote
+    a live wrapped server into the repo root. Three things made it quiet — K7
+    git-ignores that exact path so `git status` stays clean, the file only
+    changes behaviour for a `claude` started in this directory, and the damage
+    showed up as ONE extra failure in the NEXT run, which reads like flakiness
+    rather than a leak.
+
+    Autouse and per-test so the failure names the test that did it. It asserts
+    on the real path rather than `kit.MCP_PATH`, which by then is whatever the
+    fixtures pointed it at.
+    """
+    existed = _REAL_MCP_PATH.exists()
+    yield
+    if _REAL_MCP_PATH.exists() and not existed:
+        _REAL_MCP_PATH.unlink()
+        raise AssertionError(
+            f"this test wrote {_REAL_MCP_PATH}, which is a real file in the working "
+            "tree that `claude` loads. A fixture is not redirecting kit.MCP_PATH. "
+            "(The file has been removed so the rest of the run is not poisoned.)"
+        )
+
+
 WRAP_ARGS = dict(
     tenant_id="trial-abc123",
     vendor_id="notion",
@@ -1300,12 +1364,22 @@ def kit_home(tmp_path, monkeypatch):
     trial's state — the hazard `spikes/http_entry_wrap/run_kit_bridge_e2e.sh`
     carries today. SRC_DIR is deliberately left real: `cmd_setup` refuses when
     it is missing, and that refusal is not what these tests are about.
+
+    ⚠ MCP_PATH is a FOURTH such path and it was not covered here until K1b.
+    While the default was global, only a test that opted into `project_mode`
+    could reach it, and that fixture redirects it. At the flip every setup test
+    takes the project path, so the redirect has to be the default rather than
+    the opt-in. Without it the suite writes a live `.mcp.json` into this
+    working tree, K7's `.gitignore` hides it from `git status`, the next
+    `claude` started here loads it, and the following run fails on the leftover
+    rather than on anything real.
     """
     home = tmp_path / "kit-home"
     home.mkdir()
     monkeypatch.setattr(kit, "TRY_DIR", home)
     monkeypatch.setattr(kit, "STATE_PATH", home / "state.json")
     monkeypatch.setattr(kit, "EVENTS_PATH", home / "events.jsonl")
+    monkeypatch.setattr(kit, "MCP_PATH", home / ".mcp.json")
     return home
 
 
@@ -1326,12 +1400,20 @@ def _config(tmp_path, data) -> Path:
 
 
 @pytest.fixture
-def project_mode(tmp_path, monkeypatch):
-    """Turn on project mode and put its output somewhere disposable.
+def project_mode(tmp_path, monkeypatch, kit_home):
+    """Turn on project mode and put its output in a checkout-shaped tmp dir.
 
     MCP_PATH is `CHECKOUT/.mcp.json` — a real path in this working tree — so
-    without the redirect a test run writes a project config into the repo and
-    the next `claude` started here loads it."""
+    without a redirect a test run writes a project config into the repo and
+    the next `claude` started here loads it. `kit_home` now redirects it for
+    every test; this one moves it again, to a directory that is not the kit's
+    own, because these tests are about a file the checkout ROOT holds.
+
+    ⚠ `kit_home` is requested rather than left to signature order. Both
+    fixtures set MCP_PATH and the last one wins, so the order has to be
+    declared: every caller happens to list `kit_home` first today, and a new
+    test written the other way round would silently get the wrong path.
+    """
     monkeypatch.setattr(kit, "DEFAULT_MODE", kit.MODE_PROJECT)
     monkeypatch.setattr(kit, "MCP_PATH", tmp_path / "checkout" / ".mcp.json")
     (tmp_path / "checkout").mkdir()
@@ -2700,18 +2782,42 @@ _SESSION = [
 TK_F_8_TENANT = "trial-tkf8"
 
 
+_KIT_HOME_GLOBALS = ("TRY_DIR", "STATE_PATH", "EVENTS_PATH", "MCP_PATH")
+
+
 def _kit_home_at(home: Path):
-    """Save/restore the three module globals `kit_home` monkeypatches.
+    """Save/restore the module globals `kit_home` monkeypatches.
 
     A plain fixture cannot be used here: the composed run is module-scoped (one
     subprocess for several assertions) and `monkeypatch` is function-scoped.
     SRC_DIR stays real deliberately — the wrap must point at the actual proxy
-    source, which is the whole thing under test."""
-    saved = (kit.TRY_DIR, kit.STATE_PATH, kit.EVENTS_PATH)
+    source, which is the whole thing under test.
+
+    ⚠ MCP_PATH joined this list at K1b, and it is why the names are a tuple
+    rather than three assignments. Under the old default these fixtures never
+    reached the project path, so the omission cost nothing; after the flip
+    their `setup` call wrote a live `.mcp.json` into the real checkout. The
+    function-scoped guard could not see it — a module fixture runs before any
+    function fixture, so the file already existed by the time the guard looked,
+    and the leak read as run-to-run flakiness in the counts.
+    """
+    saved = tuple(getattr(kit, n) for n in _KIT_HOME_GLOBALS)
     kit.TRY_DIR = home
     kit.STATE_PATH = home / "state.json"
     kit.EVENTS_PATH = home / "events.jsonl"
+    kit.MCP_PATH = home / "checkout" / ".mcp.json"
+    (home / "checkout").mkdir(exist_ok=True)
     return saved
+
+
+def _restore_kit_home(saved) -> None:
+    """The other half of `_kit_home_at`, as a function so the two cannot drift.
+
+    Unpacking the tuple by hand at each call site is what let MCP_PATH be added
+    to one end and not the other; with the names in one list an arity mismatch
+    is impossible instead of merely unlikely."""
+    for name, value in zip(_KIT_HOME_GLOBALS, saved, strict=True):
+        setattr(kit, name, value)
 
 
 def _drive(entry: dict, messages: list[dict], *, timeout: int = 20) -> tuple[str, str]:
@@ -2792,7 +2898,7 @@ def stdio_run(tmp_path_factory):
             "home": home,
         }
     finally:
-        kit.TRY_DIR, kit.STATE_PATH, kit.EVENTS_PATH = saved
+        _restore_kit_home(saved)
 
 
 def _replies(stdout: str) -> list[dict]:
@@ -3003,7 +3109,7 @@ def bridge_run(request, tmp_path_factory):
             "authorizations": list(httpd.authorizations),
         }
     finally:
-        kit.TRY_DIR, kit.STATE_PATH, kit.EVENTS_PATH = saved
+        _restore_kit_home(saved)
         httpd.shutdown()
         httpd.server_close()
 
