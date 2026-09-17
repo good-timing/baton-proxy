@@ -99,9 +99,25 @@ DEFAULT_MODE = MODE_GLOBAL
 # ⚠ Nothing reads this field, here or anywhere. It is a record for a person
 # looking at the file, not a compatibility gate, so bumping it does not protect
 # an older kit from a newer state file. What actually carries compatibility is
-# `state.get("mode", MODE_GLOBAL)`: a state file written before `mode` existed
-# is a real machine mid-trial, and every one of those is global.
+# `wrap_mode()` below.
 STATE_VERSION = 2
+
+
+def wrap_mode(state: dict) -> str:
+    """Which mode wrote this state file.
+
+    A COMPATIBILITY read, and it is a named function so that it says so. Absent
+    means a state file written before `mode` existed, which is a real machine
+    mid-trial, and every one of those is global.
+
+    ⚠ This default stays MODE_GLOBAL when K1b flips ``DEFAULT_MODE``. The two
+    constants share a value today and answer different questions: DEFAULT_MODE
+    is what a fresh `setup` does, this is what an OLD state file meant. Spelled
+    out at three call sites it was three things for whoever greps MODE_GLOBAL
+    during the flip to individually recognise as not theirs.
+    """
+    return state.get("mode", MODE_GLOBAL)
+
 
 # Names a baton-proxy invocation can appear under in someone's config.
 _PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
@@ -1089,7 +1105,6 @@ def build_project_config(
     text = json.dumps({"mcpServers": {name: wrapped}}, indent=2, ensure_ascii=False) + "\n"
     state = {
         "version": STATE_VERSION,
-        "mode": MODE_PROJECT,
         "wrapped_at": datetime.now(UTC).isoformat(timespec="seconds"),
         # None, because the entry sits at the TOP LEVEL of the file we write.
         # `wrap_still_present` and `apply_unwrap` both read the entry back with
@@ -1151,7 +1166,7 @@ def apply_unwrap(config_text: str, state: dict) -> tuple[str, dict]:
         # entry, and CLAUDE.md forbids the agent from deleting the state file to
         # escape. Clearing the state IS the remaining work.
         return config_text, current
-    if current != state["wrapped_entry"]:
+    if not is_still_our_wrap(current, state):
         raise Refuse(
             f"`{name}` has been edited since setup wrapped it, so this kit will not\n"
             "  silently overwrite it. Both versions, for you to reconcile by hand:\n\n"
@@ -1381,6 +1396,18 @@ def approval_step(folder: Path) -> str:
     )
 
 
+def is_still_our_wrap(current: dict | None, state: dict) -> bool:
+    """Is the entry on disk the one setup wrote, untouched since?
+
+    One predicate, two callers — `apply_unwrap` before it restores, and
+    `remove_project_config` before it deletes. Both had the comparison written
+    out, and both use it to decide the same thing: whether a person has been in
+    there by hand, which is the case where guessing is worst. A definition that
+    changed in one copy and not the other would make one path refuse when it
+    should not, and the other delete something it should not have touched."""
+    return current == state["wrapped_entry"]
+
+
 def entry_home(scope: str | None, config_path: str | Path) -> Path | None:
     """The one directory this entry loads for, or None if it loads everywhere.
 
@@ -1431,7 +1458,7 @@ def needs_approval(scope: str | None, config_path: str | Path) -> bool:
     return scope is None and not is_global_config(config_path)
 
 
-def not_capturing(scope: str | None, config_path: str | Path, mode: str = MODE_GLOBAL) -> str:
+def not_capturing(scope: str | None, config_path: str | Path) -> str:
     """The empty-file checklist, with the questions that apply to this wrap.
 
     The directory question applies whenever the entry is not in the global
@@ -1440,8 +1467,12 @@ def not_capturing(scope: str | None, config_path: str | Path, mode: str = MODE_G
     only `~/.claude.json` loads for all of them.
 
     The approval question applies to a project `.mcp.json`; see
-    ``needs_approval``. ``mode`` is no longer what decides it and is kept only
-    because callers pass it."""
+    ``needs_approval``. It used to be decided by which mode this kit ran in,
+    and that parameter is gone rather than left inert: keying this on the mode
+    instead of on the file is the bug
+    ``test_a_global_wrap_into_a_project_mcp_json_still_asks_about_approval``
+    exists to catch, and an unused `mode` argument in the signature is an
+    invitation to wire it back up."""
     steps = list(_NOT_CAPTURING_STEPS)
     home = entry_home(scope, config_path)
     where = None if home is None else str(home)
@@ -1510,7 +1541,7 @@ def wrap_is_gone(state: dict, *, had_events: bool) -> str:
     cause = (
         "is no longer the entry setup wrote. That file is this kit's own, so it\n"
         "was edited or deleted by hand — your own config was never part of this."
-        if state.get("mode", MODE_GLOBAL) == MODE_PROJECT
+        if wrap_mode(state) == MODE_PROJECT
         else "is no longer the entry setup wrote — it has been changed or restored\nsince."
     )
     return (
@@ -1638,12 +1669,20 @@ def describe(path: Path, scope: str | None) -> str:
     level of whatever file was read", and for a project `.mcp.json` reached with
     `--config-file` that top level loads for ONE directory. Calling it "global
     mcpServers" told the person the opposite, in the line that names the file
-    the kit is about to change."""
+    the kit is about to change.
+
+    Branches on `entry_home`, not on `is_global_config` directly. That helper
+    was extracted to retire this exact three-way fork from the places that had
+    it written out by hand, and this function — 250 lines below it — was a
+    fourth copy of the same decision. Two copies of "which directory does this
+    entry load for" is how the receipt ends up describing a location the rest
+    of the kit reasons about differently."""
     if scope is not None:
         return f"{path} · project {scope}"
-    if is_global_config(path):
+    home = entry_home(scope, path)
+    if home is None:
         return f"{path} · global mcpServers"
-    return f"{path} · project config, loaded for sessions started in {path.parent}"
+    return f"{path} · project config, loaded for sessions started in {home}"
 
 
 def is_global_config(config_path: str | Path) -> bool:
@@ -1976,6 +2015,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         )
 
     mode = MODE_GLOBAL if args.global_scope else DEFAULT_MODE
+    backup: Path | None = None
 
     if mode == MODE_PROJECT:
         # BEFORE build_wrapped_entry, which is the ordering the guard's own test
@@ -2019,10 +2059,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
         # No backup: nothing of theirs is being overwritten. The backup exists
         # because the global path rewrites a file holding every credential they
         # own, and not writing that file is the point of this mode.
+        state["mode"] = mode
         write_atomically(MCP_PATH, new_text)
         write_state_file(state)
-        path, scope = MCP_PATH, None
-        backup = None
     else:
         new_text, state = apply_wrap(
             text,
@@ -2033,7 +2072,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
             src_dir=str(SRC_DIR),
             events_path=str(EVENTS_PATH),
         )
-        state["mode"] = MODE_GLOBAL
         state["config_path"] = str(path)
 
         # Back up the WHOLE file before touching it. `~/.claude.json` holds far
@@ -2043,10 +2081,16 @@ def cmd_setup(args: argparse.Namespace) -> int:
         backup = TRY_DIR / f"config-backup.{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
         write_backup(path, backup)
 
+        state["mode"] = mode
         write_atomically(path, new_text)
         write_state_file(state)
 
-    print(f"Wrapped `{name}` in {describe(path, scope)}")
+    # Read back off the state rather than from rebound locals, which is how
+    # the already-wrapped branch at the top of this function reads them too.
+    # The project branch used to reassign `path, scope = MCP_PATH, None` just
+    # to feed these two lines.
+    wrote_to, wrote_scope = Path(state["config_path"]), state["scope"]
+    print(f"Wrapped `{name}` in {describe(wrote_to, wrote_scope)}")
     if mode == MODE_PROJECT:
         print(
             f"  copied from: {describe(Path(state['source_config_path']), state['source_scope'])}"
@@ -2062,7 +2106,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     # This window is the only place the security detail and the config diff
     # exist, and after the handoff no agent anywhere else knows the kit is here.
     print("\nLeave this window open — it holds the security detail and the diff above.")
-    print(f"\n{start_where(scope, path)}")
+    print(f"\n{start_where(wrote_scope, wrote_to)}")
     print(f"\n{come_back()}")
     print(f"\n{ENDING_NOTE}")
     return 0
@@ -2132,11 +2176,7 @@ def cmd_receipt(args: argparse.Namespace) -> int:
         # server name and config path printed above — neither of which exists
         # without state. Serving it here fired two of the doc's branches at once
         # and sent the reader back to the command they had just run.
-        print(
-            not_capturing(state["scope"], state["config_path"], state.get("mode", MODE_GLOBAL))
-            if state
-            else NOT_SET_UP
-        )
+        print(not_capturing(state["scope"], state["config_path"]) if state else NOT_SET_UP)
         return 0
 
     s = summarize(events, events_path.stat().st_size)
@@ -2267,6 +2307,19 @@ def _print_left_behind() -> None:
     print("\n".join(left))
 
 
+def _finish_uninstall(*, verified: bool) -> int:
+    """The ending both uninstall paths share.
+
+    Project mode always passes True: `remove_project_config` either does the
+    removal or raises `Refuse`, so there is no unverified state to report. What
+    differs between the two modes is said before this is called."""
+    print(f"\n{UNINSTALL_NOTE if verified else UNVERIFIED_NOTE}")
+    _print_left_behind()
+    print()
+    print(checkout_note(verified))
+    return 0
+
+
 def remove_project_config(state: dict) -> str:
     """Take our entry out of the project config, and say what happened.
 
@@ -2298,7 +2351,8 @@ def remove_project_config(state: dict) -> str:
     if not path.exists():
         return f"{path} was already gone; nothing to remove."
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        data = json.loads(text)
         servers = data.get("mcpServers") or {}
     except (OSError, json.JSONDecodeError) as e:
         raise Refuse(
@@ -2311,7 +2365,7 @@ def remove_project_config(state: dict) -> str:
     if current is None:
         others = ", ".join(sorted(servers)) or "nothing"
         return f"`{name}` was not in {path} (it holds {others}); nothing to remove."
-    if current != state["wrapped_entry"]:
+    if not is_still_our_wrap(current, state):
         raise Refuse(
             f"`{name}` in {path} is not the entry setup wrote — it has been edited\n"
             "  since. Refusing to delete someone's edit.\n"
@@ -2321,7 +2375,11 @@ def remove_project_config(state: dict) -> str:
 
     del servers[name]
     if servers:
-        write_atomically(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        # `dumps_like`, not a hardcoded shape. This is the branch where they
+        # ADDED a server to the file by hand, so it is the one file here that
+        # someone has edited — rewriting it with our own indent reformats
+        # their work on the way past.
+        write_atomically(path, dumps_like(data, text))
         return f"Removed `{name}` from {path}, which still holds {', '.join(sorted(servers))}."
     path.unlink()
     return f"Deleted {path}. It held only the wrapped entry, and this kit wrote it."
@@ -2339,7 +2397,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 
     # Absent means a state file written before `mode` existed, which is a real
     # machine mid-trial, and those are all global.
-    if state.get("mode", MODE_GLOBAL) == MODE_PROJECT:
+    if wrap_mode(state) == MODE_PROJECT:
         what = remove_project_config(state)
         STATE_PATH.unlink()
         print(what)
@@ -2348,11 +2406,10 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
             f"  out of {state['source_config_path']} and left exactly as it was.\n"
             "  There is nothing to restore."
         )
-        print(f"\n{UNINSTALL_NOTE}")
-        _print_left_behind()
-        print()
-        print(checkout_note(True))
-        return 0
+        # Falls through to the shared tail rather than repeating it. Only the
+        # two lines above are mode-specific; UNINSTALL_NOTE, what is left
+        # behind, and the checkout note are the same ending either way.
+        return _finish_uninstall(verified=True)
 
     try:
         text = path.read_text(encoding="utf-8")
@@ -2385,11 +2442,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
             "\n  WARNING: the entry on disk does not match what setup recorded.\n"
             f"  {STATE_PATH} has been KEPT so the original is not lost. Compare by hand."
         )
-    print(f"\n{UNINSTALL_NOTE if verified else UNVERIFIED_NOTE}")
-    _print_left_behind()
-    print()
-    print(checkout_note(verified))
-    return 0
+    return _finish_uninstall(verified=verified)
 
 
 def main(argv: list[str] | None = None) -> int:

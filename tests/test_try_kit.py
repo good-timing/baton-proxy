@@ -1481,9 +1481,7 @@ def test_project_mode_tells_them_where_to_start_the_client(
     has to name the checkout. Getting this wrong is the 2026-08-28 defect
     `start_where` was written for: the person starts a session somewhere else,
     the wrap never runs, and the file stays empty for a reason they cannot see."""
-    path = _config(tmp_path, GLOBAL_ONLY)
-
-    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    _setup_project(tmp_path)
     out = capsys.readouterr().out
 
     assert str(project_mode.parent) in out, "the second terminal is not pointed at the checkout"
@@ -1900,7 +1898,7 @@ def test_uninstall_keeps_servers_someone_added_to_our_file(
     _setup_project(tmp_path)
     data = json.loads(project_mode.read_text(encoding="utf-8"))
     data["mcpServers"]["theirs"] = {"command": "node", "args": ["/abs/x.js"]}
-    project_mode.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    project_mode.write_text(canonical(data), encoding="utf-8")
     capsys.readouterr()
 
     assert kit.main(["uninstall"]) == 0
@@ -1920,7 +1918,7 @@ def test_uninstall_refuses_to_delete_an_entry_someone_edited(
     _setup_project(tmp_path)
     data = json.loads(project_mode.read_text(encoding="utf-8"))
     data["mcpServers"]["notion"]["args"].append("--their-edit")
-    project_mode.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    project_mode.write_text(canonical(data), encoding="utf-8")
     capsys.readouterr()
 
     rc = kit.main(["uninstall"])
