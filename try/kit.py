@@ -492,20 +492,66 @@ def not_wrappable_reason(entry: dict) -> str:
 _PROJECT_DIR_REF = re.compile(r"\$\{CLAUDE_PROJECT_DIR\b")
 
 
+def _path_candidate(value: str) -> str:
+    """The part of an argument that could be a path.
+
+    `--config=logs/app.json` is a relative path wearing a flag. Splitting on the
+    LAST `=` leaves the value; an argument with no `=` is returned whole."""
+    return value.rsplit("=", 1)[-1] if "=" in value else value
+
+
 def _relative_path_like(value: str) -> bool:
-    """Is this string unambiguously a path that resolves against a cwd?
+    """Does this string resolve against a working directory?
 
-    Deliberately narrow, and the narrowness is the point: this decides whether
-    to REFUSE, so a false positive blocks a trial that would have worked. Only
-    ``./`` and ``../`` qualify. A bare separator does not, because
-    ``@modelcontextprotocol/server-filesystem`` — the argument of the single
-    most common MCP entry there is — carries one and is an npm package name,
-    not a path. ``command`` gets a wider rule at the call site, where a
-    separator IS a path by definition."""
-    return value.startswith("./") or value.startswith("../")
+    Widened 2026-09-17 after review: the first version took only `./` and `../`,
+    which misses `dist/index.js` — the argument of every built-TypeScript MCP
+    server there is, and a silent break on the move. `node server.js` is missed
+    too and cannot be caught here at all; `_names_a_file_in` covers that one
+    where a base directory is known.
+
+    Two exemptions, and each is a real entry rather than a hypothetical:
+
+    - **`@scope/name`** is an npm package, not a path.
+      `npx -y @modelcontextprotocol/server-filesystem` is the most common MCP
+      entry written, and refusing it would refuse most trials.
+    - **A URL.** `https://` carries separators and resolves against nothing.
+
+    Everything else with a separator and no absolute root is treated as a path.
+    That direction is deliberate: a false positive costs a trial that would have
+    worked and says `--global` in the same breath, while a false negative is a
+    server that dies in their next session with nothing pointing at the cause."""
+    candidate = _path_candidate(value)
+    if not candidate or candidate.startswith("@") or "://" in candidate:
+        return False
+    if Path(candidate).is_absolute():
+        return False
+    return "/" in candidate or os.sep in candidate
 
 
-def cwd_dependent_reason(entry: dict) -> str | None:
+def _names_a_file_in(base: Path | None, value: str) -> bool:
+    """Does this argument name something that exists in the entry's own directory?
+
+    The check `_relative_path_like` cannot do. `node server.js` carries no
+    separator, so nothing about its shape says path — but if `server.js` sits in
+    the directory the entry is scoped to, it is one, and it stops resolving the
+    moment the entry moves.
+
+    Only meaningful for an entry with a directory to resolve against, which is a
+    project key in `~/.claude.json`. A top-level entry has no base: the working
+    directory a stdio server is launched in is not documented, which is why a
+    relative path there is already unreliable."""
+    if base is None:
+        return False
+    candidate = _path_candidate(value)
+    if not candidate or candidate.startswith("-") or Path(candidate).is_absolute():
+        return False
+    try:
+        return (base / candidate).exists()
+    except OSError:  # pragma: no cover - an unreadable base is not worth a branch
+        return False
+
+
+def cwd_dependent_reason(entry: dict, base: Path | None = None) -> str | None:
     """Why copying this entry into another directory would break it, or None.
 
     The guard that project scope makes necessary. ``kit.py``'s wrap has always
@@ -531,28 +577,21 @@ def cwd_dependent_reason(entry: dict) -> str | None:
       it meant where they wrote it. It is the case a slash-hunting check cannot
       see, and the only reason it is here is that the docs were read.
 
+    ``base`` is the directory the entry is scoped to, when it has one. It buys
+    the one check shape cannot make — see ``_names_a_file_in``.
+
     Runs on the ORIGINAL entry, before ``build_wrapped_entry`` demotes the
     command into ``args`` and the paths stop being where a reader expects them.
     """
-    command = entry.get("command")
-    if isinstance(command, str) and command:
-        # Wider than `_relative_path_like`: any separator at all. A command with
-        # a slash in it is a path — `node` and `python3` are resolved against
-        # PATH and travel fine, `./server.sh` and `bin/server` do not.
-        if not Path(command).is_absolute() and ("/" in command or os.sep in command):
-            return f"its launch command is a relative path (`{command}`)"
-
-    for i, arg in enumerate(str(a) for a in entry.get("args") or []):
-        if _relative_path_like(arg):
-            return f"argument {i + 1} is a relative path (`{arg}`)"
-
-    env = entry.get("env")
-    for key, value in (env if isinstance(env, dict) else {}).items():
-        if isinstance(value, str) and _relative_path_like(value):
-            return f"its `{key}` environment value is a relative path (`{value}`)"
-
-    # Checked last and over the whole entry, because the reference can sit in
-    # any of the five expanded fields and the reason is the same wherever it is.
+    # FIRST, and over the whole entry: the reference can sit in any of the five
+    # expanded fields, and the reason is the same wherever it is.
+    #
+    # Ordered ahead of the path rules rather than after them, which is where it
+    # sat until review caught it. `${CLAUDE_PROJECT_DIR:-.}/bin/server` has a
+    # separator and no absolute root, so the relative-path rule matched it first
+    # and reported a `${VAR}` reference as a relative path — telling the person
+    # to make a path absolute when what they have is not a path and cannot be
+    # made one without hardcoding their project root.
     for field in ("command", "args", "env", "url", "headers"):
         if _PROJECT_DIR_REF.search(json.dumps(entry.get(field), ensure_ascii=False)):
             return (
@@ -560,6 +599,25 @@ def cwd_dependent_reason(entry: dict) -> str | None:
                 "sets to\n  the directory the entry is scoped to — a different "
                 "directory once the entry\n  is copied"
             )
+
+    command = entry.get("command")
+    if isinstance(command, str) and command:
+        # Wider than `_relative_path_like`: a separator is enough, with no
+        # exemptions. A command with a slash in it is a path by definition —
+        # `node` and `python3` resolve against PATH and travel fine.
+        if not Path(command).is_absolute() and ("/" in command or os.sep in command):
+            return f"its launch command is a relative path (`{command}`)"
+
+    for i, arg in enumerate(str(a) for a in entry.get("args") or []):
+        if _relative_path_like(arg):
+            return f"argument {i + 1} is a relative path (`{arg}`)"
+        if _names_a_file_in(base, arg):
+            return f"argument {i + 1} names a file in the entry's own directory (`{arg}`)"
+
+    env = entry.get("env")
+    for key, value in (env if isinstance(env, dict) else {}).items():
+        if isinstance(value, str) and _relative_path_like(value):
+            return f"its `{key}` environment value is a relative path (`{value}`)"
     return None
 
 

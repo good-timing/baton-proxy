@@ -4899,13 +4899,12 @@ def test_the_two_receipt_rows_are_relayed_apart():
         ({"command": "node", "args": ["./index.js"]}, "argument 1"),
         ({"command": "node", "args": ["--flag", "../lib/main.js"]}, "argument 2"),
         ({"command": "node", "env": {"DB": "./data.sqlite"}}, "`DB` environment value"),
-        ({"command": "${CLAUDE_PROJECT_DIR:-.}/bin/server"}, "CLAUDE_PROJECT_DIR"),
-        ({"command": "node", "args": ["${CLAUDE_PROJECT_DIR}/index.js"]}, "CLAUDE_PROJECT_DIR"),
-        ({"command": "node", "env": {"ROOT": "${CLAUDE_PROJECT_DIR:-.}"}}, "CLAUDE_PROJECT_DIR"),
-        (
-            {"type": "http", "url": "${CLAUDE_PROJECT_DIR}/sock", "headers": {}},
-            "CLAUDE_PROJECT_DIR",
-        ),
+        # The most common relative path in an MCP entry, and the first version
+        # of this guard missed it: every built-TypeScript server is `node
+        # dist/index.js`.
+        ({"command": "node", "args": ["dist/index.js"]}, "argument 1"),
+        ({"command": "node", "args": ["--config=logs/app.json"]}, "argument 1"),
+        ({"command": "node", "env": {"DB": "data/app.sqlite"}}, "`DB` environment value"),
     ],
 )
 def test_an_entry_that_resolves_against_a_directory_is_named(entry, expected_fragment):
@@ -4913,6 +4912,55 @@ def test_an_entry_that_resolves_against_a_directory_is_named(entry, expected_fra
     reason = kit.cwd_dependent_reason(entry)
     assert reason is not None, f"{entry} moved to another directory would break, unnoticed"
     assert expected_fragment in reason, f"the reason for {entry} does not say which part: {reason}"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"command": "${CLAUDE_PROJECT_DIR:-.}/bin/server"},
+        {"command": "node", "args": ["${CLAUDE_PROJECT_DIR}/index.js"]},
+        {"command": "node", "env": {"ROOT": "${CLAUDE_PROJECT_DIR:-.}"}},
+        {"type": "http", "url": "${CLAUDE_PROJECT_DIR}/sock", "headers": {}},
+    ],
+)
+def test_a_project_dir_reference_is_reported_as_itself_not_as_a_path(entry):
+    """Asserted on the BRANCH, not on the refusal.
+
+    The first version of this row only checked that something was refused and
+    that the message quoted the entry — which the relative-path rule satisfied
+    all by itself, because `${CLAUDE_PROJECT_DIR:-.}/bin/server` has a separator
+    and no absolute root. Deleting the entire `${CLAUDE_PROJECT_DIR}` branch left
+    the row green. It was pinning the string, not the reason.
+
+    So both halves are asserted here. The person is told what they actually
+    have: a reference the client resolves to a directory that is about to
+    change, not a path they can be asked to make absolute — because they
+    cannot, without hardcoding their own project root."""
+    reason = kit.cwd_dependent_reason(entry)
+    assert reason is not None, f"{entry} moves meaning when the entry moves"
+    assert "CLAUDE_PROJECT_DIR" in reason, f"the reason does not name the reference: {reason}"
+    assert "relative path" not in reason, (
+        f"a ${{CLAUDE_PROJECT_DIR}} reference is reported as a relative path: {reason}. "
+        "The advice that follows — make it absolute — is impossible to act on."
+    )
+
+
+def test_a_file_in_the_entrys_own_directory_is_caught_without_a_separator(tmp_path):
+    """`node server.js`, where `server.js` sits in the project the entry is
+    scoped to. Nothing about the shape of `server.js` says path, so this is the
+    one class the text rules cannot reach, and it breaks on the move like the
+    rest. Only available where the entry HAS a directory — a project key in
+    `~/.claude.json` — which is why `base` is optional."""
+    (tmp_path / "server.js").write_text("// their server\n")
+    entry = {"command": "node", "args": ["server.js"]}
+
+    assert kit.cwd_dependent_reason(entry, base=tmp_path) is not None
+    assert "names a file" in kit.cwd_dependent_reason(entry, base=tmp_path)
+    # Same entry, no base to check against: undetectable, and claiming otherwise
+    # would be the guard reporting a fact it cannot know.
+    assert kit.cwd_dependent_reason(entry) is None
+    # A base that holds no such file is not a hit either.
+    assert kit.cwd_dependent_reason(entry, base=tmp_path / "elsewhere") is None
 
 
 @pytest.mark.parametrize(
@@ -4939,23 +4987,31 @@ def test_the_guard_reads_the_original_entry_not_the_wrapped_one():
     described.
 
     `build_wrapped_entry` demotes the command into `args` and puts
-    `sys.executable` — an absolute path — into `command`. The two fields are
-    held to DIFFERENT rules: `command` is a path if it has a separator at all,
-    an argument only if it starts with `./` or `../`. So a demoted `bin/server`
-    passes every check it is then subject to, and the entry ships.
+    `sys.executable` — an absolute path — into `command`. Since the arg rule was
+    widened, both entries are refused, so the ordering no longer changes the
+    VERDICT. It changes what the person is told, and the wrapped one tells them
+    something false about their own config: their entry has no fourth argument.
+    It has a `command`, which is where the path they need to fix actually is.
 
-    `bin/server` rather than `./server.sh` on purpose: the `./` form survives
-    the move as an argument the narrow rule still catches, so it would pass this
-    test while proving nothing. This is the case where running the guard in the
-    wrong order actually loses the refusal."""
+    So a refusal that misdirects is the failure this pins, not a missed refusal.
+    The kit's refusals are read by someone deciding what to do next, and the
+    whole reason this guard exists is that the alternative — finding out in the
+    next session — tells them nothing at all."""
     original = {"command": "bin/server"}
     wrapped = kit.build_wrapped_entry(original, interpreter="/usr/bin/python3.13", **WRAP_ARGS)
 
-    assert kit.cwd_dependent_reason(original) is not None
-    assert "bin/server" in wrapped["args"], "the relative path is still in there"
-    assert kit.cwd_dependent_reason(wrapped) is None, (
-        "the wrapped entry hides the relative path from the wider command rule — "
-        "which is why the guard must run before the wrap, not after"
+    before = kit.cwd_dependent_reason(original)
+    after = kit.cwd_dependent_reason(wrapped)
+    assert before is not None and after is not None, "both shapes carry the same broken path"
+
+    assert "launch command" in before, f"their entry has it in `command`: {before}"
+    assert "argument 4" in after, (
+        "the wrap is expected to leave the path as the fourth argument; if that "
+        "stops being true, the assertion below is no longer measuring anything"
+    )
+    assert "argument" not in before, (
+        f"the guard ran after the wrap and is naming a position that does not exist "
+        f"in the person's entry: {before}"
     )
 
 
