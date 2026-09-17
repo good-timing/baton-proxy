@@ -37,7 +37,7 @@ each one is inert here.
 ## 2. What changes on your machine
 
 One entry in `~/.claude.json` (or in a project-local `.mcp.json`, if you pass
-`--config-file`). The kit wraps two kinds of server: a stdio server, which your
+`--src-config`). The kit wraps two kinds of server: a stdio server, which your
 client launches locally, and a remote server, which your client reaches over
 HTTPS. Here is an example of each.
 

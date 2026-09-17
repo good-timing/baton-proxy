@@ -125,7 +125,7 @@ the servers it can wrap, and any it cannot and why, from `~/.claude.json`. Show
 the list and ask which one they want; the trial is worth most on a server they
 use daily. A project-local `.mcp.json` is one more option in that chooser, not
 a sentence above it: if they pick it, ask for the path and pass
-`--config-file <path>` to `setup` only. If the list is empty, say so and stop.
+`--src-config <path>` to `setup` only. If the list is empty, say so and stop.
 
 Each offered row is marked `stdio` or `remote`. Offer only the rows the kit
 lists as wrappable: it has already decided which servers it can carry, and it

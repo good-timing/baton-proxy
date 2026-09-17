@@ -558,7 +558,7 @@ def _relative_path_like(value: str, *, exempt_npm_and_url: bool = True) -> bool:
 
     Everything else with a separator and no absolute root is treated as a path.
     That direction is deliberate: a false positive costs a trial that would have
-    worked and says `--global` in the same breath, while a false negative is a
+    worked and says `--in-place` in the same breath, while a false negative is a
     server that dies in their next session with nothing pointing at the cause.
 
     ``exempt_npm_and_url`` is False for the ``command`` field, where neither
@@ -604,7 +604,7 @@ def _names_a_file_in(base: Path | None, value: str, *, files_only: bool = False)
     a directory match there refuses a config with nothing wrong with it —
     measured 2026-09-17, on `production`, `test` and `debug`. A refusal that
     fires on a normal config is the sentence that stops the next prospect, and
-    `--global` being offered in the same breath does not excuse it. Arguments
+    `--in-place` being offered in the same breath does not excuse it. Arguments
     keep the wider check: `node server` resolving to a directory is a real
     launch, and an argument is a position where a bare word is usually a path.
     """
@@ -1417,7 +1417,7 @@ def entry_home(scope: str | None, config_path: str | Path) -> Path | None:
     readers:
 
     - A **project scope** inside `~/.claude.json`: the scope key IS the path.
-    - The **top level of a project config**, reached with `--config-file`: the
+    - The **top level of a project config**, reached with `--src-config`: the
       file's own directory.
     - The **global config**: None. `~/.claude.json`'s top level loads wherever a
       session starts, which is the whole distinction `is_global_config` draws.
@@ -1444,7 +1444,7 @@ def needs_approval(scope: str | None, config_path: str | Path) -> bool:
 
     The rule is about the FILE, not about which mode this kit ran in — the
     version that asked `mode == MODE_PROJECT` got both edges wrong. It missed
-    `--global --config-file <repo>/.mcp.json`, which wraps a project-scoped
+    `--in-place --src-config <repo>/.mcp.json`, which wraps a project-scoped
     server in a real `.mcp.json` and is gated exactly the same way. And its
     justification for the other edge — that an entry the person already had "was
     approved long ago, if it ever needed to be" — assumed they had used that
@@ -1463,7 +1463,7 @@ def not_capturing(scope: str | None, config_path: str | Path) -> str:
 
     The directory question applies whenever the entry is not in the global
     config — a project scope inside `~/.claude.json`, or the top level of a
-    project config reached with `--config-file`. Both load for one directory;
+    project config reached with `--src-config`. Both load for one directory;
     only `~/.claude.json` loads for all of them.
 
     The approval question applies to a project `.mcp.json`; see
@@ -1628,7 +1628,7 @@ def search_paths(explicit: str | None) -> list[Path]:
     # The cwd .mcp.json entry is deliberately absent: the trial pins the working
     # directory to try/ (see CLAUDE.md), so it could only ever name
     # baton-proxy/try/.mcp.json, which is never a user config — and naming it in
-    # the not-found message misdirects. --config-file covers a project config.
+    # the not-found message misdirects. --src-config covers a project config.
     return [(Path.home() / ".claude.json").resolve()]
 
 
@@ -1652,7 +1652,7 @@ def discover(explicit: str | None) -> list[tuple[Path, str, str | None, str, dic
         except OSError:
             if explicit:
                 raise Refuse(
-                    f"cannot read {p}.\n  → check the path passed to --config-file."
+                    f"cannot read {p}.\n  → check the path passed to --src-config."
                 ) from None
             continue
         for scope, name, entry in iter_entries(data):
@@ -1667,7 +1667,7 @@ def describe(path: Path, scope: str | None) -> str:
     writes — it is the same false sentence `is_global_config` was added to
     stop, still being printed by this function. `scope is None` means "the top
     level of whatever file was read", and for a project `.mcp.json` reached with
-    `--config-file` that top level loads for ONE directory. Calling it "global
+    `--src-config` that top level loads for ONE directory. Calling it "global
     mcpServers" told the person the opposite, in the line that names the file
     the kit is about to change.
 
@@ -1689,7 +1689,7 @@ def is_global_config(config_path: str | Path) -> bool:
     """Is this the file a client loads no matter where a session starts?
 
     Only `~/.claude.json` is. `scope is None` means the entry sits at the top
-    level of whatever file was read, and `--config-file` exists so a project
+    level of whatever file was read, and `--src-config` exists so a project
     `.mcp.json` can be reached — whose top level loads for sessions started in
     its own directory and nowhere else. Reading None as "global" put a false
     sentence in front of exactly the person the directory fix was written for."""
@@ -1877,13 +1877,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
         print(f"\n{ENDING_NOTE}")
         return 0
 
-    found = discover(args.config_file)
+    found = discover(args.src_config)
     if not found:
         raise Refuse(
             "no MCP configuration found in "
-            + ", ".join(str(p) for p in search_paths(args.config_file))
+            + ", ".join(str(p) for p in search_paths(args.src_config))
             + ".\n  → the trial needs one MCP server already configured and working."
-            "\n  → if yours lives elsewhere, pass --config-file <path>."
+            "\n  → if yours lives elsewhere, pass --src-config <path>."
         )
 
     if not args.server:
@@ -1928,7 +1928,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         raise Refuse(
             f"no MCP server named `{args.server}`.\n  available: "
             + (", ".join(names) or "none")
-            + "\n  → check the name, or pass --config-file <path>."
+            + "\n  → check the name, or pass --src-config <path>."
         )
     # Filtered whenever `--from` was given, NOT only when there is more than one
     # match. Gating it on the duplicate meant a `--from` that matched nothing was
@@ -1944,7 +1944,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         # them" — by hand, in `~/.claude.json` — which is the exact act Bharath
         # had just told us he would not perform, offered to him as the only way
         # forward. He had three `playwright` entries under three project keys,
-        # `--config-file` cannot separate entries inside one file, and so he
+        # `--src-config` cannot separate entries inside one file, and so he
         # trialled nothing.
         #
         # Every row now prints the flag that picks it. The kit still does not
@@ -2014,7 +2014,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
             "  → run this from a full checkout: the kit points PYTHONPATH at that folder."
         )
 
-    mode = MODE_GLOBAL if args.global_scope else DEFAULT_MODE
+    mode = MODE_GLOBAL if args.in_place else DEFAULT_MODE
     backup: Path | None = None
 
     if mode == MODE_PROJECT:
@@ -2029,8 +2029,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
                 "  alone, so the client would launch the server from a different\n"
                 "  directory and that path would stop resolving — in your NEXT session,\n"
                 "  not now.\n"
-                "  → run setup again with --global to wrap the entry where it already is,\n"
-                "    which does not move it. Nothing changed."
+                "  → run setup again with --in-place to wrap the entry where it already\n"
+                "    is, which does not move it. That edits the config file the entry is\n"
+                "    in. Nothing has been changed yet."
             )
         # Ours, in our own checkout, and the kit is the only thing that writes
         # it — so an existing one with no state file is a leftover we cannot
@@ -2454,35 +2455,35 @@ def main(argv: list[str] | None = None) -> int:
 
     p_setup = sub.add_parser("setup", help="wrap one configured MCP server")
     p_setup.add_argument("server", nargs="?", help="name of the server entry to wrap")
-    # `dest` is not optional here: `args.global` is a syntax error, because
-    # `global` is a Python keyword. argparse would accept the flag and build a
-    # namespace nothing can read with attribute access.
+    # Named for what it DOES. Renamed from `--global` 2026-09-17, which was wrong
+    # twice over. An entry can live under a project key in ~/.claude.json, and
+    # wrapping it there is not global anything -- the PROJECT_SCOPED fixture
+    # does exactly that. And neither that name nor `--config-file` said anything about
+    # writing, so the two together edited someone's config while the refusal
+    # that recommended the pair said nothing about it. This name states the
+    # write, which is the whole point of it.
+    #
+    # The help is still phrased in TODAY's terms and moves with the default in
+    # K1b. An earlier version described the world AFTER the flip, which was a
+    # false statement about what a plain `setup` does, printed by `--help`.
     p_setup.add_argument(
-        "--global",
-        dest="global_scope",
+        "--in-place",
+        dest="in_place",
         action="store_true",
-        # Phrased in TODAY's terms, and it moves with the default in K1. The
-        # first version described the world AFTER the flip — "instead of writing
-        # a project .mcp.json" — which is a false statement about what a plain
-        # `setup` does right now, printed by `--help`, in a kit whose whole
-        # posture is not making that class of statement. It also named a
-        # release, 0.7.0, that exists nowhere else in this repo.
-        help="wrap the entry in the config file it already lives in (what setup does today)",
+        help="wrap the entry where it already lives, editing that config file in "
+        "place (what setup does today)",
     )
-    # K9: it stays. Ujwal, 2026-09-17. It is the existing hatch for someone
-    # whose config is not at ~/.claude.json, and project mode does not replace
-    # it: the mode decides where the wrap is WRITTEN, this decides where the
-    # entry is READ FROM. Two different questions, so removing this one would
-    # have been a separate decision about a need that has not gone away.
+    # K9, reopened and settled 2026-09-17: the flag stays, under a name that
+    # says which direction it points. As `--config-file` it named a file and said
+    # nothing about whether that file got written -- and the answer came from a
+    # DIFFERENT flag. This one only ever reads, in every mode, so its help needs
+    # no caveat about the default changing: the default does not reach it.
     p_setup.add_argument(
-        "--config-file",
-        # Worded for the build that SHIPS, and it moves with the default in K1b
-        # — the same mistake the --global help made and was corrected for. With
-        # DEFAULT_MODE still global, a bare --config-file edits the file it is
-        # given, so saying "otherwise it is only read" would have had `--help`
-        # contradict itself and tell someone their file was safe when it was not.
-        help="config to read the servers from, instead of searching for "
-        "~/.claude.json. It is also the file the wrap is written into.",
+        "--src-config",
+        dest="src_config",
+        help="config to READ the servers from, instead of searching for "
+        "~/.claude.json. It is never written unless you also pass --in-place, "
+        "which says so.",
     )
     p_setup.add_argument(
         "--from",

@@ -949,7 +949,7 @@ def test_setup_writes_its_backup_0600_from_a_0644_config(tmp_path, kit_home, cap
     path = _config(tmp_path, GLOBAL_ONLY)
     path.chmod(0o644)
     before = path.read_bytes()
-    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
     (backup,) = kit_home.glob("config-backup.*.json")
     assert backup.stat().st_mode & 0o777 == 0o600
     assert backup.read_bytes() == before
@@ -1350,7 +1350,7 @@ def test_project_mode_writes_our_file_and_leaves_theirs_byte_identical(
     path = _config(tmp_path, GLOBAL_ONLY)
     before = path.read_bytes()
 
-    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
     capsys.readouterr()
 
     assert path.read_bytes() == before, "their config was written to in project mode"
@@ -1384,7 +1384,7 @@ def test_the_project_config_is_0600_because_it_can_hold_their_token(
         {"mcpServers": {"srv": {"command": "npx", "env": {"TOKEN": "xoxb-REAL-SECRET"}}}},
     )
 
-    assert kit.main(["setup", "srv", "--config-file", str(path)]) == 0
+    assert kit.main(["setup", "srv", "--src-config", str(path)]) == 0
     capsys.readouterr()
 
     assert project_mode.stat().st_mode & 0o777 == 0o600, (
@@ -1411,7 +1411,7 @@ def test_project_mode_records_both_where_it_wrote_and_where_it_read(
     this file does not have, and the failure reads as "THE WRAP IS GONE"."""
     path = _config(tmp_path, PROJECT_SCOPED)
 
-    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
     capsys.readouterr()
     state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
 
@@ -1436,12 +1436,12 @@ def test_project_mode_refuses_to_move_a_relative_path_and_names_the_way_out(
     guard is CALLED at all — the pure function has always passed its own tests
     with no caller. That it runs BEFORE the wrap: afterwards the relative path
     has moved into `args`, so the refusal would say "argument 4" of an entry
-    whose fourth argument does not exist. And that the way out is `--global`,
+    whose fourth argument does not exist. And that the way out is `--in-place`,
     never a hand-edit — the kit telling Bharath to rename an entry by hand in
     the file he had just said he would not touch is why this thread exists."""
     path = _config(tmp_path, {"mcpServers": {"srv": {"command": "bin/server"}}})
 
-    rc = kit.main(["setup", "srv", "--config-file", str(path)])
+    rc = kit.main(["setup", "srv", "--src-config", str(path)])
     err = capsys.readouterr().err
 
     assert rc == 1, "a relative path must not be copied into another directory"
@@ -1449,8 +1449,59 @@ def test_project_mode_refuses_to_move_a_relative_path_and_names_the_way_out(
     assert not kit.STATE_PATH.exists()
     assert "launch command" in err, f"the guard ran after the wrap: {err}"
     assert "argument" not in err, f"the refusal names a position they do not have: {err}"
-    assert "--global" in err, "the way out is the other mode"
+    assert "--in-place" in err, "the way out is the other mode"
     assert "by hand" not in err, "never the sentence that stopped Bharath"
+    assert "edits the config file" in err, (
+        "the escape hatch edits their config, and the refusal that recommends it "
+        "has to say so before they run it"
+    )
+
+
+def test_the_escape_hatch_the_refusal_offers_does_what_its_name_says(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """The chain this rename exists to fix, walked end to end.
+
+    Under the old names it ran: refused for a relative path -> the refusal says
+    add `--global` -> they add it, keeping the `--config-file` already on the
+    line -> their config is edited. Neither flag's name mentioned writing, and
+    the kit itself had recommended the combination. That is this thread's own
+    failure reproduced inside the fix for it.
+
+    The write still happens — `--in-place` means edit it where it is, and that
+    is a real thing to want. What changed is that the flag causing the write is
+    named for the write, and the refusal says what it will do before they run
+    it. So the last assertion here is that their file IS edited: the fix is not
+    that the write stopped, it is that nobody arrives at it by surprise."""
+    path = _config(tmp_path, {"mcpServers": {"srv": {"command": "bin/server"}}})
+    before = path.read_bytes()
+
+    assert kit.main(["setup", "srv", "--src-config", str(path)]) == 1
+    err = capsys.readouterr().err
+    assert path.read_bytes() == before, "the refused run must not touch their file"
+
+    # Take the advice exactly as given, keeping the flag already on the line.
+    hatch = next(ln for ln in err.splitlines() if "--in-place" in ln)
+    assert "edits the config file" in err, f"the advice does not say what it does: {hatch}"
+
+    assert kit.main(["setup", "srv", "--in-place", "--src-config", str(path)]) == 0
+    capsys.readouterr()
+    assert path.read_bytes() != before, "`--in-place` must do what it says"
+    assert not project_mode.exists(), "`--in-place` must not write a project config"
+
+
+def test_the_read_flag_alone_never_writes_their_file(tmp_path, kit_home, project_mode, capsys):
+    """The other half, and the one the old name could not promise. `--src-config`
+    reads. It writes nothing, in any mode, and there is no second flag that can
+    change that without being typed."""
+    path = _config(tmp_path, {"mcpServers": {"srv": {"command": "/abs/server"}}})
+    before = path.read_bytes()
+
+    assert kit.main(["setup", "srv", "--src-config", str(path)]) == 0
+    capsys.readouterr()
+
+    assert path.read_bytes() == before, "`--src-config` wrote the file it was handed"
+    assert project_mode.exists(), "the wrap has to have gone somewhere"
 
 
 def test_project_mode_refuses_a_leftover_file_it_cannot_account_for(
@@ -1466,7 +1517,7 @@ def test_project_mode_refuses_a_leftover_file_it_cannot_account_for(
     path = _config(tmp_path, GLOBAL_ONLY)
     before = path.read_bytes()
 
-    rc = kit.main(["setup", "notion", "--config-file", str(path)])
+    rc = kit.main(["setup", "notion", "--src-config", str(path)])
     err = capsys.readouterr().err
 
     assert rc == 1
@@ -1492,25 +1543,25 @@ def test_project_mode_tells_them_where_to_start_the_client(
     )
 
 
-def test_config_file_is_read_only_unless_global_is_asked_for(
+def test_the_read_flag_never_writes_and_the_write_flag_says_it_does(
     tmp_path, kit_home, project_mode, capsys
 ):
-    """K9: `--config-file` stays, because it answers a different question.
+    """K9: `--src-config` stays, because it answers a different question.
 
-    `--config-file` says where the entry is READ FROM. The mode says where the
+    `--src-config` says where the entry is READ FROM. The mode says where the
     wrap is WRITTEN. Conflating the two is the reading under which this flag
     looks redundant once project mode exists — and it is also the reading under
     which someone who passes a path precisely because they want it left alone
     gets it edited.
 
-    Two identical configs, the runs differing only by `--global`."""
+    Two identical configs, the runs differing only by `--in-place`."""
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     read_only = _config(tmp_path / "a", GLOBAL_ONLY)
     edited = _config(tmp_path / "b", GLOBAL_ONLY)
     before = read_only.read_bytes()
 
-    assert kit.main(["setup", "notion", "--config-file", str(read_only)]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(read_only)]) == 0
     # Read BEFORE the state file is cleared. The first version of this test
     # asserted `str(read_only) not in edited.read_text()` after unlinking it,
     # which is true no matter what the kit does — one run's config path would
@@ -1518,11 +1569,11 @@ def test_config_file_is_read_only_unless_global_is_asked_for(
     # entirely left it green.
     read_only_state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
     kit.STATE_PATH.unlink()
-    assert kit.main(["setup", "notion", "--global", "--config-file", str(edited)]) == 0
+    assert kit.main(["setup", "notion", "--in-place", "--src-config", str(edited)]) == 0
     capsys.readouterr()
 
     assert read_only.read_bytes() == before, "project mode wrote to the config it was handed"
-    assert edited.read_bytes() != before, "--global must edit the file it was handed"
+    assert edited.read_bytes() != before, "--in-place must edit the file it was handed"
     assert read_only_state["source_config_path"] == str(read_only), (
         "the only record that their file was read at all"
     )
@@ -1543,7 +1594,7 @@ def test_a_duplicate_name_is_a_choice_and_never_a_rename(tmp_path, kit_home, cap
     Three servers called `playwright`, one under each of three project keys. The
     kit could not tell them apart and refused, and its advice was to rename one
     BY HAND in `~/.claude.json` — the exact act he had told us, in the same
-    conversation, that he would not perform. `--config-file` cannot separate
+    conversation, that he would not perform. `--src-config` cannot separate
     entries that live in one file. So the only route the kit offered him was the
     one he had ruled out, and he trialled nothing.
 
@@ -1554,7 +1605,7 @@ def test_a_duplicate_name_is_a_choice_and_never_a_rename(tmp_path, kit_home, cap
     having no selector."""
     path = _config(tmp_path, THREE_PLAYWRIGHTS)
 
-    rc = kit.main(["setup", "playwright", "--config-file", str(path)])
+    rc = kit.main(["setup", "playwright", "--src-config", str(path)])
     err = capsys.readouterr().err
 
     assert rc == 1, "the kit still does not choose between them"
@@ -1573,7 +1624,7 @@ def test_a_duplicate_name_is_a_choice_and_never_a_rename(tmp_path, kit_home, cap
     offered = [shlex.split(ln.split("--from ", 1)[1])[0] for ln in rows]
     assert sorted(offered) == ["/Users/b/work/a", "/Users/b/work/b", "/Users/b/work/c"]
 
-    assert kit.main(["setup", "playwright", "--config-file", str(path), "--from", offered[1]]) == 0
+    assert kit.main(["setup", "playwright", "--src-config", str(path), "--from", offered[1]]) == 0
     capsys.readouterr()
 
     state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
@@ -1592,10 +1643,10 @@ def test_the_global_definition_can_be_picked_by_name(tmp_path, kit_home, capsys)
     }
     path = _config(tmp_path, data)
 
-    assert kit.main(["setup", "srv", "--config-file", str(path)]) == 1
+    assert kit.main(["setup", "srv", "--src-config", str(path)]) == 1
     assert "--from global" in capsys.readouterr().err
 
-    assert kit.main(["setup", "srv", "--config-file", str(path), "--from", "global"]) == 0
+    assert kit.main(["setup", "srv", "--src-config", str(path), "--from", "global"]) == 0
     capsys.readouterr()
     state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
     assert state["scope"] is None
@@ -1608,7 +1659,7 @@ def test_a_from_value_that_matches_nothing_says_so(tmp_path, kit_home, capsys):
     wrapped another."""
     path = _config(tmp_path, THREE_PLAYWRIGHTS)
 
-    rc = kit.main(["setup", "playwright", "--config-file", str(path), "--from", "/typo"])
+    rc = kit.main(["setup", "playwright", "--src-config", str(path), "--from", "/typo"])
     err = capsys.readouterr().err
 
     assert rc == 1
@@ -1629,7 +1680,7 @@ def test_a_wrong_from_is_refused_even_when_only_one_server_matches(tmp_path, kit
     path = _config(tmp_path, GLOBAL_ONLY)
     before = path.read_bytes()
 
-    rc = kit.main(["setup", "notion", "--config-file", str(path), "--from", "/stale/path"])
+    rc = kit.main(["setup", "notion", "--src-config", str(path), "--from", "/stale/path"])
 
     assert rc == 1, "a --from that matches nothing was ignored because there was no duplicate"
     assert "/stale/path" in capsys.readouterr().err
@@ -1654,14 +1705,14 @@ def test_a_from_row_with_a_space_in_the_path_can_be_pasted(tmp_path, kit_home, c
     }
     path = _config(tmp_path, data)
 
-    assert kit.main(["setup", "srv", "--config-file", str(path)]) == 1
+    assert kit.main(["setup", "srv", "--src-config", str(path)]) == 1
     err = capsys.readouterr().err
 
     row = next(ln for ln in err.splitlines() if "Client Work" in ln)
     picked = shlex.split(row.split("--from ", 1)[1])[0]
     assert picked == "/Users/x/Client Work/app", f"the printed row does not survive a shell: {row}"
 
-    assert kit.main(["setup", "srv", "--config-file", str(path), "--from", picked]) == 0
+    assert kit.main(["setup", "srv", "--src-config", str(path), "--from", picked]) == 0
     capsys.readouterr()
     state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
     assert state["scope"] == "/Users/x/Client Work/app"
@@ -1706,12 +1757,12 @@ def test_the_approval_step_names_both_prompts(tmp_path, kit_home, project_mode, 
     )
 
 
-def test_a_global_wrap_into_a_project_mcp_json_still_asks_about_approval(
+def test_an_in_place_wrap_of_a_project_mcp_json_still_asks_about_approval(
     tmp_path, kit_home, capsys
 ):
     """The gate is about the FILE, not about which mode this kit ran in.
 
-    `--global --config-file <repo>/.mcp.json` wraps a project-scoped server
+    `--in-place --src-config <repo>/.mcp.json` wraps a project-scoped server
     inside a real `.mcp.json`, which Claude Code gates the same way. Keying the
     step on our own mode missed it, and handed someone a four-step checklist
     with the actual cause left out."""
@@ -1721,7 +1772,7 @@ def test_a_global_wrap_into_a_project_mcp_json_still_asks_about_approval(
     their_project_config.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
 
     assert (
-        kit.main(["setup", "notion", "--global", "--config-file", str(their_project_config)]) == 0
+        kit.main(["setup", "notion", "--in-place", "--src-config", str(their_project_config)]) == 0
     )
     capsys.readouterr()
 
@@ -1775,8 +1826,8 @@ def test_the_approval_question_is_not_asked_of_an_entry_in_their_own_config(
     Asking anyway is the class of defect this checklist was split up to avoid —
     a decisive-sounding step that is simply false for the wrap in front of them.
 
-    Driven through a real `~/.claude.json` rather than `--config-file`, which is
-    what the first version of this test got wrong: it pointed `--config-file` at
+    Driven through a real `~/.claude.json` rather than `--src-config`, which is
+    what the first version of this test got wrong: it pointed `--src-config` at
     a path in a tmp dir and called the result a global wrap, when by the kit's
     own `is_global_config` that file is a project config. The test name said
     global; the fixture was not."""
@@ -1826,7 +1877,7 @@ def test_a_vanished_project_file_is_not_blamed_on_their_client(
 def _setup_project(tmp_path, data=None, server="notion"):
     """A completed project-mode setup, for the uninstall tests below."""
     path = _config(tmp_path, GLOBAL_ONLY if data is None else data)
-    assert kit.main(["setup", server, "--config-file", str(path)]) == 0
+    assert kit.main(["setup", server, "--src-config", str(path)]) == 0
     return path
 
 
@@ -1870,7 +1921,7 @@ def test_uninstall_in_project_mode_deletes_our_file_and_restores_nothing(
 
     # And the kit is usable again, which is the half that was actually broken:
     # the leftover file made the next setup refuse.
-    assert kit.main(["setup", "notion", "--config-file", str(their_config)]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(their_config)]) == 0
 
 
 def test_uninstall_after_they_deleted_the_file_themselves_is_not_an_error(
@@ -1949,7 +2000,7 @@ def test_a_state_file_from_before_mode_existed_uninstalls_as_global(
     and not the module's."""
     path = _config(tmp_path, GLOBAL_ONLY)
     before = path.read_bytes()
-    assert kit.main(["setup", "notion", "--global", "--config-file", str(path)]) == 0
+    assert kit.main(["setup", "notion", "--in-place", "--src-config", str(path)]) == 0
 
     state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
     del state["mode"]
@@ -1968,15 +2019,15 @@ def test_a_state_file_from_before_mode_existed_uninstalls_as_global(
     assert "Restored" in out, "the global path restores; it does not remove a file"
 
 
-def test_global_mode_still_restores_when_the_default_is_project(
+def test_in_place_still_restores_when_the_default_is_project(
     tmp_path, kit_home, project_mode, capsys
 ):
-    """`--global` must keep meaning `--global` after the flip.
+    """`--in-place` must keep meaning `--in-place` after the flip.
 
-    The `args.global_scope` half of the mode expression had no coverage: with
+    The `args.in_place` half of the mode expression had no coverage: with
     DEFAULT_MODE global, no argv could reach project mode, so mutating the line
     to `mode = DEFAULT_MODE` left the whole suite green. After K1b that mutation
-    makes `--global` write a project config instead — and `--global` is the only
+    makes `--in-place` write a project config instead — and `--in-place` is the only
     escape the cwd-dependency refusal offers, so it would send someone who was
     correctly refused straight back into the same failure.
 
@@ -1985,11 +2036,11 @@ def test_global_mode_still_restores_when_the_default_is_project(
     path = _config(tmp_path, GLOBAL_ONLY)
     before = path.read_bytes()
 
-    assert kit.main(["setup", "notion", "--global", "--config-file", str(path)]) == 0
+    assert kit.main(["setup", "notion", "--in-place", "--src-config", str(path)]) == 0
     capsys.readouterr()
 
-    assert not project_mode.exists(), "`--global` wrote a project config"
-    assert path.read_bytes() != before, "`--global` must wrap the entry in place"
+    assert not project_mode.exists(), "`--in-place` wrote a project config"
+    assert path.read_bytes() != before, "`--in-place` must wrap the entry in place"
     state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
     assert state["mode"] == kit.MODE_GLOBAL
     assert state["config_path"] == str(path)
@@ -2003,7 +2054,7 @@ def test_setup_returns_zero_through_main(tmp_path, kit_home, capsys):
     it. `cmd_setup` returning 0 is already implied by other tests; that `main`
     hands that 0 back rather than swallowing it is not."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    rc = kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "trial-t"])
+    rc = kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "trial-t"])
     assert rc == 0
     assert (kit_home / "state.json").exists()
     assert capsys.readouterr().err == ""
@@ -2011,33 +2062,33 @@ def test_setup_returns_zero_through_main(tmp_path, kit_home, capsys):
 
 @pytest.mark.parametrize("cmd", ["receipt", "uninstall"])
 def test_receipt_and_uninstall_reject_the_config_file_flag(cmd, tmp_path, kit_home):
-    """CLAUDE.md:84-86 tells the agent `--config-file` is setup-only because the
+    """CLAUDE.md:84-86 tells the agent `--src-config` is setup-only because the
     path is recorded in state.json, so the other two find it themselves. The
     mechanism is that neither subparser declares the flag — so this is argparse
     RAISING SystemExit(2), not a Refuse returning 1. Asserting the code and not
     merely "it failed" is the point: a 1 here would read to the agent as a
     refusal to relay, and a 2 as its own malformed command."""
     with pytest.raises(SystemExit) as exc:
-        kit.main([cmd, "--config-file", str(tmp_path / "mcp.json")])
+        kit.main([cmd, "--src-config", str(tmp_path / "mcp.json")])
     assert exc.value.code == 2
 
 
-def test_the_global_flag_is_accepted_and_changes_nothing_yet(
+def test_the_in_place_flag_is_accepted_and_changes_nothing_yet(
     tmp_path, kit_home, monkeypatch, capsys
 ):
-    """K3 lands before K1, so `--global` names the behaviour the kit already
+    """K3 lands before K1, so `--in-place` names the behaviour the kit already
     has. Both runs must land in the same place.
 
     Landing the flag first is what keeps the K1 commit honest: when the default
     flips to writing a project `.mcp.json`, this test has to change, and
-    changing it is the diff saying out loud that `--global` became the only
+    changing it is the diff saying out loud that `--in-place` became the only
     route to the old behaviour.
 
-    **Driven through DISCOVERY, not `--config-file`, and that is the whole
-    point of the test.** The first version passed `--config-file` on both legs.
-    Review found it would have stayed green through the flip: `--config-file`
+    **Driven through DISCOVERY, not `--src-config`, and that is the whole
+    point of the test.** The first version passed `--src-config` on both legs.
+    Review found it would have stayed green through the flip: `--src-config`
     pins the write target, so if K1 changes only what happens with no
-    `--config-file`, both legs keep editing the file they were handed, the
+    `--src-config`, both legs keep editing the file they were handed, the
     bytes keep matching, and the tripwire never fires. A test that cannot fail
     when the thing it guards changes is not guarding it.
 
@@ -2060,7 +2111,7 @@ def test_the_global_flag_is_accepted_and_changes_nothing_yet(
     kit.STATE_PATH.unlink()
     (home / ".claude.json").write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
 
-    assert kit.main(["setup", "notion", "--global"]) == 0
+    assert kit.main(["setup", "notion", "--in-place"]) == 0
     flagged_state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
     flagged_config = (home / ".claude.json").read_text(encoding="utf-8")
     capsys.readouterr()
@@ -2078,8 +2129,8 @@ def test_the_global_flag_is_accepted_and_changes_nothing_yet(
     )
 
 
-def test_the_global_flag_reaches_the_code_under_its_own_name(monkeypatch):
-    """`dest="global_scope"` is load-bearing and nothing read it.
+def test_the_in_place_flag_reaches_the_code_under_its_own_name(monkeypatch):
+    """`dest="in_place"` is load-bearing and nothing read it.
 
     `args.global` is a syntax error — `global` is a Python keyword — so the
     `dest` is not style. It is the only way the flag can be read at all.
@@ -2091,27 +2142,27 @@ def test_the_global_flag_reaches_the_code_under_its_own_name(monkeypatch):
     seen = {}
 
     def _capture(args):
-        seen["global_scope"] = getattr(args, "global_scope", "ATTRIBUTE MISSING")
+        seen["in_place"] = getattr(args, "in_place", "ATTRIBUTE MISSING")
         return 0
 
     monkeypatch.setattr(kit, "cmd_setup", _capture)
 
-    assert kit.main(["setup", "notion", "--global"]) == 0
-    assert seen["global_scope"] is True, "`--global` must arrive as `global_scope`"
+    assert kit.main(["setup", "notion", "--in-place"]) == 0
+    assert seen["in_place"] is True, "`--in-place` must arrive as `in_place`"
 
     assert kit.main(["setup", "notion"]) == 0
-    assert seen["global_scope"] is False, "and default to False, not to absent"
+    assert seen["in_place"] is False, "and default to False, not to absent"
 
 
-def test_the_global_flag_is_setup_only(tmp_path, kit_home):
-    """Same reason `--config-file` is setup-only (see above): `uninstall` and
+def test_the_in_place_flag_is_setup_only(tmp_path, kit_home):
+    """Same reason `--src-config` is setup-only (see above): `uninstall` and
     `receipt` read the scope out of `state.json` rather than being told it
     again, and a second place to say it is a second place to say it wrongly.
     argparse SystemExit(2), not a Refuse."""
     for cmd in ("receipt", "uninstall"):
         with pytest.raises(SystemExit) as exc:
-            kit.main([cmd, "--global"])
-        assert exc.value.code == 2, f"`{cmd} --global` is a usage error, not a refusal"
+            kit.main([cmd, "--in-place"])
+        assert exc.value.code == 2, f"`{cmd} --in-place` is a usage error, not a refusal"
 
 
 def test_no_subcommand_is_a_usage_error(kit_home):
@@ -2142,7 +2193,7 @@ def test_setup_refusal_also_returns_one(tmp_path, kit_home, capsys):
     clause names `args.cmd` — a refusal raised under `setup` must be labelled
     `setup`, not carry whichever command was added to the parser first."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    rc = kit.main(["setup", "nosuchserver", "--config-file", str(path)])
+    rc = kit.main(["setup", "nosuchserver", "--src-config", str(path)])
     out, err = capsys.readouterr()
     assert rc == 1
     assert out == ""
@@ -2538,7 +2589,7 @@ def test_the_dependency_list_is_still_empty():
 _DOC_PLACEHOLDERS = {
     "<server-name>": "notion",
     "<name>": "notion",
-    # `--config-file <path>`, wherever a doc writes it after the command. One
+    # `--src-config <path>`, wherever a doc writes it after the command. One
     # token for exactly this reason: `<path to the config>` would shlex-split
     # into four, and the extra three would reach argparse as positionals.
     "<path>": "/tmp/mcp.json",
@@ -2719,7 +2770,7 @@ def stdio_run(tmp_path_factory):
             [
                 "setup",
                 "fixture",
-                "--config-file",
+                "--src-config",
                 str(config_path),
                 "--tenant",
                 TK_F_8_TENANT,
@@ -2918,7 +2969,7 @@ def bridge_run(request, tmp_path_factory):
             [
                 "setup",
                 "remote",
-                "--config-file",
+                "--src-config",
                 str(config_path),
                 "--tenant",
                 TK_F_9_TENANT,
@@ -3145,7 +3196,7 @@ _FIVE_LITERALS = ("sk-live-ALPHA-LITERAL-9f2b", "sk-live-DELTA-LITERAL-4c81")
 def _setup_listing(tmp_path, capsys) -> str:
     """`setup` with no server name — the refusal that carries the candidate list."""
     path = _config(tmp_path, FIVE_ENTRIES)
-    rc = kit.main(["setup", "--config-file", str(path)])
+    rc = kit.main(["setup", "--src-config", str(path)])
     out, err = capsys.readouterr()
     assert rc == 1
     assert out == ""
@@ -3266,7 +3317,7 @@ def test_the_offered_rows_share_one_indent(tmp_path, kit_home, capsys):
     assert len(set(indents.values())) == 1, f"the offered rows do not line up: {indents}"
 
 
-# --- TK-F-4: --config-file is answered, never quietly abandoned -------------
+# --- TK-F-4: --src-config is answered, never quietly abandoned -------------
 
 
 @pytest.fixture
@@ -3316,7 +3367,7 @@ _BAD_CONFIG_CASES = [
 def test_a_bad_config_file_is_named_and_never_falls_back(
     case, expected_phrase, tmp_path, kit_home, home_with_a_real_config, capsys
 ):
-    """TK-F-4. Four ways to point `--config-file` at something unusable.
+    """TK-F-4. Four ways to point `--src-config` at something unusable.
 
     The failure this prevents is not the error message: it is a typo'd path
     falling through to the search list and wrapping an entry in the person's
@@ -3336,7 +3387,7 @@ def test_a_bad_config_file_is_named_and_never_falls_back(
         target = tmp_path / "mcp.json"
         target.write_text(canonical({"projects": {}}), encoding="utf-8")
 
-    err = _bad_config_refusal(["setup", "alpha", "--config-file", str(target)], capsys)
+    err = _bad_config_refusal(["setup", "alpha", "--src-config", str(target)], capsys)
     assert str(target) in err or str(Path(target).resolve()) in err, err
     assert expected_phrase in err, (
         f"{case} was refused for the wrong stated reason — want {expected_phrase!r}:\n{err}"
@@ -3404,7 +3455,7 @@ def test_receipt_branch_two_the_wrap_is_gone(tmp_path, kit_home, capsys):
     Without this branch the agent sees "no events", walks the restart checklist,
     and lands on a machine where the proxy was never in the path at all."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     path.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")  # restored by hand
 
@@ -3418,7 +3469,7 @@ def test_receipt_branch_three_state_but_no_events(tmp_path, kit_home, capsys):
     """Wrapped, still wrapped, nothing captured. The usual answer is that the
     client has not been restarted, and the doc promises "a short checklist"."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
 
     out = _receipt_output(capsys)
@@ -3433,7 +3484,7 @@ def test_receipt_branch_four_counts(tmp_path, kit_home, capsys):
     """Events → report the numbers. Pinned as the labels the agent reads back,
     not as a rendering: a renamed label is a branch the doc cannot find."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     (kit_home / "events.jsonl").write_text(
         "\n".join(
@@ -3467,7 +3518,7 @@ def _receipt_with_events(tmp_path, kit_home, capsys, events: list[dict]) -> str:
     real so `receipt` reads the state it would read on a live machine — the
     banners below the counts are gated on it."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     (kit_home / "events.jsonl").write_text(
         "".join(json.dumps(e) + "\n" for e in events), encoding="utf-8"
@@ -3571,7 +3622,7 @@ def test_the_four_receipt_branches_are_mutually_exclusive(tmp_path, kit_home, ca
     once is how an agent on an already-wrapped machine falls through to
     *Setting up* and wraps a second server on top of the first."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     out = _receipt_output(capsys)
     assert _fired(out) == ["No events have been captured yet"], _fired(out)
@@ -3639,7 +3690,7 @@ def test_setup_refuses_an_entry_this_kit_already_wrapped(tmp_path, kit_home, cap
         }
     }
     path = _config(tmp_path, wrapped)
-    rc = kit.main(["setup", "notion", "--config-file", str(path)])
+    rc = kit.main(["setup", "notion", "--src-config", str(path)])
     out, err = capsys.readouterr()
     assert rc == 1
     assert out == ""
@@ -3661,7 +3712,7 @@ def test_setup_refuses_its_own_bridge_entry_without_telling_anyone_to_delete_it(
         }
     }
     path = _config(tmp_path, bridged)
-    rc = kit.main(["setup", "remote", "--config-file", str(path)])
+    rc = kit.main(["setup", "remote", "--src-config", str(path)])
     out, err = capsys.readouterr()
     assert rc == 1
     assert out == ""
@@ -3896,7 +3947,7 @@ def test_setup_says_what_is_actually_required_of_them(tmp_path, kit_home, capsys
     "the session running now sees nothing" recreates the empty capture from the
     other direction — someone keeps using the window they already had open."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     assert not _QUIT_BELIEF.search(out), out
     assert "new" in out.lower(), "nothing says a NEW session is what picks the wrap up"
@@ -3908,7 +3959,7 @@ def test_uninstall_does_not_charge_a_restart_it_does_not_need(tmp_path, kit_home
     from setup's: nothing is pending, nothing is inert, and there is nothing to
     verify afterwards. It said "the change is INERT until you fully restart"."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     assert kit.main(["uninstall"]) == 0
     out, _err = capsys.readouterr()
@@ -3970,7 +4021,7 @@ def test_setup_names_the_project_directory_the_wrapped_entry_loads_in(tmp_path, 
     """Finding 11, at the sink that produced it."""
     key = "/Users/someone/work/app"
     path = _project_config(tmp_path, key)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     assert f"cd {key} && claude" in out, f"the handoff never names the project path:\n{out}"
 
@@ -3983,7 +4034,7 @@ def test_the_handoff_never_offers_the_kits_own_directory_as_the_place_to_start(
     a command. `try/` is where the kit's three commands run; it is never where
     their client starts unless their own config says so."""
     path = _project_config(tmp_path, "/Users/someone/work/app")
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     assert f"cd {kit.TRY_DIR} && claude" not in out, out
     assert "baton-proxy/try && claude" not in out, out
@@ -3993,7 +4044,7 @@ def test_a_global_entry_is_not_given_an_invented_directory(global_config, kit_ho
     """A global entry loads wherever they start from, so naming a directory
     would be a fresh false instruction rather than the same one corrected."""
     path = global_config
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     assert "cd " not in out, f"a global wrap was told to cd somewhere:\n{out}"
     assert "second terminal" in out
@@ -4009,7 +4060,7 @@ def test_the_cd_is_dropped_when_they_are_already_in_the_project_directory(
     here.mkdir()
     monkeypatch.chdir(here)
     path = _project_config(tmp_path, str(here))
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     assert "cd " not in out, f"told to cd to the directory they are standing in:\n{out}"
     assert "second terminal" in out
@@ -4022,9 +4073,9 @@ def test_the_already_wrapped_path_hands_over_the_same_directory(tmp_path, kit_ho
     is in precisely when they have lost the first window."""
     key = "/Users/someone/work/app"
     path = _project_config(tmp_path, key)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
-    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
     out, _err = capsys.readouterr()
     assert "Already wrapped" in out
     assert f"cd {key} && claude" in out, f"the second run hands over nothing:\n{out}"
@@ -4132,7 +4183,7 @@ def _write_events(kit_home, *sessions: tuple[str, int]) -> None:
 
 def _wrapped(tmp_path, kit_home, capsys, scope_key: str | None = None):
     path = _project_config(tmp_path, scope_key) if scope_key else _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     return path
 
@@ -4202,7 +4253,7 @@ def test_an_empty_file_under_a_global_wrap_invents_no_directory(global_config, k
     """The same checklist must not grow a step that is false. A global entry
     loads wherever they start, so "start it from X" would be a new wrong
     instruction replacing the one just fixed."""
-    assert kit.main(["setup", "notion", "--config-file", str(global_config), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(global_config), "--tenant", "t"]) == 0
     capsys.readouterr()
     out = _receipt_output(capsys)
     assert _fired(out) == ["No events have been captured yet"], _fired(out)
@@ -4412,13 +4463,13 @@ def test_a_wrap_clobbered_after_a_real_capture_still_says_so(tmp_path, kit_home,
 # --- Review findings: `scope is None` is not the same claim as "global" ------
 #
 # `iter_entries` returns scope None for the TOP LEVEL of whatever file was
-# read, and `search_paths`' own docstring says `--config-file` is how a project
-# config is reached. So a `.mcp.json` passed with `--config-file` produces
+# read, and `search_paths`' own docstring says `--src-config` is how a project
+# config is reached. So a `.mcp.json` passed with `--src-config` produces
 # scope None — and "registered globally, so it loads wherever you start from"
 # is then false in the one direction that costs a trial: a `.mcp.json` loads for
 # sessions started in its own directory and nowhere else. That is the
 # empty-capture-with-an-invisible-cause failure, re-entered through the
-# --config-file door.
+# --src-config door.
 
 
 def _mcp_json(tmp_path) -> Path:
@@ -4431,7 +4482,7 @@ def _mcp_json(tmp_path) -> Path:
 
 def test_a_project_config_file_is_not_described_as_loading_everywhere(tmp_path, kit_home, capsys):
     path = _mcp_json(tmp_path)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     assert "loads wherever you start from" not in out, out
     assert str(path.parent) in out, f"the directory that file belongs to is not named:\n{out}"
@@ -4444,7 +4495,7 @@ def test_the_checklist_asks_the_directory_question_for_a_project_config_file(
     the checklist, and for a non-global config the directory question is the one
     that resolves it."""
     path = _mcp_json(tmp_path)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     out = _receipt_output(capsys)
     checklist = out[out.index("No events have been captured yet") :]
@@ -4462,7 +4513,7 @@ def test_the_global_claim_survives_for_the_config_that_is_actually_global(
     path = home / ".claude.json"
     path.write_text(canonical(GLOBAL_ONLY), encoding="utf-8")
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     assert "loads wherever you start from" in out, out
     assert "cd " not in out, out
@@ -4480,7 +4531,7 @@ def test_a_project_path_with_a_space_is_handed_over_as_a_runnable_command(
 
     key = str(tmp_path / "Google Drive" / "app")
     path = _project_config(tmp_path, key)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     line = next(ln for ln in out.splitlines() if "&& claude" in ln)
     argv = shlex.split(line)
@@ -4562,7 +4613,7 @@ def test_uninstall_does_not_promise_a_restore_it_could_not_verify(
     was introduced by the rewrite, in the one output where being wrong is
     expensive: the person is being asked to check a config by hand."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     monkeypatch.setattr(kit, "restored_matches_on_disk", lambda *_a, **_k: False)
     assert kit.main(["uninstall"]) == 0
@@ -4581,7 +4632,7 @@ def test_uninstall_names_the_checkout_and_says_nothing_was_installed(tmp_path, k
     usually the one leaving, and "how do I get this off my machine" is the
     question in their head at that moment."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     assert kit.main(["uninstall"]) == 0
     out, _err = capsys.readouterr()
@@ -4598,7 +4649,7 @@ def test_uninstall_says_what_the_backups_it_leaves_behind_hold(tmp_path, kit_hom
     the words and the behaviour together: the backup is named under the header
     and is still on disk, and `state.json` is deleted exactly as before."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     (backup,) = kit_home.glob("config-backup.*.json")
     assert kit.main(["uninstall"]) == 0
@@ -4623,7 +4674,7 @@ def test_the_unverified_branch_does_not_tell_you_to_delete_the_record(
     match. Nothing-was-installed is still true and still said; what changes is
     the instruction."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
     monkeypatch.setattr(kit, "restored_matches_on_disk", lambda *_a, **_k: False)
     assert kit.main(["uninstall"]) == 0
@@ -4715,7 +4766,7 @@ def test_setup_hands_over_the_ending_before_the_window_goes_quiet(tmp_path, kit_
     agent left that knows the kit is here and nothing in their new session
     mentions Baton, so the ending is given to them here or not at all."""
     path = _project_config(tmp_path, "/Users/someone/work/app")
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     assert "kit.py receipt" in out, f"setup never says how to come back:\n{out}"
     # The destination is not in this note, because at setup time there is
@@ -4732,7 +4783,7 @@ def test_the_ending_setup_hands_over_does_not_claim_a_file_exists_yet(tmp_path, 
     something to send — the same optimism the receipt's gate exists to stop, one
     step earlier and harder to notice."""
     path = _project_config(tmp_path, "/Users/someone/work/app")
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     tail = out[out.index("How the trial ends") :]
     # It used to carry the send path under an "if there is something in it"
@@ -4751,9 +4802,9 @@ def test_the_already_wrapped_path_hands_over_the_ending_too(tmp_path, kit_home, 
     """Cold re-entry is the normal case on a multi-day trial, and it is exactly
     the person who has lost the window that carried the ending the first time."""
     path = _project_config(tmp_path, "/Users/someone/work/app")
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     capsys.readouterr()
-    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
     out, _err = capsys.readouterr()
     assert "Already wrapped" in out
     assert "How the trial ends" in out, f"the re-entry hands over no ending:\n{out}"
@@ -4881,7 +4932,7 @@ def test_setups_come_back_line_follows_the_kit_directory_under_test(tmp_path, ki
     checkout path, and a future pin on "the come-back line names the kit
     directory" would pass while checking the wrong one."""
     path = _project_config(tmp_path, "/Users/someone/work/app")
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
     out, _err = capsys.readouterr()
     # Scoped to the come-back line. `str(kit.TRY_DIR) in out` passes on the
     # `backup:` line above it, which reads TRY_DIR at call time and always did —
@@ -5100,7 +5151,7 @@ def test_setup_with_no_tenant_labels_the_events_with_the_server_name(tmp_path, k
     theirs — so skipping the question was a real cost, and naming it was the
     reason to ask. The server name settles both."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path)]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
     out, _err = capsys.readouterr()
 
     entry = json.loads(path.read_text())["mcpServers"]["notion"]
@@ -5129,7 +5180,7 @@ def test_the_tenant_flag_still_works_for_the_rigs_that_pass_it(tmp_path, kit_hom
     runs apart, and TK-F-8/9 assert every landed event carries it. Removing the
     question must not remove the override."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    assert kit.main(["setup", "notion", "--config-file", str(path), "--tenant", "t2-kit-run"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t2-kit-run"]) == 0
     entry = json.loads(path.read_text())["mcpServers"]["notion"]
     assert entry["env"]["BATON_TENANT_ID"] == "t2-kit-run"
     assert entry["env"]["BATON_VENDOR_ID"] == "notion", "the override must not move vendor too"
@@ -5333,7 +5384,7 @@ def test_receipt_reads_the_config_only_once_a_wrap_is_in_place(
     monkeypatch.setattr(Path, "read_text", recording_read_text)
     _receipt_output(capsys)
     assert str(config) not in reads, "receipt read the config with no wrap in place"
-    assert kit.main(["setup", "notion", "--config-file", str(config), "--tenant", "t"]) == 0
+    assert kit.main(["setup", "notion", "--src-config", str(config), "--tenant", "t"]) == 0
     capsys.readouterr()
     reads.clear()
     _receipt_output(capsys)
@@ -5348,7 +5399,7 @@ def test_setup_does_not_tell_them_to_check_early(tmp_path, kit_home, capsys):
     or that nothing did. Pinned on both setup paths, together with the rest of
     the printout, which has to survive the cut."""
     path = _config(tmp_path, GLOBAL_ONLY)
-    args = ["setup", "notion", "--config-file", str(path), "--tenant", "t"]
+    args = ["setup", "notion", "--src-config", str(path), "--tenant", "t"]
     assert kit.main(args) == 0
     first, _err = capsys.readouterr()
     assert kit.main(args) == 0
@@ -5821,7 +5872,7 @@ def test_an_ordinary_env_word_is_not_refused_for_matching_a_directory(tmp_path, 
 
     A refusal here costs more than a missed one. It lands on someone who has
     done nothing unusual, it is the kit telling them their own config is the
-    problem, and offering `--global` in the same breath does not repair it:
+    problem, and offering `--in-place` in the same breath does not repair it:
     three prospects have already stopped at a sentence about their config.
     So env values match on `is_file()` only. An argument keeps the wider check,
     where `node server` resolving to a directory is a real launch."""
