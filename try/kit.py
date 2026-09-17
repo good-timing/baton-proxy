@@ -1370,6 +1370,16 @@ def entry_home(scope: str | None, config_path: str | Path) -> Path | None:
     return Path(config_path).parent
 
 
+def scope_selector(scope: str | None) -> str:
+    """The value `--from` takes for one scope, and the value the refusal prints.
+
+    `global` for the top-level block, the project path otherwise. One function,
+    so the string a person is shown is produced by the same code that matches
+    what they then type back. A printed value that does not round-trip is worse
+    than having no selector at all: it reads as the kit refusing their answer."""
+    return "global" if scope is None else scope
+
+
 def not_capturing(scope: str | None, config_path: str | Path, mode: str = MODE_GLOBAL) -> str:
     """The empty-file checklist, with the questions that apply to this wrap.
 
@@ -1831,15 +1841,30 @@ def cmd_setup(args: argparse.Namespace) -> int:
             + (", ".join(names) or "none")
             + "\n  → check the name, or pass --config-file <path>."
         )
+    if len(matches) > 1 and args.from_scope:
+        matches = [m for m in matches if scope_selector(m[2]) == args.from_scope]
     if len(matches) > 1:
-        where = "\n".join(f"    {describe(p, s)}" for p, _t, s, _n, _e in matches)
+        # A CHOICE, not a dead end. This refusal used to end with "rename one of
+        # them" — by hand, in `~/.claude.json` — which is the exact act Bharath
+        # had just told us he would not perform, offered to him as the only way
+        # forward. He had three `playwright` entries under three project keys,
+        # `--config-file` cannot separate entries inside one file, and so he
+        # trialled nothing.
+        #
+        # Every row now prints the flag that picks it. The kit still does not
+        # choose; it just stops being the only thing standing in the way.
+        where = "\n".join(
+            f"    --from {scope_selector(s):<28} {describe(p, s)}" for p, _t, s, _n, _e in matches
+        )
         raise Refuse(
             f"`{args.server}` is defined in more than one place:\n{where}\n"
-            "  → this kit will not choose for you.\n"
-            "  → if the duplicates are in the SAME file (a global entry plus a project\n"
-            "    one, say), rename one of them — there is no scope selector, so\n"
-            "    --config-file cannot separate them.\n"
-            "  → if they are in different files, pass --config-file <path> to pick one."
+            "  → run setup again with one of the --from lines above. Nothing has been\n"
+            "    changed, and nothing needs renaming."
+        )
+    if not matches:
+        raise Refuse(
+            f"no `{args.server}` at --from {args.from_scope}.\n"
+            "  → run setup with the server name alone to see where it is defined."
         )
 
     path, text, scope, name, entry = matches[0]
@@ -2330,6 +2355,14 @@ def main(argv: list[str] | None = None) -> int:
         help="wrap the entry in the config file it already lives in (what setup does today)",
     )
     p_setup.add_argument("--config-file", help="config to use instead of searching")
+    p_setup.add_argument(
+        "--from",
+        dest="from_scope",
+        metavar="SCOPE",
+        help="which definition to use when one server name is defined in more than "
+        "one place: `global`, or the project path. setup prints the exact value "
+        "for each when it finds more than one.",
+    )
     p_setup.add_argument("--tenant", help="label for this trial (default: the server's name)")
     p_setup.add_argument("--vendor", help="label for the wrapped server (default: its name)")
     p_setup.set_defaults(fn=cmd_setup)

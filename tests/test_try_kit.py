@@ -1493,6 +1493,91 @@ def test_project_mode_tells_them_where_to_start_the_client(
     )
 
 
+THREE_PLAYWRIGHTS = {
+    "projects": {
+        "/Users/b/work/a": {"mcpServers": {"playwright": {"command": "npx", "args": ["-y", "a"]}}},
+        "/Users/b/work/b": {"mcpServers": {"playwright": {"command": "npx", "args": ["-y", "b"]}}},
+        "/Users/b/work/c": {"mcpServers": {"playwright": {"command": "npx", "args": ["-y", "c"]}}},
+    },
+}
+
+
+def test_a_duplicate_name_is_a_choice_and_never_a_rename(tmp_path, kit_home, capsys):
+    """K6, and this is Bharath's config.
+
+    Three servers called `playwright`, one under each of three project keys. The
+    kit could not tell them apart and refused, and its advice was to rename one
+    BY HAND in `~/.claude.json` — the exact act he had told us, in the same
+    conversation, that he would not perform. `--config-file` cannot separate
+    entries that live in one file. So the only route the kit offered him was the
+    one he had ruled out, and he trialled nothing.
+
+    The refusal now prints the flag that picks each one. What is asserted is
+    that it round-trips: the string shown is the string that works, produced by
+    the same function on both sides. A selector that prints a value the kit then
+    rejects would read as the kit refusing his answer, which is worse than
+    having no selector."""
+    path = _config(tmp_path, THREE_PLAYWRIGHTS)
+
+    rc = kit.main(["setup", "playwright", "--config-file", str(path)])
+    err = capsys.readouterr().err
+
+    assert rc == 1, "the kit still does not choose between them"
+    assert "rename" not in err, "the sentence that stopped Bharath is still here"
+    assert "by hand" not in err
+    # Counted as ROWS, not as occurrences of the string: the closing sentence
+    # says "one of the --from lines above", so the substring count is 4 and the
+    # first version of this assertion was wrong about what it measured.
+    rows = [ln for ln in err.splitlines() if ln.strip().startswith("--from ")]
+    assert len(rows) == 3, f"every candidate must print its own selector:\n{err}"
+
+    # Take the offer exactly as printed, the way a person would.
+    offered = [ln.split("--from ", 1)[1].split()[0] for ln in rows]
+    assert sorted(offered) == ["/Users/b/work/a", "/Users/b/work/b", "/Users/b/work/c"]
+
+    assert kit.main(["setup", "playwright", "--config-file", str(path), "--from", offered[1]]) == 0
+    capsys.readouterr()
+
+    state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
+    assert state["scope"] == offered[1], "a different definition was wrapped than the one picked"
+    assert state["original_entry"]["args"] == ["-y", "b"], "the picked entry is not the one used"
+
+
+def test_the_global_definition_can_be_picked_by_name(tmp_path, kit_home, capsys):
+    """The top-level block has no path, so it needs a word. `global` is that
+    word, and it comes from the same function that prints it."""
+    data = {
+        "mcpServers": {"srv": {"command": "npx", "args": ["-y", "top"]}},
+        "projects": {
+            "/Users/b/app": {"mcpServers": {"srv": {"command": "npx", "args": ["-y", "p"]}}}
+        },
+    }
+    path = _config(tmp_path, data)
+
+    assert kit.main(["setup", "srv", "--config-file", str(path)]) == 1
+    assert "--from global" in capsys.readouterr().err
+
+    assert kit.main(["setup", "srv", "--config-file", str(path), "--from", "global"]) == 0
+    capsys.readouterr()
+    state = json.loads(kit.STATE_PATH.read_text(encoding="utf-8"))
+    assert state["scope"] is None
+    assert state["original_entry"]["args"] == ["-y", "top"]
+
+
+def test_a_from_value_that_matches_nothing_says_so(tmp_path, kit_home, capsys):
+    """Silently falling back to "wrap something" would be the worst outcome of a
+    mistyped path: the person believes they picked one definition and the kit
+    wrapped another."""
+    path = _config(tmp_path, THREE_PLAYWRIGHTS)
+
+    rc = kit.main(["setup", "playwright", "--config-file", str(path), "--from", "/typo"])
+    err = capsys.readouterr().err
+
+    assert rc == 1
+    assert not kit.STATE_PATH.exists(), "nothing may be wrapped when the pick matched nothing"
+    assert "/typo" in err
+
+
 def test_receipt_finds_the_wrap_and_asks_about_approval_in_project_mode(
     tmp_path, kit_home, project_mode, capsys
 ):
