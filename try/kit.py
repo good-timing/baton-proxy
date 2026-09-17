@@ -2354,7 +2354,17 @@ def main(argv: list[str] | None = None) -> int:
         # release, 0.7.0, that exists nowhere else in this repo.
         help="wrap the entry in the config file it already lives in (what setup does today)",
     )
-    p_setup.add_argument("--config-file", help="config to use instead of searching")
+    # K9: it stays. Ujwal, 2026-09-17. It is the existing hatch for someone
+    # whose config is not at ~/.claude.json, and project mode does not replace
+    # it: the mode decides where the wrap is WRITTEN, this decides where the
+    # entry is READ FROM. Two different questions, so removing this one would
+    # have been a separate decision about a need that has not gone away.
+    p_setup.add_argument(
+        "--config-file",
+        help="read the servers from this config instead of searching for "
+        "~/.claude.json. With --global it is also the file that gets edited; "
+        "otherwise it is only read.",
+    )
     p_setup.add_argument(
         "--from",
         dest="from_scope",

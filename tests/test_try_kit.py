@@ -1493,6 +1493,36 @@ def test_project_mode_tells_them_where_to_start_the_client(
     )
 
 
+def test_config_file_is_read_only_unless_global_is_asked_for(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """K9: `--config-file` stays, because it answers a different question.
+
+    `--config-file` says where the entry is READ FROM. The mode says where the
+    wrap is WRITTEN. Conflating the two is the reading under which this flag
+    looks redundant once project mode exists — and it is also the reading under
+    which someone who passes a path precisely because they want it left alone
+    gets it edited.
+
+    Two identical configs, the runs differing only by `--global`."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    read_only = _config(tmp_path / "a", GLOBAL_ONLY)
+    edited = _config(tmp_path / "b", GLOBAL_ONLY)
+    before = read_only.read_bytes()
+
+    assert kit.main(["setup", "notion", "--config-file", str(read_only)]) == 0
+    kit.STATE_PATH.unlink()
+    assert kit.main(["setup", "notion", "--global", "--config-file", str(edited)]) == 0
+    capsys.readouterr()
+
+    assert read_only.read_bytes() == before, "project mode wrote to the config it was handed"
+    assert edited.read_bytes() != before, "--global must edit the file it was handed"
+    # And the read-only run still recorded where it read from, which is the only
+    # trace that their file was involved at all.
+    assert str(read_only) not in edited.read_text(encoding="utf-8")
+
+
 THREE_PLAYWRIGHTS = {
     "projects": {
         "/Users/b/work/a": {"mcpServers": {"playwright": {"command": "npx", "args": ["-y", "a"]}}},
