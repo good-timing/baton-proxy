@@ -6586,6 +6586,15 @@ def test_a_secret_with_a_slash_in_it_is_not_a_relative_path(secret, tmp_path):
         ("../shared/db.sqlite", True),
         ("data/app.sqlite", False),
         ("plain-value", False),
+        # ⚠ An env value carrying ARGUMENT grammar. `NODE_OPTIONS` and
+        # `JAVA_OPTS` hold flags, so the path sits after an `=` and the head of
+        # the string is `--require`. The first version of `_explicitly_relative`
+        # checked the raw value and missed this, while the identical string in
+        # `args` was refused — the same substring, two answers.
+        ("--require=./instrument.js", True),
+        ("--config=../shared/app.json", True),
+        # The other side of the same split: a flag whose value is not a path.
+        ("--max-old-space-size=4096", False),
     ],
 )
 def test_an_env_value_is_a_path_when_it_says_so(value, refused, tmp_path):
@@ -6599,6 +6608,28 @@ def test_an_env_value_is_a_path_when_it_says_so(value, refused, tmp_path):
     entry = {"command": "npx", "args": ["-y", "srv"], "env": {"DB": value}}
     reason = kit.cwd_dependent_reason(entry, base=tmp_path)
     assert (reason is not None) is refused, f"{value!r} -> {reason!r}"
+
+
+@pytest.mark.parametrize(
+    "value", ["--require=./instrument.js", "./plain.js", "../up/one.js", "not-a-path"]
+)
+def test_env_and_args_agree_about_the_same_string(value, tmp_path):
+    """The two fields ask different questions; they must not give the same
+    string two answers WHERE BOTH QUESTIONS APPLY.
+
+    `args` is wider on purpose — a bare `dist/index.js` in a launch position is
+    a path, and the same characters in an env value are indistinguishable from a
+    secret. That difference is deliberate and tested above. What is NOT
+    deliberate is disagreeing about a value that explicitly says `./`: measured
+    2026-09-17, `--require=./instrument.js` was refused as an argument and
+    accepted as an env value, because only one side ran `_path_candidate`.
+    """
+    as_arg = kit.cwd_dependent_reason({"command": "node", "args": [value]}, base=tmp_path)
+    as_env = kit.cwd_dependent_reason({"command": "node", "env": {"X": value}}, base=tmp_path)
+    assert (as_arg is not None) == (as_env is not None), (
+        f"{value!r} explicitly states a relative path, and the two fields disagree:\n"
+        f"  arg -> {as_arg!r}\n  env -> {as_env!r}"
+    )
 
 
 def test_the_cwd_refusal_never_prints_the_env_value_it_names(tmp_path, kit_home, capsys):

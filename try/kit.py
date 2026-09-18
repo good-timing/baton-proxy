@@ -571,6 +571,14 @@ def _relative_path_like(value: str, *, exempt_npm_and_url: bool = True) -> bool:
     path by definition, and neither an npm spec nor a URL is launchable. It is a
     parameter rather than a second copy of the rule so the two callers cannot
     drift — the width difference is deliberate, the rule underneath is one rule.
+
+    ⚠ That last sentence is about WIDTHS OF THIS RULE, and does not forbid a
+    different rule. ``_explicitly_relative`` below is a different rule: this one
+    asks whether a string is SHAPED like a path, which is the right question for
+    a launch position and the wrong one for an environment value, where a
+    secret has the same shape. A review read the sentence as covering that case
+    and reported the second function as an unfixed violation of it, so the scope
+    is stated here instead of inferred.
     """
     # The WHOLE value first, before the `=` split. `/opt/my=dir/bin/server` is an
     # absolute path that happens to contain an `=`; splitting it would leave
@@ -605,12 +613,21 @@ def _explicitly_relative(value: str) -> bool:
     entry moves. Everything else in env is left to ``_names_a_file_in``, which
     proves the claim against the filesystem instead of guessing from shape.
 
+    ⚠ Runs on ``_path_candidate(value)``, not on the raw value, and that is not
+    tidiness. An env value can carry ARGUMENT grammar: ``NODE_OPTIONS`` and
+    ``JAVA_OPTS`` hold flags, so ``NODE_OPTIONS=--require=./instrument.js``
+    arrives here as ``--require=./instrument.js``. Checking the head of that
+    string finds ``--require`` and misses the path. Measured 2026-09-17: the
+    first version of this function returned None for exactly that value while
+    the identical string in ``args`` was refused. Splitting first is what keeps
+    the two fields answering the same question about the same substring.
+
     What this gives up, stated rather than glossed: ``CONFIG=config/app.json``
     where that file does NOT exist under the entry's base is no longer refused.
     That case is already outside the guard's reach when ``base`` is None, which
     ``_names_a_file_in``'s own docstring concedes for every top-level entry."""
-    stripped = value.strip()
-    return stripped.startswith(("./", "../")) or stripped.startswith((".\\", "..\\"))
+    candidate = _path_candidate(value.strip())
+    return candidate.startswith(("./", "../", ".\\", "..\\"))
 
 
 def _names_a_file_in(base: Path | None, value: str, *, files_only: bool = False) -> bool:
@@ -700,6 +717,20 @@ def cwd_dependent_reason(entry: dict, base: Path | None = None) -> str | None:
                 "the entry is copied"
             )
 
+    # ⚠ WHY `command` AND `args` PRINT THEIR VALUE AND `env` DOES NOT. Read as a
+    # half-fix once already, so it is written down rather than left to inference.
+    #
+    # It is the file's existing rule, not a new one: `redact_entry` hides `env`,
+    # `headers` and `url`, and states the argument case as a KNOWN LIMIT carried
+    # in SECURITY.md — "there is no way to tell which argument is secret, and
+    # blanking args would destroy the restore recipe these dumps exist to be."
+    #
+    # The refusal adds a second reason of its own. An env value is identified by
+    # its KEY: "its `DB` environment value" tells the person exactly which line
+    # to look at, so printing the value buys nothing and costs a credential. An
+    # argument has no name — "argument 4" is only findable by its content, so
+    # hiding it would leave a refusal they cannot act on. Different fields,
+    # different evidence, same rule about what identification requires.
     command = entry.get("command")
     # The same rule as the arguments get, minus the two exemptions — a command
     # with a slash in it is a path by definition, while `node` and `python3`
