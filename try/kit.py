@@ -795,6 +795,33 @@ def cwd_dependent_reason(entry: dict, base: Path | None = None) -> str | None:
     return None
 
 
+def cwd_dependent_warning(name: str, reason: str) -> str:
+    """The copied-entry path warning, as a warning rather than a refusal.
+
+    Says three things in the order they become useful: what may break, that
+    nothing of THEIRS is at risk, and what to do if the server does not start.
+
+    ⚠ It does not say "this is broken". The guard reads shape, not truth — a
+    header value with a slash in it trips the same rule a real relative path
+    does, and that case is ordinary rather than exotic (`mcp-remote --header
+    "Authorization: Bearer …"`). Overstating it here would send people to
+    `--in-place` on a false alarm, which is the outcome dropping the refusal was
+    meant to stop. "May not" is the honest strength.
+
+    The reason fragment arrives already redacted — `cwd_dependent_reason` hides
+    every value it names, in all three positions."""
+    return (
+        f"⚠ One thing to know about `{name}`: {reason}.\n"
+        "  The copy in this checkout is launched from a different directory than\n"
+        "  your own entry is, so a path like that may not resolve there. Your own\n"
+        "  config was not changed, so your normal server is unaffected either way.\n"
+        "  If the wrapped server does not start, or the receipt shows nothing was\n"
+        "  captured, this is the first thing to check. Running setup again with\n"
+        "  --in-place wraps the entry where it already sits, which does not move\n"
+        "  it. That edits the config file the entry is in."
+    )
+
+
 def is_proxy_invocation(cmd: list[str]) -> bool:
     """Does this command LEAD with a baton-proxy launch, in the two head forms?
 
@@ -2112,22 +2139,42 @@ def cmd_setup(args: argparse.Namespace) -> int:
     mode = MODE_GLOBAL if args.in_place else DEFAULT_MODE
     backup: Path | None = None
 
+    cwd_warning: str | None = None
+
     if mode == MODE_PROJECT:
         # BEFORE build_wrapped_entry, which is the ordering the guard's own test
         # pins: the wrap demotes the command into `args`, and a guard run after
         # it names a position the person's entry does not have.
-        reason = cwd_dependent_reason(entry, base=entry_home(scope, path))
-        if reason is not None:
-            raise Refuse(
-                f"`{name}` cannot be copied into a project config: {reason}.\n"
-                "  This trial writes a new config file in this checkout and leaves yours\n"
-                "  alone, so the client would launch the server from a different\n"
-                "  directory and that path would stop resolving — in your NEXT session,\n"
-                "  not now.\n"
-                "  → run setup again with --in-place to wrap the entry where it already\n"
-                "    is, which does not move it. That edits the config file the entry is\n"
-                "    in. Nothing has been changed yet."
-            )
+        #
+        # ⚠ A WARNING, NOT A REFUSAL — changed 2026-09-17, by the operator, after
+        # the refusal was measured against a real entry. It was a `Refuse` and
+        # the reasoning for that is recorded in `_relative_path_like`: "a false
+        # positive costs a trial that would have worked and says `--in-place` in
+        # the same breath, while a false negative is a server that dies in their
+        # next session with nothing pointing at the cause."
+        #
+        # BOTH HALVES OF THAT SENTENCE WERE WRITTEN BEFORE PROJECT MODE AND THIS
+        # MODE BREAKS BOTH:
+        #
+        # - A false positive is NOT cheap. `--in-place` is the only way out it
+        #   offers, and that edits the config the person came here to keep
+        #   untouched. It is the sentence that stopped Bharath. Measured: the
+        #   ordinary `mcp-remote` entry, `--header "Authorization: Bearer
+        #   abc/def"`, is refused — a header value carrying a slash, which is
+        #   not a path and could never be one.
+        # - A false negative is NOT a dead server. In this mode their own entry
+        #   is never written, so a path that stops resolving breaks OUR COPY in
+        #   the checkout and nothing else. Their server keeps working everywhere
+        #   they already use it. The cost is a trial that captures nothing —
+        #   which `receipt`'s own "connected, but nothing called it" checklist
+        #   exists to diagnose, and which this warning now names in advance.
+        #
+        # So the guard is kept for its diagnosis and stripped of its veto. It
+        # still runs BEFORE the wrap, for the position-naming reason above.
+        # `--in-place` does not need it at all: that mode never moves the entry,
+        # which is why this whole check is gated on the mode rather than folded
+        # into `not_wrappable_reason`.
+        cwd_warning = cwd_dependent_reason(entry, base=entry_home(scope, path))
         # Ours, in our own checkout, and the kit is the only thing that writes
         # it — so an existing one with no state file is a leftover we cannot
         # reason about rather than a config someone owns. Named as ours, with
@@ -2198,6 +2245,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print(f"  tenant:  {tenant}   vendor: {vendor}")
     print("\nThe entry now reads:\n")
     print(entry_json(state["wrapped_entry"]))
+    # AFTER the entry and BEFORE the restart note, which is where it is
+    # actionable: they have just seen what was written, and the next thing they
+    # do is start the server this may affect. Above the entry it would be read
+    # before there is anything to attach it to; below `start_where` it would sit
+    # under the line the whole message builds to.
+    if cwd_warning is not None:
+        print(f"\n{cwd_dependent_warning(name, cwd_warning)}")
     print(f"\n{RESTART_NOTE}")
     # This window is the only place the security detail and the config diff
     # exist, and after the handoff no agent anywhere else knows the kit is here.

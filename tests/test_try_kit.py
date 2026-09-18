@@ -1570,33 +1570,111 @@ def test_project_mode_records_both_where_it_wrote_and_where_it_read(
     )
 
 
-def test_project_mode_refuses_to_move_a_relative_path_and_names_the_way_out(
+def test_project_mode_warns_about_a_relative_path_and_names_the_way_out(
     tmp_path, kit_home, project_mode, capsys
 ):
     """The K8 guard at its call site, which is the part no test could reach.
 
-    Three things, and each fails differently if the wiring is wrong. That the
-    guard is CALLED at all — the pure function has always passed its own tests
-    with no caller. That it runs BEFORE the wrap: afterwards the relative path
-    has moved into `args`, so the refusal would say "argument 4" of an entry
-    whose fourth argument does not exist. And that the way out is `--in-place`,
-    never a hand-edit — the kit telling Bharath to rename an entry by hand in
-    the file he had just said he would not touch is why this thread exists."""
+    ⚠ THIS WAS A REFUSAL UNTIL 2026-09-17 and is now a warning — the operator's
+    call, after the refusal was measured against an ordinary `mcp-remote` entry
+    whose `--header "Authorization: Bearer abc/def"` it rejected. The promises
+    below are the refusal's, minus the veto, and the change of the FIRST one is
+    the whole diff: the wrap now happens.
+
+    Each fails differently if the wiring is wrong. That the guard is CALLED at
+    all — the pure function has always passed its own tests with no caller.
+    That it runs BEFORE the wrap: afterwards the relative path has moved into
+    `args`, so the message would say "argument 4" of an entry whose fourth
+    argument does not exist. And that the way out is `--in-place`, never a
+    hand-edit — the kit telling Bharath to rename an entry by hand in the file
+    he had just said he would not touch is why this thread exists."""
     path = _config(tmp_path, {"mcpServers": {"srv": {"command": "bin/server"}}})
 
     rc = kit.main(["setup", "srv", "--src-config", str(path)])
-    err = capsys.readouterr().err
+    out, _err = capsys.readouterr()
 
-    assert rc == 1, "a relative path must not be copied into another directory"
-    assert not project_mode.exists(), "nothing may be written when setup refuses"
-    assert not kit.STATE_PATH.exists()
-    assert "launch command" in err, f"the guard ran after the wrap: {err}"
-    assert "argument" not in err, f"the refusal names a position they do not have: {err}"
-    assert "--in-place" in err, "the way out is the other mode"
-    assert "by hand" not in err, "never the sentence that stopped Bharath"
-    assert "edits the config file" in err, (
-        "the escape hatch edits their config, and the refusal that recommends it "
-        "has to say so before they run it"
+    assert rc == 0, "the guard no longer vetoes; a shape it cannot verify is a warning"
+    assert project_mode.exists(), "the wrap must still happen — that is what changed"
+    assert kit.STATE_PATH.exists()
+    assert "launch command" in out, f"the guard ran after the wrap: {out}"
+    assert "argument" not in out, f"the message names a position they do not have: {out}"
+    assert "--in-place" in out, "the way out is still named"
+    assert "by hand" not in out, "never the sentence that stopped Bharath"
+    assert "edits the config file" in out, (
+        "the escape hatch edits their config, and whatever recommends it has to "
+        "say so before they run it — true of a warning exactly as it was of the refusal"
+    )
+    # The honesty constraint. The guard reads SHAPE, so it cannot know this is
+    # broken; a header value with a slash trips the same rule. Wording that
+    # asserts breakage would send people to `--in-place` on a false alarm, which
+    # is the outcome dropping the veto was meant to stop.
+    # `_flat`, because both sentences are hard-wrapped and a raw `in` check
+    # passes or fails on where the wrap happens to fall — which is not a
+    # property of the message. This assertion failed on exactly that first.
+    flat = _flat(out).lower()
+    assert "may not resolve" in flat, f"the warning overstates what the guard knows:\n{out}"
+    assert "your own config was not changed" in flat, (
+        "the warning must say whose file is at risk, which is the reason it is survivable at all"
+    )
+
+
+def test_an_ordinary_mcp_remote_entry_is_wrapped_and_not_refused(
+    tmp_path, kit_home, project_mode, capsys
+):
+    """The entry that turned the K8 refusal into a warning, 2026-09-17.
+
+    `npx -y mcp-remote <url> --header "Authorization: Bearer …"` is the most
+    common remote-MCP shape there is. A literal bearer token is base64-ish, `/`
+    is in that alphabet, so roughly half of them carry one — and the old guard
+    read that slash as a relative path and refused the whole entry. The only way
+    out it offered was `--in-place`, which edits the config the person came here
+    to keep untouched. This thread exists because a prospect refused that step.
+
+    Three things, and the first is the regression:
+
+    - it is WRAPPED, not refused;
+    - their own file is byte-identical;
+    - the warning still fires, and names the position without the value.
+
+    ⚠ The token DOES still appear once, in the "The entry now reads:" dump, and
+    that is `redact_entry`'s documented limit rather than this path's: "there is
+    no way to tell which argument is secret, and blanking args would destroy the
+    restore recipe these dumps exist to be." It is in SECURITY.md and it
+    pre-dates project mode. Asserted here so the two are not confused: a future
+    reader seeing the token in setup's output should know which mechanism put it
+    there, and that the WARNING is not the one that did."""
+    header = "Authorization: Bearer abc/def"
+    data = {
+        "mcpServers": {
+            "srv": {
+                "command": "npx",
+                "args": ["-y", "mcp-remote", "https://acme.example/sse", "--header", header],
+            }
+        }
+    }
+    path = _config(tmp_path, data)
+    before = path.read_bytes()
+
+    assert kit.main(["setup", "srv", "--src-config", str(path)]) == 0, (
+        "an ordinary mcp-remote entry must not be refused"
+    )
+    out, err = capsys.readouterr()
+
+    assert project_mode.exists(), "the entry was not wrapped"
+    assert path.read_bytes() == before, "their own config was modified"
+    assert header not in err, f"the token reached stderr:\n{err}"
+
+    warning = out[out.index("One thing to know") :]
+    assert "argument 5" in warning, f"the warning does not name the position:\n{warning}"
+    assert header not in warning, f"the warning printed the token:\n{warning}"
+
+    # The documented limit, pinned rather than left to surprise. If args ever
+    # start being redacted in the dump too, this assertion is the one to delete
+    # — deliberately, and with SECURITY.md updated in the same diff.
+    dump = out[out.index("The entry now reads:") : out.index("One thing to know")]
+    assert header in dump, (
+        "the entry dump no longer prints args verbatim. That is an IMPROVEMENT, "
+        "but SECURITY.md documents the opposite — update it in this diff"
     )
 
 
@@ -1613,19 +1691,29 @@ def test_the_escape_hatch_the_refusal_offers_does_what_its_name_says(
 
     The write still happens — `--in-place` means edit it where it is, and that
     is a real thing to want. What changed is that the flag causing the write is
-    named for the write, and the refusal says what it will do before they run
+    named for the write, and the message says what it will do before they run
     it. So the last assertion here is that their file IS edited: the fix is not
-    that the write stopped, it is that nobody arrives at it by surprise."""
+    that the write stopped, it is that nobody arrives at it by surprise.
+
+    ⚠ The first run now SUCCEEDS and warns (2026-09-17). The chain this walks is
+    unchanged in the part that matters — the advice is still `--in-place`, and
+    taking it still edits their file — so the promise is kept and only the
+    entry point moved from a refusal to a warning."""
     path = _config(tmp_path, {"mcpServers": {"srv": {"command": "bin/server"}}})
     before = path.read_bytes()
 
-    assert kit.main(["setup", "srv", "--src-config", str(path)]) == 1
-    err = capsys.readouterr().err
-    assert path.read_bytes() == before, "the refused run must not touch their file"
+    assert kit.main(["setup", "srv", "--src-config", str(path)]) == 0
+    out, _err = capsys.readouterr()
+    assert path.read_bytes() == before, "the warned run must still not touch their file"
 
     # Take the advice exactly as given, keeping the flag already on the line.
-    hatch = next(ln for ln in err.splitlines() if "--in-place" in ln)
-    assert "edits the config file" in err, f"the advice does not say what it does: {hatch}"
+    hatch = next(ln for ln in out.splitlines() if "--in-place" in ln)
+    assert "edits the config file" in out, f"the advice does not say what it does: {hatch}"
+
+    # The first run wrapped, so clear what it wrote before taking the advice —
+    # setup correctly refuses a second wrap over its own leftovers.
+    assert kit.main(["uninstall"]) == 0
+    capsys.readouterr()
 
     assert kit.main(["setup", "srv", "--in-place", "--src-config", str(path)]) == 0
     capsys.readouterr()
@@ -6697,23 +6785,30 @@ def test_the_cwd_refusal_never_prints_the_env_value_it_names(tmp_path, kit_home,
 
     Driven through `kit.main`, not the pure function. The leak needed BOTH the
     reason and the printer to be wrong, and a unit test on the reason alone
-    would not have shown it reaching a terminal."""
+    would not have shown it reaching a terminal.
+
+    ⚠ IT IS A WARNING ON A SUCCESSFUL RUN NOW (2026-09-17), which makes the leak
+    WORSE rather than better, and is why this test matters more after that
+    change than before it. A refusal is printed once and the run stops. This
+    text sits in setup's normal output — the output `try/CLAUDE.md` step 2 tells
+    the agent to paste into its reply, in a code block, because tool output is
+    folded. So the value would travel from stderr into the transcript."""
     secret = "./s3cret/ToKeN-not-a-real-key"
     data = {
         "mcpServers": {"srv": {"command": "npx", "args": ["-y", "srv"], "env": {"API_KEY": secret}}}
     }
     path = _config(tmp_path, data)
 
-    assert kit.main(["setup", "srv", "--src-config", str(path)]) == 1
+    assert kit.main(["setup", "srv", "--src-config", str(path)]) == 0
     out, err = capsys.readouterr()
 
     assert secret not in err, f"setup printed the env value verbatim:\n{err}"
     assert secret not in out, f"setup printed the env value verbatim:\n{out}"
-    # The refusal still has to be USABLE: it names the key, says why, and offers
-    # the way out. Without this the assertion above passes on an empty refusal.
-    assert "API_KEY" in err, f"the refusal no longer names which value it means:\n{err}"
-    assert kit.HIDDEN in err, f"the refusal does not mark the value as withheld:\n{err}"
-    assert "--in-place" in err, f"the refusal no longer offers the way out:\n{err}"
+    # The warning still has to be USABLE: it names the key, says why, and offers
+    # the way out. Without this the assertion above passes on an empty message.
+    assert "API_KEY" in out, f"the warning no longer names which value it means:\n{out}"
+    assert kit.HIDDEN in out, f"the warning does not mark the value as withheld:\n{out}"
+    assert "--in-place" in out, f"the warning no longer offers the way out:\n{out}"
 
 
 def test_the_guard_reads_the_original_entry_not_the_wrapped_one():
