@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 
+## [0.6.9] — 2026-09-17
+
+### Changed
+
+- ⚠ **The trial no longer edits `~/.claude.json`. `setup` writes a `.mcp.json` in the checkout instead, and only reads their config to copy the server's settings.** Three prospects stopped at the same sentence rather than at anything the tool did. One, reading the paste: *"Now I'm thinking, oh God, this is going to permanently update my claude."* Another names the fix himself: *"It would be a lot better if the setting would allow you to wrap the MCP calls at project level, so as long as I work in this folder baton works."* A project `.mcp.json` outranks the user config for sessions started in its directory, so the wrap works without the file that holds every MCP credential they have being rewritten by a script from a repo they have not read.
+
+  **What you change.** Nothing, if you take the default. `setup` now wraps into `baton-proxy/.mcp.json`, `uninstall` deletes that file, and there is nothing to restore because their own config was never written. The old behaviour is `setup --in-place`, which wraps the entry where it already sits and edits the config file it is in — the escape hatch for an entry that cannot be copied, and the only mode that still makes a backup.
+
+  ⚠ **`--in-place` is not "global".** It does not move the entry, so it loads wherever the original loaded: everywhere for a top-level entry, and in ONE directory for an entry under a project key. `start_where` prints which; nothing should reason about the folder from the flag name.
+
+- **The flags say their direction.** `--config-file` is now `--src-config`, which reads and never writes in any mode, and `--global` is now `--in-place`. The first pair could be combined into a write nobody asked for: `setup srv --config-file X` refused, the refusal said to re-run with `--global`, the flag stayed on the line, and X was edited. Neither name mentioned writing and the kit itself recommended the combination.
+
+- **A server defined in more than one place is a choice, not a refusal.** `setup` prints a `--from` line per match instead of telling the person to rename one of their servers by hand, in the config they came here to protect.
+
+- **The copied-entry path check warns instead of refusing.** Copying an entry into another directory can break a relative path, so `setup` says so — but it no longer stops. The check reads shape, not truth, and `npx -y mcp-remote <url> --header "Authorization: Bearer abc/def"` was refused outright because the base64 alphabet contains `/`. Under this design a false positive is expensive (the only exit it offered was `--in-place`, the exact act these prospects refuse) and a false negative is cheap (only the copy in the checkout breaks; their own config is never written).
+
+### Fixed
+
+- **A refusal could print a credential.** The copied-entry check interpolated raw values into a message `setup` writes to stderr, so a config with nothing wrong with it could put an `AWS_SECRET_ACCESS_KEY` on screen — and this kit is narrated by an agent, so whatever it prints is read into a model's context by design. All three positions — `command`, `args` and `env` — are now hidden in that message. The entry dump still shows `args`, which is `SECURITY.md`'s documented limit and is where the restore-recipe justification actually applies.
+
+- **`try/CLAUDE.md` promises now name which wrap they are about.** Ten sentences held for the checkout wrap and were false under `--in-place`, including "there is nothing to restore" and "deleting this checkout removes everything else". The agent obeys that document, so each one would have been said to the person immediately after the opposite happened.
+
+
 ## [0.6.8] — 2026-09-14
 
 ### Changed
