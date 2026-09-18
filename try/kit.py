@@ -590,6 +590,29 @@ def _relative_path_like(value: str, *, exempt_npm_and_url: bool = True) -> bool:
     return "/" in candidate or os.sep in candidate
 
 
+def _explicitly_relative(value: str) -> bool:
+    """Does this value SAY it is a relative path, rather than merely look like one?
+
+    The env-field rule. ``_relative_path_like`` asks a question about shape — a
+    separator, no absolute root — which is the right question for an argument,
+    where a bare word in a launch position is usually a path. It is the wrong
+    question for an environment value, because plenty of values that are not
+    paths carry a ``/``: the base64 alphabet has one, so an AWS secret key trips
+    it about half the time, and `ghp_aB3/dE5fG7` trips it every time.
+
+    ``./`` and ``../`` are unambiguous. A value carrying one is stating that it
+    resolves against a working directory, which is exactly what breaks when the
+    entry moves. Everything else in env is left to ``_names_a_file_in``, which
+    proves the claim against the filesystem instead of guessing from shape.
+
+    What this gives up, stated rather than glossed: ``CONFIG=config/app.json``
+    where that file does NOT exist under the entry's base is no longer refused.
+    That case is already outside the guard's reach when ``base`` is None, which
+    ``_names_a_file_in``'s own docstring concedes for every top-level entry."""
+    stripped = value.strip()
+    return stripped.startswith(("./", "../")) or stripped.startswith((".\\", "..\\"))
+
+
 def _names_a_file_in(base: Path | None, value: str, *, files_only: bool = False) -> bool:
     """Does this argument name something that exists in the entry's own directory?
 
@@ -694,14 +717,43 @@ def cwd_dependent_reason(entry: dict, base: Path | None = None) -> str | None:
     for key, value in (env if isinstance(env, dict) else {}).items():
         if not isinstance(value, str):
             continue
-        if _relative_path_like(value):
-            return f"its `{key}` environment value is a relative path (`{value}`)"
+        # ⚠ NEVER the raw value. Every other printer in this file goes through
+        # `shown_env_value`, and this one did not: it interpolated the value
+        # straight into a refusal that `cmd_setup` prints. Measured 2026-09-17 —
+        # an `AWS_SECRET_ACCESS_KEY` was printed in full to stderr, which
+        # `redact_entry`'s own docstring explains is worse than an ordinary CLI
+        # leak because this kit is narrated by an agent and whatever it prints
+        # is read into a model's context by design. `try/CLAUDE.md:53` tells the
+        # agent never to read out a value the commands hid; here the command hid
+        # nothing.
+        shown = shown_env_value(key, value)
+        # ⚠ NARROWED for env, and only env. `_relative_path_like` treats any
+        # value with a separator and no root as a path. The base64 alphabet
+        # contains `/`, so a 40-character AWS secret key trips it roughly half
+        # the time — measured, along with `ghp_aB3/dE5fG7`. That is not a path
+        # and no amount of `--in-place` makes the refusal true.
+        #
+        # `5e996d3` already found this exact class ("the guard was refusing
+        # normal configs") and narrowed the OTHER env check with `files_only`,
+        # measuring `production`, `test` and `debug`. It did not look at this
+        # one. The rule it should have carried: an env value is a path when it
+        # SAYS it is (`./`, `../`) or when it demonstrably names something in
+        # the entry's own directory. Shape alone is an argument's evidence, not
+        # an environment value's.
+        #
+        # `_relative_path_like`'s docstring justifies false positives as costing
+        # "a trial that would have worked". That was written for `args` and it
+        # does not cover this: here a false positive also prints a credential.
+        if _explicitly_relative(value):
+            return f"its `{key}` environment value is a relative path ({shown})"
         # Applied to env as well as args. Review found it on args only, which
         # left `{"DB": "data.sqlite"}` — a bare filename sitting in the entry's
         # own directory — passing while the identical string in `args` was
         # caught. Each field is a position that can be missed; this one was.
         if _names_a_file_in(base, value, files_only=True):
-            return f"its `{key}` environment value names a file in the entry's own directory (`{value}`)"
+            return (
+                f"its `{key}` environment value names a file in the entry's own directory ({shown})"
+            )
     return None
 
 

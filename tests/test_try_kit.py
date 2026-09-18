@@ -6362,7 +6362,10 @@ def test_the_two_receipt_rows_are_relayed_apart():
         # dist/index.js`.
         ({"command": "node", "args": ["dist/index.js"]}, "argument 1"),
         ({"command": "node", "args": ["--config=logs/app.json"]}, "argument 1"),
-        ({"command": "node", "env": {"DB": "data/app.sqlite"}}, "`DB` environment value"),
+        # ⚠ `{"DB": "data/app.sqlite"}` was HERE and has moved to
+        # `test_a_bare_relative_env_path_is_caught_where_the_kit_can_know`, with
+        # a base. It is not a deleted promise; it is the same promise proved a
+        # way that a secret cannot satisfy. See `_explicitly_relative`.
     ],
 )
 def test_an_entry_that_resolves_against_a_directory_is_named(entry, expected_fragment):
@@ -6370,6 +6373,36 @@ def test_an_entry_that_resolves_against_a_directory_is_named(entry, expected_fra
     reason = kit.cwd_dependent_reason(entry)
     assert reason is not None, f"{entry} moved to another directory would break, unnoticed"
     assert expected_fragment in reason, f"the reason for {entry} does not say which part: {reason}"
+
+
+def test_a_bare_relative_env_path_is_caught_where_the_kit_can_know(tmp_path):
+    """`{"DB": "data/app.sqlite"}` — the row that moved out of the shape list.
+
+    It used to be refused on shape alone, with no base. That rule could not tell
+    it from an AWS secret key, so env lost it (`_explicitly_relative`). The
+    promise is kept by proving the claim instead of guessing it: with a base,
+    the file is either there or it is not.
+
+    ⚠ AND THE GIVE-UP, asserted rather than described, so nobody rediscovers it
+    as a surprise: with no base, or with a base where the file does not exist,
+    this entry is NOT refused. `_names_a_file_in`'s docstring already concedes
+    the first case for every top-level entry — "the working directory a stdio
+    server is launched in is not documented, which is why a relative path there
+    is already unreliable". The kit does not make that worse; it declines to
+    guess about it."""
+    entry = {"command": "node", "env": {"DB": "data/app.sqlite"}}
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "app.sqlite").write_text("x", encoding="utf-8")
+
+    reason = kit.cwd_dependent_reason(entry, base=tmp_path)
+    assert reason is not None, "a real relative env path under the entry's own base was missed"
+    assert "`DB` environment value" in reason, reason
+    assert "data/app.sqlite" not in reason, f"the reason printed the value: {reason}"
+
+    assert kit.cwd_dependent_reason(entry) is None, "the no-base give-up changed; update the note"
+    assert kit.cwd_dependent_reason(entry, base=tmp_path / "elsewhere") is None, (
+        "the missing-file give-up changed; update the note"
+    )
 
 
 @pytest.mark.parametrize(
@@ -6502,6 +6535,105 @@ def test_an_ordinary_env_word_is_not_refused_for_matching_a_directory(tmp_path, 
 def test_an_entry_that_travels_is_left_alone(entry):
     """A refusal here costs a trial that would have worked."""
     assert kit.cwd_dependent_reason(entry) is None, f"{entry} travels fine and was refused"
+
+
+# A secret is not a path, and the base64 alphabet contains `/`. Measured
+# 2026-09-17: a 40-character AWS secret key carries one about half the time, so
+# the shape rule refused an ordinary config — and then printed the key.
+_SECRETS_THAT_ARE_NOT_PATHS = [
+    pytest.param("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", id="aws-secret-with-slashes"),
+    pytest.param("ghp_aB3/dE5fG7", id="github-pat-with-slash"),
+    pytest.param("a2V5L3ZhbHVl/Zm9vL2Jhcg", id="base64-with-slash"),
+    pytest.param("user:pa/ssword@host", id="credential-pair"),
+]
+
+
+def test_every_secret_case_actually_contains_a_separator(tmp_path):
+    """The guard on the fixture above, not on the kit.
+
+    A value with no `/` could never have been refused by the shape rule, so a
+    row like that is a param that cannot fail — it reads as coverage and is
+    noise. One was caught here: `dGhpcy9pcy9iYXNlNjQ` is base64 TEXT and carries
+    no separator at all, so it passed the widened-rule mutant that reds its
+    three siblings."""
+    for param in _SECRETS_THAT_ARE_NOT_PATHS:
+        (secret,) = param.values
+        assert "/" in secret, f"{param.id!r} cannot exercise the shape rule: {secret!r}"
+
+
+@pytest.mark.parametrize("secret", _SECRETS_THAT_ARE_NOT_PATHS)
+def test_a_secret_with_a_slash_in_it_is_not_a_relative_path(secret, tmp_path):
+    """`5e996d3` found this class and fixed one of the two env checks.
+
+    Its title is "env values match files only — the guard was refusing normal
+    configs", and it measured `production`, `test` and `debug` against
+    `_names_a_file_in`. It did not look at `_relative_path_like`, which asks
+    only about shape — and shape cannot tell a secret from a path.
+
+    The cost is not only a lost trial. The refusal names the value, so a config
+    that was never broken produces a printed credential; see the sibling below.
+    """
+    entry = {"command": "npx", "args": ["-y", "srv"], "env": {"AWS_SECRET_ACCESS_KEY": secret}}
+    assert kit.cwd_dependent_reason(entry, base=tmp_path) is None, (
+        f"a secret containing a separator was refused as a relative path: {secret!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "value,refused",
+    [
+        ("./data.sqlite", True),
+        ("../shared/db.sqlite", True),
+        ("data/app.sqlite", False),
+        ("plain-value", False),
+    ],
+)
+def test_an_env_value_is_a_path_when_it_says_so(value, refused, tmp_path):
+    """The narrowed env rule, both directions in one place.
+
+    `./` and `../` state that the value resolves against a working directory,
+    which is exactly what moving the entry breaks. A bare `data/app.sqlite` that
+    names nothing on disk is left to `_names_a_file_in`, which proves the claim
+    instead of guessing — the give-up is recorded in `_explicitly_relative`.
+    """
+    entry = {"command": "npx", "args": ["-y", "srv"], "env": {"DB": value}}
+    reason = kit.cwd_dependent_reason(entry, base=tmp_path)
+    assert (reason is not None) is refused, f"{value!r} -> {reason!r}"
+
+
+def test_the_cwd_refusal_never_prints_the_env_value_it_names(tmp_path, kit_home, capsys):
+    """⚠ A CREDENTIAL LEAK, measured end to end 2026-09-17 and fixed here.
+
+    `cwd_dependent_reason` interpolated the raw env value into its reason, and
+    `cmd_setup` prints that reason. So `setup` wrote a person's real
+    `AWS_SECRET_ACCESS_KEY` to stderr — on a config with nothing wrong with it,
+    because of the sibling defect above.
+
+    `redact_entry`'s docstring already says why this is worse than an ordinary
+    CLI leak: "this kit is narrated by an agent: whatever it prints is read into
+    a model's context by design". And `try/CLAUDE.md:53` tells the agent never
+    to read out a value the commands hid — which only holds if the commands hide
+    it.
+
+    Driven through `kit.main`, not the pure function. The leak needed BOTH the
+    reason and the printer to be wrong, and a unit test on the reason alone
+    would not have shown it reaching a terminal."""
+    secret = "./s3cret/ToKeN-not-a-real-key"
+    data = {
+        "mcpServers": {"srv": {"command": "npx", "args": ["-y", "srv"], "env": {"API_KEY": secret}}}
+    }
+    path = _config(tmp_path, data)
+
+    assert kit.main(["setup", "srv", "--src-config", str(path)]) == 1
+    out, err = capsys.readouterr()
+
+    assert secret not in err, f"setup printed the env value verbatim:\n{err}"
+    assert secret not in out, f"setup printed the env value verbatim:\n{out}"
+    # The refusal still has to be USABLE: it names the key, says why, and offers
+    # the way out. Without this the assertion above passes on an empty refusal.
+    assert "API_KEY" in err, f"the refusal no longer names which value it means:\n{err}"
+    assert kit.HIDDEN in err, f"the refusal does not mark the value as withheld:\n{err}"
+    assert "--in-place" in err, f"the refusal no longer offers the way out:\n{err}"
 
 
 def test_the_guard_reads_the_original_entry_not_the_wrapped_one():
