@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 
+## [0.6.10] — 2026-09-18
+
+### Fixed
+
+- ⚠ **`SECURITY.md` §3a still described the old behaviour, in all three rows.** It told you `setup` backs up and rewrites your config, that `receipt` opens it, and that `uninstall` writes your entry back. None of that has been true by default since 0.6.9. This is the security document, the one people read precisely because they do not take the summary on trust, and it was saying the exact thing the 0.6.9 change exists to stop saying. The table is now a column per mode, so no row makes a promise without naming which wrap it belongs to, and the round-trip claim is split the same way: `uninstall(setup(x))` returning the original bytes is an `--in-place` property, while the default's promise is the stronger one, that your config file is byte-identical after setup.
+
+- **A path with a space in it broke the commands we hand you.** `kit.py` quoted the paths in its `cd` lines but not in the `open -R` line it prints at the end, and `try/CLAUDE.md` spelled the same commands out again with no quotes at all. `/Users/you/Client Work/app` is an ordinary folder name, and an unquoted path stops at the first space — so the command succeeds against the wrong directory and says nothing. For the second terminal that means a session where the wrap never loads and nothing is captured, which looks exactly like a broken install. Five places fixed, and a test now sweeps every command in the doc that carries a path.
+
+### Added
+
+- **`SECURITY.md` now discloses `.claude/settings.json`**, which ships in this repo and pre-approves the kit's own command lines. Two things have to be true before it grants anything: it has to be the folder you started Claude Code in — the shared settings file is read from the session's working directory, not a subfolder, and the kit's commands run one level above the clone — and the folder has to be trusted, because Claude Code ignores a checked-in allow-list in a workspace you have not accepted the trust dialog for. It also notes what that dialog does for you: it reads the rules out by name before you accept. And it says plainly that one rule ends in `*`, which reaches `setup <server> --in-place`, and how to decline if you would rather your config could not be rewritten without a prompt.
+
+
 ## [0.6.9] — 2026-09-17
 
 ### Changed
