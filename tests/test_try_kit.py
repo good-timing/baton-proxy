@@ -7475,9 +7475,14 @@ def test_security_md_scopes_stderr_to_what_actually_goes_there():
 # The owner is this list, never a count: §3a has three rows today and the sweep
 # has to keep working when it has four.
 _SECURITY_3A_ROWS = [
-    ("`setup <server>`", "your config is not written"),
-    ("`receipt`", "never opens your config"),
-    ("`uninstall`", "nothing of yours was changed"),
+    ("`setup <server>`", ("your config is not written",)),
+    ("`receipt`", ("never opens your config",)),
+    # ⚠ `events.jsonl` survives uninstall in BOTH modes — `_finish_uninstall`
+    # is shared and calls `_print_left_behind` on either path. Splitting this
+    # row by mode dropped that disclosure from the default column, leaving a
+    # security reader told only what gets DELETED, about a file §5 says holds
+    # full tool results. Found by /code-review, 2026-09-18.
+    ("`uninstall`", ("nothing of yours was changed", "leaves `try/events.jsonl`")),
 ]
 
 #: Phrases that describe writing THEIR config. Legal in the `--in-place`
@@ -7533,16 +7538,17 @@ def test_security_3a_splits_every_command_by_mode():
     assert "--in-place" in header[2], "§3a's third column no longer names --in-place"
 
     body = {r[0]: r for r in rows[2:]}
-    for command, default_promise in _SECURITY_3A_ROWS:
+    for command, default_promises in _SECURITY_3A_ROWS:
         assert command in body, (
             f"§3a has no row for {command}. ZERO means it was reworded or dropped — "
             "re-point this row at the new wording, because a row matching nothing "
             "guards nothing."
         )
         default_cell, in_place_cell = _probe(body[command][1]), _probe(body[command][2])
-        assert default_promise in default_cell, (
-            f"§3a's default column for {command} no longer promises {default_promise!r}"
-        )
+        for default_promise in default_promises:
+            assert default_promise in default_cell, (
+                f"§3a's default column for {command} no longer promises {default_promise!r}"
+            )
         for phrase in _WRITES_THEIR_CONFIG:
             assert phrase not in default_cell, (
                 f"§3a says {phrase!r} in {command}'s DEFAULT column. That describes the "
@@ -7575,15 +7581,52 @@ def test_security_discloses_the_settings_file_the_repo_ships():
     allow = json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]["allow"]
     doc = _security_md()
 
+    # To the end of the section, not to the first blank line. The wildcard
+    # warning is its own paragraph, and stopping at `\n\n` read only the
+    # reassuring half — which is how the understatement got written in the
+    # first place.
     start = doc.index("`.claude/settings.json`")
-    disclosure = _probe(doc[start : doc.index("\n\n", start)])
+    disclosure = _probe(doc[start : doc.index("`try/CLAUDE.md` is a plain-text", start)])
 
-    verbs = sorted({rule.split()[-1].rstrip(")*").strip() for rule in allow} - {"setup"})
-    verbs.append("setup")
-    for verb in verbs:
+    # ⚠ The token AFTER `kit.py`, not the last token on the line. Taking the
+    # last one collapsed `Bash(python3 kit.py setup *)` to the empty string
+    # (`"*)".rstrip(")*") == ""`), and `"" in disclosure` is always True — so
+    # the wildcard rule, the only one that reaches `--in-place`, was guarded by
+    # nothing, and a future `Bash(python3 kit.py doctor *)` would have passed
+    # with `doctor` undisclosed. Found by /code-review, 2026-09-18; it is the
+    # same silent-pass this file was written to end, one level up.
+    verbs = set()
+    for rule in allow:
+        tokens = rule.rstrip(")").split()
+        assert "kit.py" in tokens, f"allow-rule is not a kit command line: {rule!r}"
+        verb = tokens[tokens.index("kit.py") + 1]
+        assert verb and verb != "*", f"allow-rule names no command: {rule!r}"
+        verbs.add(verb)
+    for verb in sorted(verbs):
         assert verb in disclosure, (
             f"`.claude/settings.json` pre-approves `{verb}` and §3a's disclosure does not "
             f"name it. The allow-list is the owner; rules today: {allow}"
+        )
+
+    # A trailing `*` matches any continuation, so a wildcard rule pre-approves
+    # every FLAG of that command too — including `--in-place`, which rewrites
+    # the file §3a's table exists to say we leave alone. The disclosure has to
+    # say so; "it grants nothing beyond those command lines" was literally true
+    # and read as a reassurance.
+    if any(rule.rstrip(")").endswith("*") for rule in allow):
+        # ⚠ NOT the bare token. `--in-place` appears twice in this paragraph and
+        # only one of them is the grant; a mutant that deleted the load-bearing
+        # sentence left the other in place and the assertion GREEN. Measured
+        # 2026-09-18 — the same shape as a checklist probe matching the same
+        # directory on a different step.
+        assert "also covers `setup <server> --in-place`" in disclosure, (
+            "a rule ends in `*`, so it pre-approves that command with ANY flag. The "
+            "disclosure has to say the wildcard REACHES --in-place, not merely mention "
+            f"the flag somewhere. Rules today: {allow}"
+        )
+        assert "delete that one line" in disclosure, (
+            "the disclosure names the wildcard grant without telling the reader how to "
+            "decline it, which is the only part they can act on"
         )
     assert "one level above the clone" in disclosure, (
         "the disclosure no longer says the first session does not load these rules, "
@@ -7625,8 +7668,20 @@ def test_every_command_the_agent_fills_a_path_into_is_quoted():
     doc = _claude_md()
 
     commands: list[str] = []
+    fenced = False
     for line in doc.splitlines():
+        # Fenced blocks count. The docstring's own discriminator is "what a
+        # person copies", and `CLAUDE.md`'s command list is a fence — nothing in
+        # it carries a placeholder today, which is exactly why leaving it out
+        # would never have shown up as a failing test. Found by /code-review.
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
         stripped = line.lstrip("> ").strip()
+        if fenced:
+            if stripped:
+                commands.append(stripped)
+            continue
         if stripped.startswith("!"):
             commands.append(stripped)
         commands.extend(re.findall(r"`([^`]+)`", line))
@@ -7640,15 +7695,24 @@ def test_every_command_the_agent_fills_a_path_into_is_quoted():
 
     for command in hits:
         for placeholder in _PATH_PLACEHOLDERS:
-            if placeholder not in command:
-                continue
-            before = command[: command.index(placeholder)]
-            assert before.rstrip().endswith("'") or "'" in command[command.index(placeholder) :], (
-                f"CLAUDE.md spells out {command!r} with an unquoted path. A folder name "
-                "with a space is ordinary, and an unquoted path stops at the first one: "
-                "the command then succeeds against the WRONG directory and says nothing. "
-                "Wrap the placeholder in single quotes, as `_cd_to` and `reveal_note` do."
-            )
+            # EVERY occurrence, and only the characters immediately bracketing
+            # it. The first version asked whether a quote appeared anywhere
+            # after the placeholder, which passed on `cd <folder> && echo
+            # 'done'` and on the unterminated `cd '<folder>` — measured, both.
+            # A guard satisfied by a quote belonging to a different argument is
+            # the exact shape this sweep exists to catch.
+            spans = [(m.start(), m.end()) for m in re.finditer(r"'[^']*'", command)]
+            start = 0
+            while (i := command.find(placeholder, start)) != -1:
+                start = i + len(placeholder)
+                inside = any(a < i and start <= b for a, b in spans)
+                assert inside, (
+                    f"CLAUDE.md spells out {command!r} with {placeholder} not wrapped in "
+                    "single quotes on BOTH sides. A folder name with a space is ordinary, "
+                    "and an unquoted path stops at the first one: the command then succeeds "
+                    "against the WRONG directory and says nothing. Quote it, as `_cd_to` "
+                    "and `reveal_note` do."
+                )
 
 
 def test_the_doc_says_to_keep_the_quotes_and_not_only_shows_them():
@@ -7672,4 +7736,19 @@ def test_the_doc_says_to_keep_the_quotes_and_not_only_shows_them():
     assert "relay it exactly as printed" in flat, (
         "the rule no longer tells the agent to prefer the kit's printed line over "
         "rebuilding the command, which is the only version guaranteed correct"
+    )
+    # ⚠ The doc says QUOTE ALWAYS and the kit quotes CONDITIONALLY
+    # (`shlex.quote` emits nothing for a space-free path, which is nearly every
+    # real machine). An earlier draft of this rule claimed the kit always
+    # quotes; that was false, and it contradicted this file's own comment at
+    # `test_the_doc_and_the_receipt_name_the_same_reveal_command`. An agent
+    # believing it reads a correct receipt as broken and "repairs" it, against
+    # the same paragraph's instruction to relay it as printed.
+    assert "no spaces has no quotes and is still correct" in flat, (
+        "the rule no longer explains that the kit quotes only when the path needs it, "
+        "so the doc and the kit's real output look like a contradiction"
+    )
+    assert "not in disagreement" in flat, (
+        "the rule no longer tells the agent the two quoting strategies AGREE, which is "
+        "the sentence that stops it from editing the kit's line"
     )

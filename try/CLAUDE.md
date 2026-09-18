@@ -49,8 +49,13 @@ names is the only one allowed; nothing in it licenses a different flag or a
 different file.
 
 **Keep the quotes when you fill a path into a command.** Every command in this
-file shows its path inside single quotes, and so does every command the kit
-prints. Leave them there. `/Users/x/Client Work/app` is an ordinary folder
+file shows its path inside single quotes. Leave them there. The kit's own
+printed lines quote only when the path needs it, so a line it prints for a
+folder with no spaces has no quotes and is still correct — that is not a
+mistake to repair, and the two are not in disagreement. You quote always
+because you are filling in a placeholder and cannot know where they cloned; the
+kit quotes when required because it has the real path in hand.
+`/Users/x/Client Work/app` is an ordinary folder
 name, and an unquoted path stops at the first space — the command then succeeds
 against the wrong directory and says nothing, which for the second terminal
 means their session starts somewhere the wrap does not load and captures

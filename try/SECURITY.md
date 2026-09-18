@@ -256,7 +256,7 @@ of both.
 |---|---|---|
 | `setup <server>` | Reads your MCP config to copy the entry. Writes `.mcp.json` in this checkout and `try/state.json`. **Your config is not written**, so there is no backup to take. | Copies your whole config to `try/config-backup.<timestamp>.json` first, then rewrites one entry in it. Writes `try/state.json`. Writes no `.mcp.json`. |
 | `receipt` | Reads `try/events.jsonl`, `try/state.json` and this checkout's `.mcp.json`. **Never opens your config.** Writes nothing, opens no connection. | Also reads your MCP config, to check the wrapped entry is still there. Still writes nothing and opens no connection. |
-| `uninstall` | Deletes this checkout's `.mcp.json` and `try/state.json`. **Nothing is restored, because nothing of yours was changed.** | Writes the original entry back into your config and deletes `try/state.json`. Leaves your events file and the backups for you to read or delete. |
+| `uninstall` | Deletes this checkout's `.mcp.json` and `try/state.json`. **Nothing is restored, because nothing of yours was changed.** Leaves `try/events.jsonl` for you to read or delete. | Writes the original entry back into your config and deletes `try/state.json`. Leaves `try/events.jsonl` and the `config-backup.*` files for you to read or delete. |
 
 `setup` is the only command that opens your config, and only in the default
 wrap. Nothing else on the machine is touched in either mode.
@@ -269,14 +269,25 @@ machine reads §4's table, every row of which is the proxy's.
 **One file in this repo does grant something, and it is not code.**
 `.claude/settings.json`, at the top of the checkout, pre-approves the kit's own
 command lines — `python3 kit.py` with `setup`, `receipt` or `uninstall` — so
-Claude Code does not stop to ask before running them. It is
-checked in, you can read it in one screen, and it applies only to a session
-started inside this checkout. The trial's first session runs one level above
-the clone, so it does not load there; the second terminal starts inside the
-checkout, so it does. It grants nothing beyond those command lines, and it
-cannot override your client's own refusals — a permission mode that guards
-`~/.claude.json` still refuses `setup`, which is why the kit has a hand-over
-step for you to run it yourself. Delete the file if you would rather be asked.
+Claude Code does not stop to ask before running them. It is checked in, you can
+read it in one screen, and it applies only to a session started inside this
+checkout. The trial's first session runs one level above the clone, so it does
+not load there; the second terminal starts inside the checkout, so it does.
+
+⚠ **One of those rules is `python3 kit.py setup *`, and a trailing `*` in a
+Claude Code permission rule matches any continuation of the line.** `setup`
+needs it, because the server's name is an argument we cannot know in advance.
+But it also covers `setup <server> --in-place` — the one mode the table above
+says rewrites `~/.claude.json` — so that command would run without asking too.
+Nothing in the kit chooses `--in-place` for you, and `try/CLAUDE.md` tells the
+agent never to add a flag you did not ask for, but that is prose, not a
+permission. **If you would rather your config could not be rewritten without a
+prompt, delete that one line, or the whole file.** Everything still works; you
+are simply asked each time.
+
+The file cannot override your client's own refusals. A permission mode that
+guards `~/.claude.json` still refuses `setup`, which is why the kit has a
+hand-over step for you to run it yourself.
 
 `try/CLAUDE.md` is a plain-text instruction file for the agent. It grants no
 capability. It tells the agent to use the commands above and what not to do:
