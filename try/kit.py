@@ -717,32 +717,39 @@ def cwd_dependent_reason(entry: dict, base: Path | None = None) -> str | None:
                 "the entry is copied"
             )
 
-    # ⚠ WHY `command` AND `args` PRINT THEIR VALUE AND `env` DOES NOT. Read as a
-    # half-fix once already, so it is written down rather than left to inference.
+    # ⚠ NO FIELD PRINTS ITS VALUE HERE. env, args and command alike.
     #
-    # It is the file's existing rule, not a new one: `redact_entry` hides `env`,
-    # `headers` and `url`, and states the argument case as a KNOWN LIMIT carried
-    # in SECURITY.md — "there is no way to tell which argument is secret, and
-    # blanking args would destroy the restore recipe these dumps exist to be."
+    # An earlier version of this comment argued the opposite for args, citing
+    # `redact_entry`'s documented limit: "there is no way to tell which argument
+    # is secret, and blanking args would destroy the restore recipe these dumps
+    # exist to be." THAT ARGUMENT DOES NOT REACH THIS FUNCTION. It is about
+    # printing a whole entry as a recipe someone restores from. A refusal is not
+    # a recipe — it names ONE offending position and stops — so hiding that one
+    # value destroys nothing.
     #
-    # The refusal adds a second reason of its own. An env value is identified by
-    # its KEY: "its `DB` environment value" tells the person exactly which line
-    # to look at, so printing the value buys nothing and costs a credential. An
-    # argument has no name — "argument 4" is only findable by its content, so
-    # hiding it would leave a refusal they cannot act on. Different fields,
-    # different evidence, same rule about what identification requires.
+    # And the cost of being wrong was measured, on the most common remote-MCP
+    # entry there is:
+    #
+    #   npx -y mcp-remote https://… --header "Authorization: Bearer abc/def"
+    #   -> argument 5 is a relative path (`Authorization: Bearer abc/def`)
+    #
+    # A bearer token on stderr, in a refusal that is itself false. Position is
+    # enough to act on: "argument 5" is an index into their own array, and they
+    # are looking at the config while they read it.
     command = entry.get("command")
     # The same rule as the arguments get, minus the two exemptions — a command
     # with a slash in it is a path by definition, while `node` and `python3`
     # resolve against PATH and travel fine.
     if isinstance(command, str) and _relative_path_like(command, exempt_npm_and_url=False):
-        return f"its launch command is a relative path (`{command}`)"
+        return f"its launch command is a relative path ({hidden_label(command)})"
 
     for i, arg in enumerate(str(a) for a in entry.get("args") or []):
         if _relative_path_like(arg):
-            return f"argument {i + 1} is a relative path (`{arg}`)"
+            return f"argument {i + 1} is a relative path ({hidden_label(arg)})"
         if _names_a_file_in(base, arg):
-            return f"argument {i + 1} names a file in the entry's own directory (`{arg}`)"
+            return (
+                f"argument {i + 1} names a file in the entry's own directory ({hidden_label(arg)})"
+            )
 
     env = entry.get("env")
     for key, value in (env if isinstance(env, dict) else {}).items():

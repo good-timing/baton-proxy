@@ -2303,9 +2303,14 @@ def test_the_two_setup_routes_now_diverge_and_only_one_touches_their_config(
 # The help sentence each default owes. Phase C's own note: the pairing was held
 # true by a COMMENT ("moves with the default in K1b") doing a test's job, and
 # fixing the stale wording in 2f4a244 reddened nothing.
+#
+# ⚠ Keyed by `kit.MODE_*`, not by the string literals "project"/"global". With
+# literals, RENAMING a constant raises KeyError at the lookup below instead of
+# failing the assertion this test is about — a green-to-error change that hides
+# which promise broke.
 _IN_PLACE_HELP_FOR_DEFAULT = {
-    "project": "instead of writing a project config in this checkout",
-    "global": "(what setup does today)",
+    kit.MODE_PROJECT: "instead of writing a project config in this checkout",
+    kit.MODE_GLOBAL: "(what setup does today)",
 }
 
 
@@ -2327,13 +2332,12 @@ def test_the_in_place_help_says_what_the_current_default_is(capsys):
         kit.main(["setup", "--help"])
     assert e.value.code == 0
     help_text = capsys.readouterr().out
+    flat = _flat(help_text)
 
-    assert expected in " ".join(help_text.split()), (
+    assert expected in flat, (
         f"`--in-place`'s help does not describe the {kit.DEFAULT_MODE!r} default:\n{help_text}"
     )
-    assert other not in " ".join(help_text.split()), (
-        f"`--in-place`'s help still describes the OTHER default:\n{help_text}"
-    )
+    assert other not in flat, f"`--in-place`'s help still describes the OTHER default:\n{help_text}"
 
 
 def test_the_in_place_flag_reaches_the_code_under_its_own_name(monkeypatch):
@@ -4505,6 +4509,11 @@ def _wrapped(tmp_path, kit_home, capsys, scope_key: str | None = None, *, in_pla
     return path if in_place else kit.MCP_PATH
 
 
+# The step's own question mark, then the next non-empty line — which is the
+# directory. One wording literal, and it is the distinctive half of the sentence.
+_DIRECTORY_STEP = re.compile(r"loads in\?\s*\n\s*(\S.*)")
+
+
 def _directory_question(checklist: str) -> str:
     """The directory named by the checklist's "…this entry loads in?" step, alone.
 
@@ -4514,17 +4523,23 @@ def _directory_question(checklist: str) -> str:
     mutant that did exactly that. Sliced to the one step, so the assertion can
     only be satisfied by the line it is about
     → [[feedback_string_slicing_a_document_measures_the_wrong_thing]].
+
+    ⚠ Anchored on the question mark, capturing the next non-empty line. The
+    first version sliced between two wording literals and then took `lines[1]`,
+    which was brittle in three ways worth naming: the terminator
+    ("A session started anywhere else") is a SECOND literal that must track
+    `kit.py`, and it is not unique in that file; `lines[1]` silently shifts if
+    the step's indentation or wrapping changes; and the empty-string fallback
+    turned "the question is missing entirely" into a mismatch that read as
+    "wrong directory". One literal now, and a missing question fails as itself.
     """
-    start = checklist.index("loads in")
-    step = checklist[start:]
-    step = step[: step.index("A session started anywhere else")]
-    # The directory is the step's own line, under the question.
-    lines = [ln.strip() for ln in step.splitlines() if ln.strip()]
-    return lines[1] if len(lines) > 1 else ""
+    match = _DIRECTORY_STEP.search(checklist)
+    assert match, f"the checklist never asks the directory question:\n{checklist}"
+    return match.group(1).strip()
 
 
-def _clobber(path: Path, scope_key: str | None = None) -> None:
-    """Replace the wrapped entry with an unwrapped one, in the shape that file has.
+def _clobber(path: Path, name: str = "notion") -> None:
+    """Replace the wrapped entry with an unwrapped one, wherever it sits.
 
     This is the hand-restore the `THE WRAP IS GONE` row exists for, and the two
     modes reach it by different routes — which is why both are parametrized
@@ -4537,17 +4552,32 @@ def _clobber(path: Path, scope_key: str | None = None) -> None:
       refusal (`kit.py:2045`) tells them deleting it is safe, `git clean -x`
       takes it, or an uninstall half-runs. Rarer, same consequence, and the
       person is even less likely to connect it to capture stopping.
+
+    ⚠ It FINDS the entry rather than being told the shape. An earlier version
+    took the scope key and rebuilt the whole file from a literal, which meant
+    every caller re-derived `key if in_place else None` — a fact `_wrapped` had
+    already settled one line above. Worse, it could not fail usefully: writing
+    the wrong shape produces a file with no wrap in it, which is exactly what a
+    SUCCESSFUL clobber produces. A broken helper and a working one were
+    indistinguishable, and the row would have gone on passing.
+
+    Hence `assert replaced`. And rewriting the entry in place rather than
+    replacing the file is closer to the hand-restore being modelled: the rest of
+    their config survives, which is the whole reason the in-place row is about a
+    file the client owns.
     """
-    if scope_key is None:
-        payload = {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
-    else:
-        payload = {
-            "mcpServers": {},
-            "projects": {
-                scope_key: {"mcpServers": {"notion": {"command": "npx", "args": ["-y", "srv"]}}}
-            },
-        }
-    path.write_text(canonical(payload), encoding="utf-8")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    holders = [data.get("mcpServers")]
+    holders += [p.get("mcpServers") for p in (data.get("projects") or {}).values()]
+
+    replaced = False
+    for holder in holders:
+        if isinstance(holder, dict) and name in holder:
+            holder[name] = {"command": "npx", "args": ["-y", "srv"]}
+            replaced = True
+    assert replaced, f"no `{name}` entry to clobber in {path}:\n{data}"
+
+    path.write_text(canonical(data), encoding="utf-8")
 
 
 def test_daves_run_no_longer_reports_a_dead_session_as_a_statistic(tmp_path, kit_home, capsys):
@@ -4675,7 +4705,7 @@ def test_the_six_receipt_rows_are_mutually_exclusive(tmp_path, kit_home, capsys,
     # 3 — wrapped, then the wrap goes (see `_clobber`: how differs by mode).
     fresh()
     path = _wrapped(tmp_path, kit_home, capsys, scope_key=key, in_place=in_place)
-    _clobber(path, key if in_place else None)
+    _clobber(path)
     assert _fired(_receipt_output(capsys)) == ["THE WRAP IS GONE"]
 
     # 4 — wrapped, still wrapped, nothing landed.
@@ -4801,7 +4831,7 @@ def test_a_clobbered_wrap_wins_over_the_nothing_called_it_row(tmp_path, kit_home
     key = "/Users/someone/work/app"
     path = _wrapped(tmp_path, kit_home, capsys, scope_key=key, in_place=in_place)
     _write_events(kit_home, ("bee5d1a2", 0))
-    _clobber(path, key if in_place else None)
+    _clobber(path)
     out = _receipt_output(capsys)
     assert _fired(out) == ["THE WRAP IS GONE"], _fired(out)
 
@@ -4813,7 +4843,7 @@ def test_a_wrap_clobbered_after_a_real_capture_still_says_so(tmp_path, kit_home,
     key = "/Users/someone/work/app"
     path = _wrapped(tmp_path, kit_home, capsys, scope_key=key, in_place=in_place)
     _write_events(kit_home, ("d1e2f3a4", 2))
-    _clobber(path, key if in_place else None)
+    _clobber(path)
     out = _receipt_output(capsys)
     assert _fired(out) == ["THE WRAP IS GONE"], _fired(out)
     assert _counts_shown(out), "what was captured before it broke still counts:\n" + out
@@ -5008,11 +5038,7 @@ def test_uninstall_does_not_promise_a_restore_it_could_not_verify(
     `--in-place` since K1b: there is nothing to restore on the default path, so
     `restored_matches_on_disk` is only ever consulted for a wrap that edited
     their config. This is the only mode that can reach the branch."""
-    path = _config(tmp_path, GLOBAL_ONLY)
-    assert (
-        kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t", "--in-place"]) == 0
-    )
-    capsys.readouterr()
+    _wrapped(tmp_path, kit_home, capsys, in_place=True)
     monkeypatch.setattr(kit, "restored_matches_on_disk", lambda *_a, **_k: False)
     assert kit.main(["uninstall"]) == 0
     out, _err = capsys.readouterr()
@@ -5049,11 +5075,7 @@ def test_uninstall_says_what_the_backups_it_leaves_behind_hold(tmp_path, kit_hom
 
     `--in-place` since K1b: only that mode leaves a `config-backup.*` behind,
     so only that mode owes the sentence saying what one holds."""
-    path = _config(tmp_path, GLOBAL_ONLY)
-    assert (
-        kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t", "--in-place"]) == 0
-    )
-    capsys.readouterr()
+    _wrapped(tmp_path, kit_home, capsys, in_place=True)
     (backup,) = kit_home.glob("config-backup.*.json")
     assert kit.main(["uninstall"]) == 0
     out, _err = capsys.readouterr()
@@ -5083,11 +5105,7 @@ def test_the_unverified_branch_does_not_tell_you_to_delete_the_record(
     monkeypatch reaches for is unreachable there. Project mode has no restore to
     leave unverified — it deletes a file of ours instead of rewriting one of
     theirs."""
-    path = _config(tmp_path, GLOBAL_ONLY)
-    assert (
-        kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t", "--in-place"]) == 0
-    )
-    capsys.readouterr()
+    _wrapped(tmp_path, kit_home, capsys, in_place=True)
     monkeypatch.setattr(kit, "restored_matches_on_disk", lambda *_a, **_k: False)
     assert kit.main(["uninstall"]) == 0
     out, _err = capsys.readouterr()
@@ -5160,7 +5178,7 @@ def test_the_offer_survives_a_wrap_that_was_clobbered_after_capturing(
     key = "/Users/someone/work/app"
     path = _wrapped(tmp_path, kit_home, capsys, scope_key=key, in_place=in_place)
     _write_events(kit_home, ("d1e2f3a4", 2))
-    _clobber(path, key if in_place else None)
+    _clobber(path)
     out = _receipt_output(capsys)
     assert _fired(out) == ["THE WRAP IS GONE"], _fired(out)
     assert kit.SETUP_URL in out, f"a real capture lost its ending to the banner:\n{out}"
@@ -6200,10 +6218,13 @@ def test_the_prompt_survives_arriving_as_a_file():
 
 
 def _flat(text: str) -> str:
-    """Hard-wrapped markdown with the newlines collapsed. Every phrase worth
+    """Hard-wrapped text with the newlines collapsed. Every phrase worth
     pinning in these two files is longer than the distance to the next line
     break, so a literal `in` check against the raw text passes or fails on
-    where the wrap happens to fall — which is not a property of the doc."""
+    where the wrap happens to fall — which is not a property of the doc.
+
+    Also used on `--help` output, which argparse wraps to the terminal width —
+    the same problem arriving from a different wrapper."""
     return " ".join(text.split())
 
 
@@ -6548,7 +6569,7 @@ _SECRETS_THAT_ARE_NOT_PATHS = [
 ]
 
 
-def test_every_secret_case_actually_contains_a_separator(tmp_path):
+def test_every_secret_case_actually_contains_a_separator():
     """The guard on the fixture above, not on the kit.
 
     A value with no `/` could never have been refused by the shape rule, so a
@@ -6630,6 +6651,34 @@ def test_env_and_args_agree_about_the_same_string(value, tmp_path):
         f"{value!r} explicitly states a relative path, and the two fields disagree:\n"
         f"  arg -> {as_arg!r}\n  env -> {as_env!r}"
     )
+
+
+@pytest.mark.parametrize(
+    "entry,names",
+    [
+        pytest.param({"command": "./s3cret-TOKEN"}, "launch command", id="command"),
+        pytest.param({"command": "node", "args": ["./s3cret-TOKEN"]}, "argument 1", id="arg"),
+        pytest.param(
+            {"command": "node", "env": {"K": "./s3cret-TOKEN"}},
+            "`K` environment value",
+            id="env",
+        ),
+    ],
+)
+def test_no_field_of_the_cwd_refusal_prints_its_value(entry, names):
+    """One rule across all three positions, because the first fix got one.
+
+    ⚠ Redacting `args` and `command` reddened NOTHING when it was applied — no
+    test asserted the raw value was printed, which is exactly why it shipped.
+    So the promise is pinned per FIELD rather than per example.
+
+    The refusal must stay actionable: it still names WHICH position, and the
+    hidden label still says which shape the value has."""
+    reason = kit.cwd_dependent_reason(entry)
+    assert reason is not None, f"{entry} should be refused"
+    assert "s3cret-TOKEN" not in reason, f"the refusal printed the value: {reason}"
+    assert names in reason, f"the refusal no longer says which position: {reason}"
+    assert kit.HIDDEN in reason, f"the value is not marked as withheld: {reason}"
 
 
 def test_the_cwd_refusal_never_prints_the_env_value_it_names(tmp_path, kit_home, capsys):
