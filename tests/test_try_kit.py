@@ -5996,6 +5996,249 @@ def test_claude_md_makes_a_refusal_stick_for_the_config_commands():
     assert "in every mode" not in rule, "the rule still says the agent always keeps receipt"
 
 
+def _claude_md_paras(heading: str) -> list[str]:
+    """The paragraphs under one `##` heading of `try/CLAUDE.md`.
+
+    By SECTION, where the rest of this file selects by leading paragraph text.
+    The difference matters for a mode qualification: it is free to move between
+    the paragraphs of the section it belongs to, and a per-paragraph selector
+    reads that re-merge as a deletion. What must not happen is it leaving the
+    section — which is what this returns."""
+    out: list[str] = []
+    inside = False
+    for _n, para in _unwrapped(_claude_md()):
+        if para.startswith("## "):
+            inside = para == f"## {heading}"
+            continue
+        if inside:
+            out.append(para)
+    assert out, f"CLAUDE.md has no '## {heading}' section, or it is empty"
+    return out
+
+
+# Every `CLAUDE.md` claim that holds for the wrap in the checkout and NOT for an
+# `--in-place` wrap, with the cost of leaving it unqualified.
+#
+# ⚠ A SWEEP LIST, deliberately, and not a count. The first version of this test
+# opened "Three of CLAUDE.md's promises…", which reads as the complete set. It
+# was three of EIGHT: `/code-review` found the other five, and the closed
+# framing is what would have stopped the next reader looking. Same failure as
+# the "Two refusals name a way forward" count in the doc itself, in the same
+# commit → `_RESTART_SINKS`, which exists because one sentence corrected in one
+# place stays wrong in three.
+#
+# Adding a row is the cheap half. Before adding one, check the claim string
+# appears in exactly ONE paragraph — the test asserts that, because a claim that
+# got duplicated is a second place to correct.
+_MODE_BOUND_CLAIMS = [
+    (
+        "remove the wrap this checkout holds",
+        "the comment in the command list is the first thing the agent reads about "
+        "`uninstall`, and under `--in-place` that command removes no file here — it "
+        "rewrites their own config",
+    ),
+    (
+        "without changing it",
+        "the doc's opening description of the kit is the agent's whole frame, and "
+        "`--in-place` both changes that file and writes nothing in the checkout",
+    ),
+    (
+        "let a tool read their client's config",
+        "the hand-over reassurance says *read* on a path that WRITES. ⚠ That "
+        "paragraph is pinned byte-for-byte by "
+        "`test_claude_md_tells_the_agent_to_fill_in_the_real_path_on_a_refusal`, so the "
+        "qualification lives in the paragraph AFTER it — add, never reword",
+    ),
+    (
+        "is the only command that opens their config",
+        "the agent keeps running `receipt` itself on a wrap that made it read their config",
+    ),
+    (
+        "reads their Claude Code config",
+        "the reassurance given immediately before they run setup is the wrong one — "
+        "`--in-place` writes that file",
+    ),
+    (
+        "loads only for a session started in the directory",
+        "this is the sentence an empty capture is diagnosed with, so the agent sends "
+        "them to a folder that was never the problem",
+    ),
+    (
+        "will not record anything",
+        "the closing block is relayed to the person word for word, and an `--in-place` "
+        "wrap records wherever THEIR entry loaded — which may be no folder at all",
+    ),
+    (
+        "nothing rewrites it",
+        "an agent that believes this treats `THE WRAP IS GONE` as impossible and hunts "
+        "for a kit bug instead of relaying it",
+    ),
+    (
+        "nothing to restore",
+        "the agent says their config was never changed just after `--in-place` changed it",
+    ),
+    # ⚠ ONE ROW, TWO SENTENCES, and the guarantee is weaker here than it looks.
+    # "removes everything else" and "get the original server back" sit in the
+    # same paragraph of §Removing it, so the check below cannot tell them apart:
+    # either sentence's qualification satisfies both. Measured — as two rows, a
+    # mutant aimed at the second reported the first. Merged rather than left
+    # looking independent. Splitting the paragraph would not fix it either,
+    # because the window spans the next paragraph too; the fix, if it is ever
+    # worth it, is a per-sentence check → the docstring's "sit WITH the claim".
+    (
+        "removes everything else",
+        "deleting the checkout before `uninstall` leaves an `--in-place` entry that "
+        "cannot start, and an `--in-place` wrap comes off wherever their entry loaded "
+        "rather than only in this folder — both sentences are in this one paragraph",
+    ),
+]
+
+
+def test_every_mode_bound_promise_names_the_in_place_exception(tmp_path, kit_home, capsys):
+    """Each `CLAUDE.md` claim that is true of one wrap has to name which.
+
+    The kit has two wraps and this doc is what the agent obeys. On the default
+    path their config is never written, so "`setup` is the only command that
+    opens their config" and "there is nothing to restore" both hold.
+    `--in-place` writes their config, and then `receipt` reads it and
+    `uninstall` writes it. Unqualified, the doc has the agent telling someone
+    their config was never changed immediately after it was changed — this
+    feature's own failure mode, said back to the prospect it was built for.
+
+    The qualification has to sit WITH the claim: in its own paragraph or the one
+    straight after. Anywhere else in the section is not good enough, because an
+    agent reads the claim and acts, and three claims in one section would all be
+    satisfied by a single mention.
+
+    ⚠ The claims are swept from `_MODE_BOUND_CLAIMS`; the numbered parts below
+    additionally tie some of them to what the KIT actually produces, because a
+    doc test that only greps its own sentences passes on a doc that has drifted
+    away from the command it describes. No count here — the list is the owner,
+    and it has already grown twice."""
+    paras = [para for _n, para in _unwrapped(_claude_md())]
+
+    for claim, cost in _MODE_BOUND_CLAIMS:
+        hits = [i for i, p in enumerate(paras) if claim in p]
+        assert len(hits) == 1, (
+            f"{claim!r} appears in {len(hits)} paragraphs of CLAUDE.md, not 1. "
+            "ZERO means the sentence was reworded or deleted — re-point this row at "
+            "the new wording rather than dropping it, because a row that matches "
+            "nothing guards nothing. MORE THAN ONE means a second place the exception "
+            "has to be written, and this sweep would pass on the qualified copy alone."
+        )
+        # The claim's own paragraph, plus the next. A blockquote carries several
+        # claims and cannot hold its own exception, so the following paragraph is
+        # where that one has to live.
+        window = " ".join(paras[hits[0] : hits[0] + 2])
+        assert "--in-place" in window, (
+            f"CLAUDE.md says {claim!r} without naming the --in-place case beside it, so {cost}"
+        )
+
+    removing = _claude_md_paras("Removing it")
+    rules = _claude_md_paras("Rules that do not bend")
+
+    # 1. ⚠ RESTORED, because the sweep is WEAKER than what it replaced. The
+    # sweep asks only whether `--in-place` appears beside the claim; the block
+    # this commit series deleted asserted the exception names both commands.
+    # Measured: rewriting that paragraph to "An `--in-place` wrap puts the wrap
+    # in their own config. Hand setup over the same way in that case." — no
+    # `receipt`, no `uninstall` — left the WHOLE suite green. The doc could then
+    # tell the agent to keep running `receipt` itself on a wrap that made it
+    # read their config, which is that row's own cost string
+    # → [[feedback_a_fix_can_recreate_its_bug_in_the_untested_half]].
+    #
+    # Generalising a specific assertion is not free: the general one has to be
+    # shown to still catch what the specific one caught, and this one did not.
+    setting_up = _claude_md_paras("Setting up")
+    exception = [p for p in setting_up if "--in-place" in p and "`receipt`" in p]
+    assert exception, (
+        "the --in-place exception no longer names `receipt`, which that mode makes read "
+        "their config — and the agent is told above to keep running `receipt` itself"
+    )
+    assert any("`uninstall`" in p for p in exception), (
+        "the --in-place exception names `receipt` but not `uninstall`, which writes "
+        "their config on that path"
+    )
+
+    # 2. The restore claim, tied to the word the command actually prints.
+    config = _config(tmp_path, GLOBAL_ONLY)
+    assert kit.main(["setup", "notion", "--in-place", "--src-config", str(config)]) == 0
+    capsys.readouterr()
+    # Read WHILE wrapped. Taking this after `uninstall` reads the restored entry,
+    # which has no `PYTHONPATH` at all — the assertion in part 3 then dies on a
+    # KeyError instead of measuring anything.
+    wrapped = json.loads(config.read_text(encoding="utf-8"))["mcpServers"]["notion"]
+
+    assert kit.main(["uninstall"]) == 0
+    printed = capsys.readouterr().out
+
+    assert "Restored" in printed, (
+        "the --in-place uninstall no longer prints `Restored`; this test's doc "
+        "assertion below would then be pinning a word the kit never says"
+    )
+    # ⚠ And the OTHER half. The doc tells the agent to "read which of the two the
+    # command printed", which only works if one output does not satisfy both
+    # rows. Asserting `Restored` appears on the in-place path leaves a reword of
+    # the project branch to "Restored … nothing to restore" passing — the
+    # one-output-two-rows failure the receipt tests in this file exist to stop.
+    # No state to clear first — the uninstall above cleared it, which is the
+    # "Setup state has been cleared" row of the receipt's own first line.
+    assert kit.main(["setup", "notion", "--src-config", str(config)]) == 0
+    capsys.readouterr()
+    assert kit.main(["uninstall"]) == 0
+    default_printed = capsys.readouterr().out
+
+    assert "Restored" not in default_printed, (
+        "the DEFAULT uninstall prints `Restored` too, so the doc's 'read which of the "
+        f"two the command printed' cannot discriminate:\n{default_printed}"
+    )
+    assert "nothing to restore" in default_printed.lower(), (
+        "the default uninstall says neither word — the assertion above then passes on "
+        f"an uninstall that printed nothing at all:\n{default_printed}"
+    )
+
+    restore = [p for p in removing if "--in-place" in p]
+    assert restore, (
+        "§Removing it says 'there is nothing to restore' with no mode named, so the "
+        "agent says it after an --in-place uninstall that restored their config"
+    )
+    assert any("Restored" in p for p in restore), (
+        "the exception does not name `Restored`, the word the command prints — so the "
+        "agent has no way to tell the two outcomes apart from the output"
+    )
+
+    # 3. The delete order. The doc's reason is that the in-place entry runs the
+    # proxy out of this checkout; that is asserted here rather than trusted.
+    assert str(kit.SRC_DIR) in wrapped["env"]["PYTHONPATH"], (
+        "the in-place wrap no longer points into the checkout, so §Removing it's "
+        "reason for uninstalling before deleting the folder is now false"
+    )
+    order = [p for p in removing if "uninstall" in p and "delet" in p and "--in-place" in p]
+    assert order, (
+        "§Removing it says 'deleting this checkout removes everything else' without "
+        "naming the --in-place case, where the entry left in their config runs the "
+        "proxy out of the folder being deleted — a server that cannot start"
+    )
+
+    # 4. The warning is not a refusal, and the doc quotes its real first words.
+    prefix = "⚠ One thing to know about"
+    assert kit.cwd_dependent_warning("srv", "why").startswith(prefix), (
+        "the warning's opening changed; the doc quotes it so the agent can tell a "
+        "warning from a refusal by reading the output"
+    )
+    warned = [p for p in rules if prefix in p]
+    assert warned, (
+        f"§Rules never quotes {prefix!r}, so nothing tells the agent that a successful "
+        "setup can still print a warning — and the refusal rules above read as though "
+        "every ⚠ line were a failure"
+    )
+    assert any("exits non-zero" in p for p in warned), (
+        "the warning paragraph does not say why the retry rule does not reach it, so "
+        "'do not retry with different flags' still reads as covering the --in-place "
+        "line the warning itself prints"
+    )
+
+
 def _recording_reads(monkeypatch) -> list[str]:
     """Record every file `Path.read_text` opens, resolved."""
     reads: list[str] = []
