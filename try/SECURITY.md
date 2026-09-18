@@ -248,16 +248,35 @@ definitions, arguments, results and errors pass through unchanged.
 
 Three commands, all run from the `try/` directory:
 
-| command | what it touches |
-|---|---|
-| `setup <server>` | Reads your MCP config; copies the whole file to `try/config-backup.<timestamp>.json`; rewrites one entry; writes `try/state.json`. Nothing else on the machine. |
-| `receipt` | Reads `try/events.jsonl` and `try/state.json`, and once a wrap is in place reads your MCP config to check the wrapped entry is still there. Writes nothing, opens no connection. |
-| `uninstall` | Rewrites that one entry back and deletes `try/state.json`. Leaves your events file and the backups for you to read or delete. |
+Each row says what the command does by default, and then what changes if you
+chose `--in-place`. The two wraps touch different files, so no row here is true
+of both.
+
+| command | by default | with `--in-place` |
+|---|---|---|
+| `setup <server>` | Reads your MCP config to copy the entry. Writes `.mcp.json` in this checkout and `try/state.json`. **Your config is not written**, so there is no backup to take. | Copies your whole config to `try/config-backup.<timestamp>.json` first, then rewrites one entry in it. Writes `try/state.json`. Writes no `.mcp.json`. |
+| `receipt` | Reads `try/events.jsonl`, `try/state.json` and this checkout's `.mcp.json`. **Never opens your config.** Writes nothing, opens no connection. | Also reads your MCP config, to check the wrapped entry is still there. Still writes nothing and opens no connection. |
+| `uninstall` | Deletes this checkout's `.mcp.json` and `try/state.json`. **Nothing is restored, because nothing of yours was changed.** | Writes the original entry back into your config and deletes `try/state.json`. Leaves your events file and the backups for you to read or delete. |
+
+`setup` is the only command that opens your config, and only in the default
+wrap. Nothing else on the machine is touched in either mode.
 
 The kit has no network code. The only `urllib` import in `kit.py` is
 `urllib.parse`, which parses strings and opens nothing, and §9's grep returns no
 call site under `try/` at all. A reviewer who wants to know what can leave the
 machine reads §4's table, every row of which is the proxy's.
+
+**One file in this repo does grant something, and it is not code.**
+`.claude/settings.json`, at the top of the checkout, pre-approves the kit's own
+command lines — `python3 kit.py` with `setup`, `receipt` or `uninstall` — so
+Claude Code does not stop to ask before running them. It is
+checked in, you can read it in one screen, and it applies only to a session
+started inside this checkout. The trial's first session runs one level above
+the clone, so it does not load there; the second terminal starts inside the
+checkout, so it does. It grants nothing beyond those command lines, and it
+cannot override your client's own refusals — a permission mode that guards
+`~/.claude.json` still refuses `setup`, which is why the kit has a hand-over
+step for you to run it yourself. Delete the file if you would rather be asked.
 
 `try/CLAUDE.md` is a plain-text instruction file for the agent. It grants no
 capability. It tells the agent to use the commands above and what not to do:
@@ -269,9 +288,16 @@ make in a browser.
 The kit refuses rather than guesses when the named server appears in more than
 one config scope, when the entry is already wrapped by something other than this
 kit, and at uninstall when the entry no longer matches what setup wrote (it
-shows both versions and changes nothing). The setup/uninstall pair is
-property-tested as a round trip (`tests/test_try_kit.py`): for a corpus of
-config shapes, `uninstall(setup(x))` returns the original bytes.
+shows both versions and changes nothing).
+
+Both wraps are pinned by a test that checks bytes rather than meaning, and they
+are different tests because they promise different things
+(`tests/test_try_kit.py`). For `--in-place`, `uninstall(setup(x))` returns the
+original bytes, over a corpus of config shapes. For the default wrap the promise
+is stronger and simpler: after `setup`, your own config file is byte-identical
+to what it was. Byte equality rather than "the entry is still there", because a
+kit that reformatted your file or reordered a key while preserving the entry
+would have broken the promise while passing a check on meaning.
 
 ## 4. What leaves your machine
 

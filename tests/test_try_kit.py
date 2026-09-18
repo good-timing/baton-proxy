@@ -7446,3 +7446,131 @@ def test_security_md_scopes_stderr_to_what_actually_goes_there():
     assert f"the first {limit} bytes of the response body" in section, (
         f"§7's error-body size no longer matches `_safe_read_snippet` ({limit})"
     )
+
+
+# §3a described the GLOBAL wrap in all three rows for a whole release, and
+# nothing went red when it was fixed — which is why these two pins exist. The
+# defect was found by an agent reading the doc during a V1 drive, not by the
+# suite. See `_MODE_BOUND_CLAIMS` for the same rule applied to `CLAUDE.md`.
+#
+# The owner is this list, never a count: §3a has three rows today and the sweep
+# has to keep working when it has four.
+_SECURITY_3A_ROWS = [
+    ("`setup <server>`", "your config is not written"),
+    ("`receipt`", "never opens your config"),
+    ("`uninstall`", "nothing of yours was changed"),
+]
+
+#: Phrases that describe writing THEIR config. Legal in the `--in-place`
+#: column, a defect in the default one. `config-backup` is here because the
+#: backup exists only because the global path rewrites their file.
+_WRITES_THEIR_CONFIG = ("rewrites one entry", "config-backup", "writes the original entry back")
+
+
+def _security_md() -> str:
+    return (REPO_ROOT / "try" / "SECURITY.md").read_text(encoding="utf-8")
+
+
+def _probe(text: str) -> str:
+    """Lowercased, unbolded, one-space text — what a substring probe may match.
+
+    The doc is hard-wrapped and uses `**bold**`, so a probe written as a
+    sentence fails on a line break or an asterisk and reads as "the promise is
+    gone" when the promise is right there. Matching the rendered words is what
+    these pins are actually about."""
+    return " ".join(text.replace("*", "").split()).lower()
+
+
+def _section_3a_rows() -> list[list[str]]:
+    """§3a's table, as a list of cell-lists, header included."""
+    doc = _security_md()
+    start = doc.index("### 3a.")
+    table = doc[start : doc.index("\n## ", start)]
+    rows = [ln for ln in table.splitlines() if ln.startswith("|")]
+    assert rows, "§3a no longer has a table — re-point this test, do not delete it"
+    return [[c.strip() for c in ln.strip("|").split("|")] for ln in rows]
+
+
+def test_security_3a_splits_every_command_by_mode():
+    """§3a must say which wrap each row is about, and the default column must
+    never claim we write their config.
+
+    This is the defect a prospect would have found first: §3a is the security
+    document, and the people who read it are the ones who read code. It told
+    them `setup` backs up and rewrites their config — the exact sentence the
+    project-mode feature exists to stop saying — while the code had not done
+    that by default since K1b.
+
+    Cell-level rather than paragraph-level, deliberately. The whole table is one
+    paragraph, so a `_MODE_BOUND_CLAIMS`-style window check would be satisfied
+    by the `--in-place` column alone and would pass on a default column that
+    still described the global wrap."""
+    rows = _section_3a_rows()
+    header = rows[0]
+    assert len(header) == 3, (
+        f"§3a's table has {len(header)} columns, not 3 — the by-mode split is gone, "
+        "and an unqualified row is how this broke the first time"
+    )
+    assert "--in-place" in header[2], "§3a's third column no longer names --in-place"
+
+    body = {r[0]: r for r in rows[2:]}
+    for command, default_promise in _SECURITY_3A_ROWS:
+        assert command in body, (
+            f"§3a has no row for {command}. ZERO means it was reworded or dropped — "
+            "re-point this row at the new wording, because a row matching nothing "
+            "guards nothing."
+        )
+        default_cell, in_place_cell = _probe(body[command][1]), _probe(body[command][2])
+        assert default_promise in default_cell, (
+            f"§3a's default column for {command} no longer promises {default_promise!r}"
+        )
+        for phrase in _WRITES_THEIR_CONFIG:
+            assert phrase not in default_cell, (
+                f"§3a says {phrase!r} in {command}'s DEFAULT column. That describes the "
+                "--in-place wrap, and stating it unqualified is what made this document "
+                "tell three prospects the opposite of what the kit does."
+            )
+        assert in_place_cell, f"§3a's --in-place column for {command} is empty"
+
+
+def test_security_discloses_the_settings_file_the_repo_ships():
+    """`.claude/settings.json` pre-approves our own commands, so §3a has to
+    name it.
+
+    Driven from the FILE, not from a list written here: if someone adds a
+    command to the allow-list, this reds until the disclosure covers it. A doc
+    test that only greps its own sentences passes on a doc that has drifted
+    away from the thing it describes — the same reason
+    `test_every_mode_bound_promise_names_the_in_place_exception` reaches for
+    what the kit actually prints.
+
+    Found by an agent reading the repo during a V1 drive, unprompted, in one
+    pass. The doc's whole job is disclosure and it did not mention a file we
+    ship that grants something."""
+    settings_path = REPO_ROOT / ".claude" / "settings.json"
+    assert settings_path.is_file(), (
+        "`.claude/settings.json` is gone. If that is deliberate, delete this test and "
+        "the SECURITY.md paragraph together — a disclosure of a file that no longer "
+        "exists is its own defect."
+    )
+    allow = json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]["allow"]
+    doc = _security_md()
+
+    start = doc.index("`.claude/settings.json`")
+    disclosure = _probe(doc[start : doc.index("\n\n", start)])
+
+    verbs = sorted({rule.split()[-1].rstrip(")*").strip() for rule in allow} - {"setup"})
+    verbs.append("setup")
+    for verb in verbs:
+        assert verb in disclosure, (
+            f"`.claude/settings.json` pre-approves `{verb}` and §3a's disclosure does not "
+            f"name it. The allow-list is the owner; rules today: {allow}"
+        )
+    assert "one level above the clone" in disclosure, (
+        "the disclosure no longer says the first session does not load these rules, "
+        "which is the fact that makes the grant small rather than alarming"
+    )
+    assert "still refuses" in disclosure, (
+        "the disclosure no longer says the allow-list cannot override the client's own "
+        "refusal — measured behaviour, and the reason the hand-over step exists"
+    )
