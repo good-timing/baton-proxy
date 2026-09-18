@@ -270,9 +270,26 @@ machine reads §4's table, every row of which is the proxy's.
 `.claude/settings.json`, at the top of the checkout, pre-approves the kit's own
 command lines — `python3 kit.py` with `setup`, `receipt` or `uninstall` — so
 Claude Code does not stop to ask before running them. It is checked in, you can
-read it in one screen, and it applies only to a session started inside this
-checkout. The trial's first session runs one level above the clone, so it does
-not load there; the second terminal starts inside the checkout, so it does.
+read it in one screen, and two things have to be true before it grants anything
+at all.
+
+**It has to be the folder you started Claude Code in.** The shared settings file
+is read from the session's working directory, not from a subfolder of it. The
+trial's first session runs one level above the clone — that is where the three
+commands are run from — so this file is out of scope there, every time.
+
+**And the folder has to be trusted.** Measured on Claude Code 2.1.277: in a
+workspace you have not accepted the trust dialog for, Claude Code prints
+*"Ignoring 2 permissions.allow entries from .claude/settings.json: this
+workspace has not been trusted"* and asks anyway. A fresh clone is not trusted.
+It is the same protection that stops a cloned repository approving its own MCP
+servers.
+
+That dialog also reads the rules out. Accepting trust for a folder that ships a
+`settings.json` shows you the list first — *"This folder pre-approves N tool
+permissions … These will apply without asking"* — with each rule named. So you
+do not have to take our word for what is in the file; your own client shows you
+before anything applies.
 
 ⚠ **One of those rules is `python3 kit.py setup *`, and a trailing `*` in a
 Claude Code permission rule matches any continuation of the line.** `setup`
@@ -285,9 +302,12 @@ permission. **If you would rather your config could not be rewritten without a
 prompt, delete that one line, or the whole file.** Everything still works; you
 are simply asked each time.
 
-The file cannot override your client's own refusals. A permission mode that
-guards `~/.claude.json` still refuses `setup`, which is why the kit has a
-hand-over step for you to run it yourself.
+What the file cannot do is reach past a rule you did not write. It matches the
+command text only: the same program by full path, through a symlink, or inside
+a shell wrapper does not match, so the entry is not a general opening. And in
+the trial as it actually runs, the two conditions above are never both met, so
+the hand-over step — where a command is handed to you with a `!` in front, to
+run yourself — happens whether this file is here or not.
 
 `try/CLAUDE.md` is a plain-text instruction file for the agent. It grants no
 capability. It tells the agent to use the commands above and what not to do:

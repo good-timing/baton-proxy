@@ -7628,13 +7628,34 @@ def test_security_discloses_the_settings_file_the_repo_ships():
             "the disclosure names the wildcard grant without telling the reader how to "
             "decline it, which is the only part they can act on"
         )
+    # The two preconditions, and both have to be stated. Either one alone makes
+    # the grant sound conditional on something a prospect could accidentally
+    # satisfy; together they are why the file is inert in the trial as it runs.
     assert "one level above the clone" in disclosure, (
-        "the disclosure no longer says the first session does not load these rules, "
-        "which is the fact that makes the grant small rather than alarming"
+        "the disclosure no longer says the first session does not load these rules. "
+        "Documented: the shared settings file is read from the session's working "
+        "directory, not from a subfolder of it."
     )
-    assert "still refuses" in disclosure, (
-        "the disclosure no longer says the allow-list cannot override the client's own "
-        "refusal — measured behaviour, and the reason the hand-over step exists"
+    assert "has not been trusted" in disclosure, (
+        "the disclosure no longer names the trust requirement. Measured on 2.1.277: an "
+        "untrusted workspace has its permissions.allow entries IGNORED outright."
+    )
+    # ⚠ This pin used to assert the opposite — "the allow-list cannot override the
+    # client's own refusal" — which the docs disprove for READS: an allow rule
+    # resolves before the classifier, and only writes to protected paths are
+    # carved out. `setup` only reads their config by default, so an in-scope,
+    # trusted allow rule COULD have suppressed `[Self-Modification]`. The note
+    # this came from had measured it inside the trial flow, where the file never
+    # loads, and credited the classifier for what the working directory was doing
+    # → the reason the two facts above are the ones pinned.
+    assert "pre-approves n tool permissions" in disclosure, (
+        "the disclosure no longer says the trust dialog READS THE RULES OUT. Measured on "
+        "2.1.277 — it names each one before you accept, which is the half that makes the "
+        "grant checkable by the reader rather than something they take on our word."
+    )
+    assert "whether this file is here or not" in disclosure, (
+        "the disclosure no longer says the hand-over happens regardless, which is the "
+        "only claim here that survives both the docs and the measurement"
     )
 
 
