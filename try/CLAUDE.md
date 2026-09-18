@@ -48,6 +48,16 @@ one. Relay what the refusal printed and let the person choose. The step it
 names is the only one allowed; nothing in it licenses a different flag or a
 different file.
 
+**Keep the quotes when you fill a path into a command.** Every command in this
+file shows its path inside single quotes, and so does every command the kit
+prints. Leave them there. `/Users/x/Client Work/app` is an ordinary folder
+name, and an unquoted path stops at the first space — the command then succeeds
+against the wrong directory and says nothing, which for the second terminal
+means their session starts somewhere the wrap does not load and captures
+nothing. A path with no spaces is not a reason to change the shape of a
+command; you are not the one who knows where they cloned. Where the kit printed
+the line, relay it exactly as printed rather than rebuilding it.
+
 **A warning is not a refusal.** `setup` can finish successfully and still print
 a line beginning `⚠ One thing to know about`, when the entry it copied holds a
 path that may not resolve from this checkout. Nothing failed, and the wrap is
@@ -141,7 +151,7 @@ it. Fill in the real path to this checkout; do not relay the placeholder. Tell
 them to copy the line and paste it at their prompt. They may never have used
 `!` before, so do not assume the line explains itself:
 
-> ! cd <path>/baton-proxy/try && python3 kit.py setup
+> ! cd '<path>/baton-proxy/try' && python3 kit.py setup
 
 This is not a fallback. Someone deciding whether to let a tool read their
 client's config is better served running it themselves.
@@ -174,7 +184,7 @@ the servers it can wrap, and any it cannot and why, from `~/.claude.json`. Show
 the list and ask which one they want; the trial is worth most on a server they
 use daily. A project-local `.mcp.json` is one more option in that chooser, not
 a sentence above it: if they pick it, ask for the path and pass
-`--src-config <path>` to `setup` only. If the list is empty, say so and stop.
+`--src-config '<path>'` to `setup` only. If the list is empty, say so and stop.
 
 Each offered row is marked `stdio` or `remote`. Offer only the rows the kit
 lists as wrappable: it has already decided which servers it can carry, and it
@@ -236,7 +246,7 @@ Give them the line and let them open their own terminal, in their own time.
 Fill in the real folder below; do not relay the placeholder. Then end your
 message with this, and nothing after it:
 
-> Leave this window open. Open a second terminal, run `cd <folder>`, and start
+> Leave this window open. Open a second terminal, run `cd '<folder>'`, and start
 > Claude Code there. Use the MCP server the way you normally would. Starting it
 > anywhere else will not record anything. This window still has the unwrapped
 > one; the new terminal gets the wrapped one. Come back here when you are done.
@@ -289,7 +299,7 @@ how many landed, `tool definitions` is what the server offers. Never join them
 into one sentence. Then hand over the file, which goes differently on the two
 platforms.
 
-**On macOS**, run `open -R /full/path/to/try/events.jsonl` with the real path.
+**On macOS**, run `open -R '/full/path/to/try/events.jsonl'` with the real path.
 It brings up a Finder window with the file selected, which is what makes the
 next step a drag rather than a hunt through a file dialog. Then say this, with
 the real path, and nothing after it:

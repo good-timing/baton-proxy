@@ -243,7 +243,14 @@ def setup_note(events_path: Path) -> str:
 def reveal_note(events_path: Path) -> str | None:
     if sys.platform != "darwin":
         return None
-    return f"Reveal it in Finder: open -R {events_path}"
+    # Quoted for the reason `_cd_to` states: `/Users/x/Client Work/app` is an
+    # ordinary macOS path, and this line is printed to be pasted. It was the one
+    # printed command in this file that did NOT quote — the two `cd` lines and
+    # the `--from` rows all do — which is the same shape as a ruleset that
+    # models separators for one field and not its neighbour. Milder than the
+    # `cd` case, because this fires after a good capture and the path is in the
+    # sentence beside it, so the cost is a Finder window that does not open.
+    return f"Reveal it in Finder: open -R {shlex.quote(str(events_path))}"
 
 
 # Not "fully quit and reopen", which was false and was verified false: a second

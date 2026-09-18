@@ -5827,7 +5827,7 @@ def test_claude_md_tells_the_agent_to_fill_in_the_real_path_on_a_refusal():
     assert "They may never have used `!` before" in intro, (
         "the agent is not told the person may not know what a `!` line is"
     )
-    assert line == "> ! cd <path>/baton-proxy/try && python3 kit.py setup", (
+    assert line == "> ! cd '<path>/baton-proxy/try' && python3 kit.py setup", (
         "the instruction to substitute is not directly above the line it is about"
     )
     # K1b: "touch"/"that edit" became "read"/"it". The paragraph is about a
@@ -5858,9 +5858,12 @@ def test_the_handover_line_carries_the_folder_the_wrap_loads_in():
     md = _claude_md()
     step = _doc_section("**3. Hand them a second terminal", "## While it runs")
     flat = _flat(step)
-    assert "cd <folder>" in step, (
-        "the closing hand-over block no longer tells them to cd anywhere, so a "
-        "terminal opened outside the checkout captures nothing"
+    assert "cd '<folder>'" in step, (
+        "the closing hand-over block no longer tells them to cd anywhere IN QUOTES. The "
+        "quotes are the pin: `/Users/x/Client Work/app` is an ordinary folder name and an "
+        "unquoted cd stops at the first space, so the terminal opens somewhere the wrap "
+        "does not load and captures nothing — silently, which is the whole failure "
+        "`_cd_to` quotes to prevent."
     )
     assert "do not relay the placeholder" in flat, (
         "the agent is not told `<folder>` is a placeholder, and it will be relayed literally"
@@ -7284,7 +7287,7 @@ def test_the_doc_hands_the_file_over_differently_on_each_platform():
     command above it ran first."""
     doc = _claude_md()
     flat = _flat_unquoted(doc)
-    assert "**On macOS**, run `open -R /full/path/to/try/events.jsonl`" in flat, (
+    assert "**On macOS**, run `open -R '/full/path/to/try/events.jsonl'`" in flat, (
         "the doc no longer tells the agent to reveal the file on macOS"
     )
     assert MACOS_ENDING in flat, "the macOS ending is not the sentence the person is told"
@@ -7307,9 +7310,25 @@ def test_the_doc_and_the_receipt_name_the_same_reveal_command(monkeypatch):
     monkeypatch.setattr(kit.sys, "platform", "darwin")
     printed = kit.reveal_note(Path("/full/path/to/try/events.jsonl"))
     assert printed == "Reveal it in Finder: open -R /full/path/to/try/events.jsonl"
-    assert "open -R /full/path/to/try/events.jsonl" in _flat_unquoted(_claude_md()), (
+
+    # Compared WITHOUT shell quotes, and that is not a weakening — it is the
+    # only honest comparison. `shlex.quote` adds quotes when the path needs
+    # them, so the kit's line is bare for this space-free example; the doc shows
+    # quotes unconditionally, because an agent filling in a placeholder cannot
+    # know whether the real path has a space. Same command, two correct quoting
+    # strategies. What must not drift is the command and its flag.
+    unquoted = _flat_unquoted(_claude_md()).replace("'", "")
+    assert "open -R /full/path/to/try/events.jsonl" in unquoted, (
         f"the doc does not run the command the receipt prints:\n  {printed}"
     )
+
+    # ⚠ The case this test did not cover until 2026-09-18, and the reason the
+    # doc grew quotes at all: a folder with a space. The kit must quote here or
+    # `open -R` receives two arguments and reveals nothing.
+    spaced = kit.reveal_note(Path("/Users/x/Client Work/baton-proxy/try/events.jsonl"))
+    assert spaced == (
+        "Reveal it in Finder: open -R '/Users/x/Client Work/baton-proxy/try/events.jsonl'"
+    ), f"the receipt stopped quoting a path with a space: {spaced}"
 
 
 # ---------------------------------------------------------------------------
@@ -7573,4 +7592,84 @@ def test_security_discloses_the_settings_file_the_repo_ships():
     assert "still refuses" in disclosure, (
         "the disclosure no longer says the allow-list cannot override the client's own "
         "refusal — measured behaviour, and the reason the hand-over step exists"
+    )
+
+
+#: Every path placeholder the agent is asked to substitute into a command.
+#: The list is the owner — no count is written down, because this doc has had
+#: three counts go stale within an hour of being written.
+_PATH_PLACEHOLDERS = ("<path>", "<folder>", "/full/path/")
+
+
+def test_every_command_the_agent_fills_a_path_into_is_quoted():
+    """A command in `CLAUDE.md` carrying a path must show that path quoted.
+
+    `kit.py` already knew this: `_cd_to` runs the path through `shlex.quote`
+    and its docstring says why — *"`/Users/x/Client Work/app` is an ordinary
+    macOS path and an unquoted one silently cds to `/Users/x/Client`, which
+    loads global scope and captures nothing: the failure this whole line exists
+    to prevent."* The doc then spelled the same commands out again without
+    quotes, and `reveal_note` was the one printed command in `kit.py` that had
+    missed it too.
+
+    Found on the 2026-09-18 V1 drive. The operator's own path had no spaces, so
+    every existing test and the whole drive passed over it — which is exactly
+    how a rule that is right in one position and absent in its siblings
+    survives.
+
+    ⚠ This sweeps COMMANDS, not prose. `> It's at /full/path/to/try/events.jsonl.`
+    is a sentence the agent says, not a line anyone pastes, and quoting it would
+    be noise. The discriminator is the backtick span or the `!` line, which is
+    what a person copies.
+    """
+    doc = _claude_md()
+
+    commands: list[str] = []
+    for line in doc.splitlines():
+        stripped = line.lstrip("> ").strip()
+        if stripped.startswith("!"):
+            commands.append(stripped)
+        commands.extend(re.findall(r"`([^`]+)`", line))
+
+    hits = [c for c in commands if any(ph in c for ph in _PATH_PLACEHOLDERS)]
+    assert hits, (
+        "no command in CLAUDE.md carries a path placeholder any more. ZERO means the "
+        "hand-over lines were reworded or removed — re-point _PATH_PLACEHOLDERS at the "
+        "new spelling, because a sweep that matches nothing guards nothing."
+    )
+
+    for command in hits:
+        for placeholder in _PATH_PLACEHOLDERS:
+            if placeholder not in command:
+                continue
+            before = command[: command.index(placeholder)]
+            assert before.rstrip().endswith("'") or "'" in command[command.index(placeholder) :], (
+                f"CLAUDE.md spells out {command!r} with an unquoted path. A folder name "
+                "with a space is ordinary, and an unquoted path stops at the first one: "
+                "the command then succeeds against the WRONG directory and says nothing. "
+                "Wrap the placeholder in single quotes, as `_cd_to` and `reveal_note` do."
+            )
+
+
+def test_the_doc_says_to_keep_the_quotes_and_not_only_shows_them():
+    """Showing quotes is not enough; the rule has to be stated.
+
+    An agent filling `<folder>` with a path that has no spaces has every reason
+    to drop quotes it reads as noise, and the result looks correct on the
+    operator's machine and breaks on the prospect's. The same class as the
+    handover block itself: the doc's version of a command silently lost what the
+    code put there on purpose."""
+    rules = _doc_section("**Keep the quotes when you fill a path", "**A warning is not a refusal")
+    flat = _flat(rules)
+    assert "stops at the first space" in flat, (
+        "the rule no longer says WHAT goes wrong, and a rule without its reason is the "
+        "first thing an agent reasons its way around"
+    )
+    assert "no spaces is not a reason" in flat, (
+        "the rule no longer covers the case that actually fires: a path that looks safe, "
+        "on a machine that is not the prospect's"
+    )
+    assert "relay it exactly as printed" in flat, (
+        "the rule no longer tells the agent to prefer the kit's printed line over "
+        "rebuilding the command, which is the only version guaranteed correct"
     )
