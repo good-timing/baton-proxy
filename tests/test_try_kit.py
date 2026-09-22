@@ -305,11 +305,10 @@ def test_the_command_is_demoted_not_replaced():
     assert e["args"] == ["-m", "baton_proxy", "--", "npx", "-y", "@notionhq/notion-mcp-server"]
 
 
-def test_the_interpreter_is_absolute_matching_scan():
+def test_the_interpreter_is_absolute():
     """A bare `python3` is resolved against the MCP CLIENT's PATH. A GUI-launched
     client on macOS gets launchd's minimal PATH, where python3 is 3.9 and cannot
-    import baton_proxy — the server dies at launch, days after setup succeeded.
-    scan.py writes sys.executable for the same reason and test_scan.py pins it."""
+    import baton_proxy — the server dies at launch, days after setup succeeded."""
     import sys
 
     e = kit.build_wrapped_entry(GLOBAL_ONLY["mcpServers"]["notion"], **WRAP_ARGS)
@@ -542,8 +541,7 @@ def test_bridge_entry_is_not_told_to_unwrap_itself():
 
 def test_unwrap_still_leaves_a_separatorless_wrap_alone():
     """The fix moves `is_wrapped`, NOT `unwrap_command`. A `--url` bridge has no
-    original stdio command to recover, so unwrap must keep returning it as-is --
-    that behaviour is pinned to scan.py's donor by the drift test above."""
+    original stdio command to recover, so unwrap must keep returning it as-is."""
     cmd = ["python3", "-m", "baton_proxy", "--url", "https://x/mcp"]
     assert kit.unwrap_command(list(cmd)) == cmd
 
@@ -646,7 +644,7 @@ def test_write_preserves_a_permissive_mode_too(tmp_path):
 
 
 # =============================================================================
-# Discovery — the port's two divergences from scan.py's reader.
+# Discovery — the two divergences from a plain reader.
 # =============================================================================
 
 
@@ -656,83 +654,12 @@ def test_discovery_finds_every_scope_and_keeps_the_location():
 
 
 def test_discovery_does_not_key_projects_on_cwd(monkeypatch, tmp_path):
-    """scan.py reads projects[os.getcwd()]. The kit runs from try/, so a cwd
-    lookup would search a project the user has never opened. Entries must be
+    """A plain reader keys projects on os.getcwd(). The kit runs from try/, so a
+    cwd lookup would search a project the user has never opened. Entries must be
     found from anywhere."""
     monkeypatch.chdir(tmp_path)
     names = {n for _s, n, _e in kit.iter_entries(PROJECT_SCOPED)}
     assert "notion" in names
-
-
-# =============================================================================
-# Drift pin — the copied helper against its donor in scan.py.
-# =============================================================================
-
-
-@pytest.mark.parametrize(
-    "cmd",
-    [
-        ["npx", "-y", "srv"],
-        ["baton-proxy", "--", "npx", "-y", "srv"],
-        ["python3", "-m", "baton_proxy", "--", "npx", "srv"],
-        ["python3", "-m", "baton_proxy", "--", "baton-proxy", "--", "npx", "srv"],
-        ["baton-proxy"],
-        ["baton-proxy", "--verbose"],
-        ["baton-proxy", "--"],
-        ["python3", "-m", "baton_proxy", "--url", "https://x/mcp"],
-        [],
-    ],
-)
-def test_unwrap_matches_scan_helper(cmd):
-    """kit.py copies scan.py's unwrap rather than importing it (setup runs
-    before anything is importable). Copies drift; this is the pin."""
-    from baton_proxy.scan import _unwrap_baton_proxy
-
-    assert kit.unwrap_command(list(cmd)) == _unwrap_baton_proxy(list(cmd))
-
-
-@pytest.mark.parametrize(
-    "entry",
-    [
-        {"command": "npx", "args": ["-y", "srv"]},
-        {"command": "baton-proxy", "args": ["--", "npx", "srv"]},
-        {"command": "python3", "args": ["-m", "baton_proxy", "--url", "https://x/mcp"]},
-        {"command": "uvx", "args": ["baton-proxy", "--verbose"]},
-        {"command": "uv", "args": ["run", "baton-proxy"]},
-        {"command": "bash", "args": ["-lc", "baton-proxy -- npx srv"]},
-        {"command": "npx", "args": ["--prefix", "/opt/baton-proxy", "srv"]},
-        {"command": "", "args": []},
-    ],
-)
-def test_is_wrapped_matches_scans_proxy_detector(entry):
-    """The second copied helper. `is_wrapped` and scan's `_launches_baton_proxy`
-    are the same token sweep in two files, and they guard the same thing from
-    opposite sides — the kit refuses to wrap a proxy, scan refuses to scan one.
-    Copies drift; this is the pin, same as the unwrap one above."""
-    from baton_proxy.scan import _launches_baton_proxy
-
-    cmd = [entry.get("command", ""), *[str(a) for a in entry.get("args") or []]]
-    assert kit.is_wrapped(entry) is _launches_baton_proxy(cmd)
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "https://mcp.zapier.com/api/mcp/s/SUPERSECRET/sse",
-        "https://api.example.com/mcp?key=SUPERSECRET",
-        "https://user:SUPERSECRET@api.example.com/mcp",
-        "http://127.0.0.1:8789/mcp",
-        "not a url at all",
-        "",
-    ],
-)
-def test_safe_endpoint_matches_scans_copy(url):
-    """The third copied helper. Both files print endpoints in refusals, and both
-    have to hide the same three credential vectors — a copy that drifted would
-    leak on whichever side fell behind."""
-    from baton_proxy.scan import _safe_endpoint
-
-    assert kit.safe_endpoint(url) == _safe_endpoint(url)
 
 
 # =============================================================================
@@ -2521,7 +2448,7 @@ NARROW_AUDIT_RE = r"urlopen\(|Popen\(|subprocess\.run\(|boto3\.client\("
 # trust our regex.
 WIDE_AUDIT_RE = r"urlopen|socket|http\.client|requests\.|boto3|subprocess"
 
-# The five call sites of §4's table, plus the one comment line §9 names. Stored
+# The four call sites of §4's table, plus the one comment line §9 names. Stored
 # as (path, lineno, substring-of-the-line) so a moved line fails loudly instead
 # of a bare count quietly absorbing a swap. Nothing under `try/` is in the set,
 # and `test_the_kit_contributes_no_audited_call_site` is the assertion of that.
@@ -2531,7 +2458,6 @@ EXPECTED_AUDIT_HITS = {
     ("src/baton_proxy/transport_http.py", 187, "urlopen(timeout=inf) blocks forever"),
     ("src/baton_proxy/sinks.py", 159, "urllib.request.urlopen(req"),
     ("src/baton_proxy/sinks.py", 191, 'boto3.client("s3")'),
-    ("src/baton_proxy/scan.py", 510, "subprocess.run(cmd"),
 }
 
 
@@ -2571,16 +2497,16 @@ def _grep(pattern: str, root: Path = REPO_ROOT):
     return hits
 
 
-def test_security_md_section_9_narrow_grep_returns_exactly_its_six():
-    """§9: "Six matches: the five in the §4 table, plus one comment line in
+def test_security_md_section_9_narrow_grep_returns_exactly_its_five():
+    """§9: "Five matches: the four in the §4 table, plus one comment line in
     transport_http.py."
 
-    It was six, went to seven when `kit.py upload` shipped, and is six again now
-    that the kit sends nothing. Each time, the count moved in the same commit as
-    the code, which is the whole point of pinning it. A reviewer runs the
-    printed command and counts; a document that says six over a tree that answers
-    seven is the one failure this section cannot survive, because its only claim
-    is that its claims are mechanical.
+    It was six, went to seven when `kit.py upload` shipped, back to six when the
+    kit stopped sending, and is five now that `scan.py` is deleted. Each time,
+    the count moved in the same commit as the code, which is the whole point of
+    pinning it. A reviewer runs the printed command and counts; a document that
+    says five over a tree that answers six is the one failure this section
+    cannot survive, because its only claim is that its claims are mechanical.
 
     Note what makes this stable at all: SECURITY.md quotes the regex as
     `urlopen\\(` — escaped — so the document does not match its own grep.
@@ -2592,8 +2518,8 @@ def test_security_md_section_9_narrow_grep_returns_exactly_its_six():
         assert any(p == path and n == lineno and needle in line for p, n, line in found), (
             f"§9's expected match is gone or moved: {path}:{lineno} ({needle!r})"
         )
-    assert len(hits) == 6, (
-        "SECURITY.md §9 promises a reviewer SIX matches; this grep now returns "
+    assert len(hits) == 5, (
+        "SECURITY.md §9 promises a reviewer FIVE matches; this grep now returns "
         f"{len(hits)}:\n" + "\n".join(f"  {p}:{n}: {line.strip()}" for p, n, line in hits)
     )
 

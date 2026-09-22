@@ -53,18 +53,6 @@ The token goes in the entry's `env`, not your shell: the MCP client starts the p
 
 Either form is started by your MCP client, not by you: the proxy speaks JSON-RPC on stdin, so running it straight from a shell just waits for input.
 
-## Try it in one command: `scan`
-
-Preview the friction an agent is likely to hit on a server you run, with no permanent install and no change to your Claude config:
-
-```sh
-uvx baton-proxy scan --config github
-```
-
-`scan` targets a server you've **already configured in Claude** (by name), reusing that entry's saved credentials. It writes an ephemeral config, drives a headless agent (`claude -p`, billed to your own auth) through the wrapped server, and renders `./baton-report.md`. Everything runs locally: nothing leaves your machine, and you type no secrets. The report is labeled **preflight/inferred**. It previews likely friction rather than real-user data, which is what the permanent wrap above captures.
-
-A friction report only delivers its insight on a server you actually run, with its real tools, its real auth and your real workflows. That is why `scan` resolves a configured entry rather than scanning a stranger's server. It reads `--config <name>` from `~/.claude.json` or `./.mcp.json`; point at a specific file with `--config-file ./.mcp.json`.
-
 ## Where events go
 
 `BATON_EVENT_SINK` takes a comma-separated list, and the URL scheme picks the sink: `stderr:` writes JSON Lines to stderr, `file:///tmp/events.jsonl` appends one JSON object per event, and `https://console.example.com` POSTs to `{url}/v0/events`. The default is `stderr:,file:///tmp/baton-proxy.jsonl`, so a bare install writes only to your own machine.

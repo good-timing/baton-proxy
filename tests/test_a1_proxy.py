@@ -3,7 +3,6 @@
 Covers:
 - _emit_call_end and _emit_call_error dispatch by kind
 - Eviction of resource/prompt pending calls emits the right error method
-- report._derive_mechanical_findings picks up resource_read_error + prompt_get_error
 """
 
 from __future__ import annotations
@@ -245,102 +244,6 @@ def test_eviction_prompt_list() -> None:
     pending = _make_single("prompt_list", "")
     _evict_overflow(pending, em)  # type: ignore[arg-type]
     assert em.calls[0][0] == "prompt_list_error"
-
-
-# --------------------------------------------------------------------------- #
-# _derive_mechanical_findings picks up resource/prompt errors
-# --------------------------------------------------------------------------- #
-
-
-def test_derive_mechanical_finds_resource_read_error() -> None:
-    from baton_proxy.report import _derive_mechanical_findings
-
-    events = [
-        {
-            "event_type": "resource_read_start",
-            "payload": {"uri": "file:///notes.txt", "params": {}},
-        },
-        {
-            "event_type": "resource_read_error",
-            "payload": {
-                "uri": "file:///notes.txt",
-                "error_type": "403",
-                "error_body": "Forbidden",
-                "duration_ms": 50,
-            },
-        },
-    ]
-    findings = _derive_mechanical_findings(events)
-    assert len(findings) == 1
-    assert findings[0]["tool"] == "file:///notes.txt"
-    assert findings[0]["error_type"] == "403"
-    assert findings[0]["signal"] == "failure"
-
-
-def test_derive_mechanical_finds_prompt_get_error() -> None:
-    from baton_proxy.report import _derive_mechanical_findings
-
-    events = [
-        {"event_type": "prompt_get_start", "payload": {"name": "summarize", "params": {}}},
-        {
-            "event_type": "prompt_get_error",
-            "payload": {
-                "name": "summarize",
-                "error_type": "-32601",
-                "error_body": "Unknown prompt",
-                "duration_ms": 10,
-            },
-        },
-        {"event_type": "prompt_get_start", "payload": {"name": "summarize", "params": {}}},
-        {
-            "event_type": "prompt_get_error",
-            "payload": {
-                "name": "summarize",
-                "error_type": "-32601",
-                "error_body": "Unknown prompt",
-                "duration_ms": 10,
-            },
-        },
-    ]
-    findings = _derive_mechanical_findings(events)
-    assert len(findings) == 1
-    assert findings[0]["tool"] == "summarize"
-    assert findings[0]["count"] == 2
-    assert findings[0]["signal"] == "retry_loop"
-
-
-def test_derive_mechanical_mixed_tool_and_resource() -> None:
-    from baton_proxy.report import _derive_mechanical_findings
-
-    events = [
-        {"event_type": "tool_call_start", "payload": {"tool_name": "search", "params": {}}},
-        {
-            "event_type": "tool_call_error",
-            "payload": {
-                "tool_name": "search",
-                "error_type": "500",
-                "error_body": "Internal error",
-                "duration_ms": 100,
-            },
-        },
-        {
-            "event_type": "resource_read_start",
-            "payload": {"uri": "file:///data.json", "params": {}},
-        },
-        {
-            "event_type": "resource_read_error",
-            "payload": {
-                "uri": "file:///data.json",
-                "error_type": "404",
-                "error_body": "Not found",
-                "duration_ms": 20,
-            },
-        },
-    ]
-    findings = _derive_mechanical_findings(events)
-    assert len(findings) == 2
-    subjects = {f["tool"] for f in findings}
-    assert subjects == {"search", "file:///data.json"}
 
 
 # ---------------------------------------------------------------------------

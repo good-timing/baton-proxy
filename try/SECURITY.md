@@ -347,7 +347,7 @@ new destination is introduced.
 
 The proxy contains code that can open a network connection or start a process,
 because the same source serves production deployments. Here is the complete
-list, five call sites. All five are the proxy's; the kit contributes none.
+list, four call sites. All four are the proxy's; the kit contributes none.
 
 | # | site | what it does | why it is inert here |
 |---|---|---|---|
@@ -355,7 +355,6 @@ list, five call sites. All five are the proxy's; the kit contributes none.
 | 2 | `sinks.py` · `S3Sink` | PUTs one object per event to an S3 bucket | Built only for an `s3://` sink. Requires `boto3`, an optional extra this package does not install (`dependencies = []`). |
 | 3 | `transport_http.py` · `StreamableHttpClient.post` | Speaks MCP over HTTPS to an upstream server, with `User-Agent` and `Via` headers that name the proxy (§2) | Only in `--url` mode. For a stdio wrap this is unreachable. For a remote wrap it is the path in use, and it connects to the URL your own config already named. Never to us. |
 | 4 | `proxy.py` · `subprocess.Popen` | Starts the upstream MCP server | Runs exactly the command your config already contained. Not reached for a remote wrap. |
-| 5 | `scan.py` · `subprocess.run` | Runs `claude -p` headlessly for a preflight report | Only under the `baton-proxy scan` subcommand. The try flow never invokes it. |
 
 There is no telemetry, no version check, no crash reporting, no auto-update. The
 proxy does not phone home on startup, on failure, or on exit.
@@ -538,8 +537,8 @@ The claims above are mechanical. Re-derive them:
 #    -3-gabc1234 means commits past the tag, which is not what you reviewed.
 git describe --tags
 
-# 1. Every network- or process-capable call site, proxy AND kit. Expect six
-#    matches: the five in the §4 table plus one comment line in
+# 1. Every network- or process-capable call site, proxy AND kit. Expect five
+#    matches: the four in the §4 table plus one comment line in
 #    transport_http.py, and none of them under try/. The excludes are your own
 #    captured data, which can contain any string; drop them on a fresh clone.
 grep -rnE "urlopen\(|Popen\(|subprocess\.run\(|boto3\.client\(" --exclude=events.jsonl --exclude=state.json --exclude='config-backup.*' src/ try/

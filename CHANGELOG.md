@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING: the `scan` subcommand is gone.** `baton-proxy scan --config <name>`
+  drove a headless `claude -p` through a wrapped server and wrote a local
+  `./baton-report.md`. It was the activation path before the try kit
+  (`/setup/proxy`), which supersedes it and never invoked it. Removed outright
+  rather than deprecated: nothing is pinned to it, and a shim nobody calls is
+  removed on a grep rather than on an event.
+
+  Going with it: the mechanical half of the friction report
+  (`report.synthesize_scan` and the findings derivation beneath it). The report
+  tool injected on a file sink, `baton_session_report`, is **unaffected** — it
+  renders from model-filed reactive annotations and never used that path.
+
+  `baton-proxy scan ...` is no longer a subcommand, so it is now read as a
+  request to wrap an upstream server named `scan`, which fails at spawn.
+
+  SECURITY.md §4's call-site table drops to four rows and §9's grep now
+  promises five matches rather than six. Both counts are pinned by tests.
+
 
 ## [0.6.10] — 2026-09-18
 

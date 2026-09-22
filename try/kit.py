@@ -355,9 +355,9 @@ def iter_entries(data: Any) -> list[tuple[str | None, str, dict]]:
     Returns ``(scope, name, entry)`` where scope is None for the top-level
     ``mcpServers`` block and the project path for ``projects.<path>.mcpServers``.
 
-    This is where the port of ``scan.py``'s reader deliberately diverges. That
-    one merges every scope into a flat ``{name: entry}`` and keys the project
-    block on ``os.getcwd()`` — correct for reading, wrong twice for writing:
+    This is where it deliberately diverges from a plain reader. Merging every
+    scope into a flat ``{name: entry}`` and keying the project block on
+    ``os.getcwd()`` is correct for reading, wrong twice for writing:
     a merge forgets which block an entry came from, and this kit runs from
     ``try/``, so a cwd lookup would search a project the user has never opened
     and silently find nothing. Writing must know exactly which block it touched.
@@ -832,8 +832,7 @@ def cwd_dependent_warning(name: str, reason: str) -> str:
 def is_proxy_invocation(cmd: list[str]) -> bool:
     """Does this command LEAD with a baton-proxy launch, in the two head forms?
 
-    Narrow on purpose: this is what ``unwrap_command`` consumes, and unwrap is
-    pinned byte-for-byte to ``scan.py``'s donor by a drift test. Widening it
+    Narrow on purpose: this is what ``unwrap_command`` consumes. Widening it
     would move unwrap. The broader question — "is this entry a proxy at all" —
     is ``is_wrapped``, which sweeps every token."""
     if not cmd:
@@ -982,10 +981,9 @@ def entry_json(entry: dict) -> str:
 def unwrap_command(cmd: list[str]) -> list[str]:
     """Peel any leading baton-proxy invocation off a command.
 
-    Ported from ``scan.py``'s ``_unwrap_baton_proxy`` and pinned to it by a drift
-    test — do not change its behaviour here. It recovers the wrapped command;
-    it recurses to handle an accidental multi-wrap, and a wrapper with no ``--``
-    separator is left alone because there is no upstream command to recover.
+    It recovers the wrapped command; it recurses to handle an accidental
+    multi-wrap, and a wrapper with no ``--`` separator is left alone because
+    there is no upstream command to recover.
     Whether an entry is wrapped is ``is_wrapped``'s question, not this one."""
     if not cmd:
         return cmd
@@ -1143,8 +1141,7 @@ def build_wrapped_entry(
     # CLIENT's PATH, and a GUI-launched client on macOS inherits launchd's
     # minimal PATH where `python3` is /usr/bin/python3 — 3.9, which cannot import
     # baton_proxy (it needs >=3.11). The server would then die at client launch,
-    # days after setup printed success. scan.py:268 already writes sys.executable
-    # and test_scan.py pins it; this is the same invariant.
+    # days after setup printed success.
     wrapped["command"] = interpreter
     wrapped["args"] = ["-m", "baton_proxy", "--", *upstream]
     wrapped["env"] = env
