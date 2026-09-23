@@ -383,18 +383,39 @@ class Emitter:
         error_type: str,
         error_body: str,
         duration_ms: int,
+        result: Any = None,
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
         principal: Principal | None = None,
     ) -> None:
+        """SPEC §11.4.3. ``result`` carries the full MCP envelope for a failure
+        the tool RETURNED, and is None for a protocol fault, where there is no
+        result object to record.
+
+        ⚠ It DEFAULTS, and the first cut made it required — copying the SDK's
+        own choice (`baton` `c84f7ea`) without checking that the reason
+        transferred. It does not. There, nothing else imports the emitter, so
+        "required" genuinely forces each call site to declare its shape. Here
+        `_emit_call_error` already defaults it, so no in-repo caller was ever
+        forced to declare anything; the strictness applied only to
+        `baton-extmcp`, which imports this Emitter and calls the method without
+        `result` (`servicer.py:320`). A constraint that binds no caller it was
+        written for, and one it was not, is not a design — it is a copy.
+        """
+        payload: dict[str, Any] = {
+            "tool_name": tool_name,
+            "error_type": error_type,
+            "error_body": error_body,
+            "duration_ms": duration_ms,
+        }
+        # Omitted rather than null for the protocol-fault shape: §11.4.3 makes
+        # the field OPTIONAL, and an explicit null asserts "there was a body
+        # and it was empty" about a call that never had one.
+        if result is not None:
+            payload["result"] = result
         self._enqueue(
             event_type="tool_call_error",
-            payload={
-                "tool_name": tool_name,
-                "error_type": error_type,
-                "error_body": error_body,
-                "duration_ms": duration_ms,
-            },
+            payload=payload,
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
             session_id=session_id,
             principal=principal,

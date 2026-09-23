@@ -2484,7 +2484,7 @@ WIDE_AUDIT_RE = r"urlopen|socket|http\.client|requests\.|boto3|subprocess"
 # of a bare count quietly absorbing a swap. Nothing under `try/` is in the set,
 # and `test_the_kit_contributes_no_audited_call_site` is the assertion of that.
 EXPECTED_AUDIT_HITS = {
-    ("src/baton_proxy/proxy.py", 1605, "subprocess.Popen("),
+    ("src/baton_proxy/proxy.py", 1632, "subprocess.Popen("),
     ("src/baton_proxy/transport_http.py", 135, "urllib.request.urlopen(req"),
     ("src/baton_proxy/transport_http.py", 187, "urlopen(timeout=inf) blocks forever"),
     ("src/baton_proxy/sinks.py", 159, "urllib.request.urlopen(req"),

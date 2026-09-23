@@ -596,8 +596,8 @@ def _render_trail(steps: list[dict[str, Any]]) -> list[str]:
             tool = tc.get("tool") or "?"
             if tc.get("status") == "error":
                 etype = tc.get("error_type") or "Error"
-                ebody = _truncate(str(tc.get("error_body") or ""), 200)
-                out.append(f"   - `{tool}` → **{etype}**: {ebody}")
+                ebody = _one_line(str(tc.get("error_body") or ""))
+                out.append(f"   - `{tool}` → **{etype}**: {_truncate(ebody, 200)}")
             else:
                 d = tc.get("duration_ms")
                 suffix = f" ({d}ms)" if d is not None else ""
@@ -632,6 +632,33 @@ def _short_intent(intent: str | None, max_chars: int = 80) -> str:
     if len(s) <= max_chars:
         return s
     return s[: max_chars - 1].rstrip() + "…"
+
+
+def _one_line(s: str) -> str:
+    """Flatten a reason onto one line, for a nested markdown list item.
+
+    ⚠ Both halves of this are new exposure from the isError reclassification,
+    and both show up on the trail line that change is most visible on.
+
+    **Newlines.** A reason used to come from JSON-RPC ``error.message``, which
+    is effectively single-line. It now comes from a result's ``content`` text,
+    which routinely is not — fastmcp tracebacks and multi-line validation
+    messages both. Interpolated raw, the second line lands at column 0, which
+    ENDS the list item: the trail silently loses its structure from there down.
+
+    **Nothing at all.** ``mcp_error.error_text`` returns ``""`` when no content
+    part carries text — an empty ``content``, or a server that puts the reason
+    in ``structuredContent`` and returns an image or resource part. Rendered
+    bare that is ``- `tool` → **tool_error**: `` with nothing after the colon:
+    a failure with no reason, which reads as a rendering bug rather than as a
+    vendor who said nothing. Say so instead. The envelope is still on the event
+    under ``result``, so this is a display floor, never the record.
+
+    Deliberately NOT done in ``error_text``: that function feeds the EVENT,
+    where the text belongs whole and unmangled. This is the render site.
+    """
+    collapsed = " ".join(s.split())
+    return collapsed or "*(the server reported a failure with no message)*"
 
 
 def _truncate(s: str, n: int) -> str:

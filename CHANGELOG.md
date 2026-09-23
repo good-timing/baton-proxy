@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **BREAKING (wire): a tool call that FAILED is no longer filed as a success.**
+  MCP files a failed `tools/call` as a 200 whose body sets `isError`; a JSON-RPC
+  `error` member means a protocol fault. The proxy classified on the `error`
+  member alone, so every tool failure rode as `tool_call_end`.
+
+  For a wire sensor that is **100% of failures, not a subset.** Measured on real
+  stdio round trips across `mcp` 1.27.2 / 2.2.0 and `fastmcp` 2.14.7 / 4.0.3:
+  every server converts a RAISED handler exception into a 200 carrying
+  `isError: true` before the bytes leave the process. So the two failure shapes
+  SPEC §11.4.3 defines — raise and return — are indistinguishable here, and the
+  proxy always emits the returned form: `error_type: "tool_error"`, `error_body`
+  unwrapped from the result's `content`, and the full envelope in a new optional
+  `result` field so reclassifying does not move a structured body into a flat
+  string.
+
+  Consumers that count `tool_call_end` as "succeeded" will see those counts fall
+  and `tool_call_error` rise. That is the correction, not a regression. The
+  proxy's own `baton_session_report` trail changes with it: a failed call that
+  rendered `` `tool` → ok (45ms) `` now renders `` `tool` → **tool_error**: … ``.
+
+  Detection reads **one** spelling, `isError`, and that is version-proof rather
+  than under-specified: the snake `is_error` is a Python attribute name from
+  mcp 2.x's `mcp_types` rewrite, never a wire field — MCP's schema is camelCase
+  and every server serialises `model_dump_json(by_alias=True)`. Nothing is
+  truncated on the way; `baton-extmcp` cuts `error_body` at 2000 characters and
+  that cut lands before PII scrubbing, which is a defect, not a model to copy.
+
+  Baton's own synthesised refusals also carry `isError: true` and are answered
+  without ever being tracked as pending, so they are never filed as vendor
+  failures — pinned by a test rather than left to control flow.
+
 ### Removed
 
 - **BREAKING: the `scan` subcommand is gone.** `baton-proxy scan --config <name>`

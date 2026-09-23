@@ -156,6 +156,11 @@ def test_emit_call_error_tool() -> None:
                 "error_type": "timeout",
                 "error_body": "upstream did not respond",
                 "duration_ms": 5000,
+                # SPEC §11.4.3's optional envelope. None here because this is
+                # the protocol-fault shape, which has no result object — the
+                # returned-flag shape is covered in
+                # tests/test_iserror_reclassification.py.
+                "result": None,
                 "runtime_meta": None,
             },
         )

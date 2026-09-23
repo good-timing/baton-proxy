@@ -53,6 +53,7 @@ from baton_proxy._llm_text import (
 )
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter, utc_now_ms
+from baton_proxy.mcp_error import RETURNED_ERROR_TYPE, error_text, is_error_result
 
 logger = logging.getLogger("baton_proxy")
 
@@ -276,14 +277,21 @@ def _emit_call_error(
     error_type: str,
     error_body: str,
     duration_ms: int,
+    result: Any = None,
 ) -> None:
-    """Dispatch the correct *_error event for any pending-call kind."""
+    """Dispatch the correct *_error event for any pending-call kind.
+
+    ``result`` is the MCP envelope of a failure the tool RETURNED (SPEC
+    §11.4.3) and rides the tool lane only — no other kind's result carries the
+    flag, and the sibling ``*_error`` events have no such field.
+    """
     if call.kind == "tool":
         emitter.enqueue_tool_call_error(
             tool_name=call.subject,
             error_type=error_type,
             error_body=error_body,
             duration_ms=duration_ms,
+            result=result,
             runtime_meta=call.runtime_meta,
         )
     elif call.kind == "resource_read":
@@ -1107,7 +1115,26 @@ class MessageProcessor:
                             duration_ms,
                         )
                     else:
-                        _emit_call_end(self._emitter, call, msg.get("result"), duration_ms)
+                        result = msg.get("result")
+                        # ⚠ A failed tools/call is a 200 with `isError` set —
+                        # and on the WIRE that covers a RAISE too, because the
+                        # server converts the exception before serialising. So
+                        # this lane, not the `error` member above, is where the
+                        # bulk of real tool failures arrive. Gated on the tool
+                        # kind: `_emit_call_end` is shared with the resource
+                        # and prompt lanes, whose bodies never carry the flag
+                        # and whose own `isError` key would be vendor data.
+                        if call.kind == "tool" and is_error_result(result):
+                            _emit_call_error(
+                                self._emitter,
+                                call,
+                                RETURNED_ERROR_TYPE,
+                                error_text(result),
+                                duration_ms,
+                                result,
+                            )
+                        else:
+                            _emit_call_end(self._emitter, call, result, duration_ms)
                 except Exception:
                     logger.exception("baton-proxy: enqueue end/error failed")
 
