@@ -634,10 +634,6 @@ def _short_intent(intent: str | None, max_chars: int = 80) -> str:
     return s[: max_chars - 1].rstrip() + "…"
 
 
-def _plural(n: int, word: str) -> str:
-    return word if n == 1 else word + "s"
-
-
 def _truncate(s: str, n: int) -> str:
     if len(s) <= n:
         return s

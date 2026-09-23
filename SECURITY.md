@@ -44,9 +44,8 @@ In scope — everything in this repository:
 - **`src/baton_proxy/`**, the published package. Notably the subprocess wrap
   (`proxy.py`), the Streamable-HTTP bridge (`transport_http.py`), the sinks and
   their egress paths (`sinks.py`), the PII scrubber (`scrub.py`), the emitter
-  and its remote-sink consent guard (`emitter.py`), configuration and
-  environment handling (`config.py`), and the scan driver (`scan.py`), which
-  launches a headless `claude -p` on the user's own machine and billing.
+  and its remote-sink consent guard (`emitter.py`), and configuration and
+  environment handling (`config.py`).
 - **`try/`**, the self-serve trial kit. It rewrites an entry in the user's MCP
   client config, writes a `state.json` recording that entry, and prints entries
   to a terminal an agent is reading. Its behaviour, limits and removal
@@ -104,9 +103,6 @@ Out of scope:
   kit. Nothing can tell which argument is a secret, and blanking arguments would
   destroy the restore instructions those printouts exist to give. Documented
   limit; `env` is where credentials belong and `env` is what is protected.
-- **`scan.py` launching `claude` on the user's machine.** It is an explicitly
-  invoked subcommand that runs the user's own CLI against a temporary config,
-  documented in the README, and it costs the user their own tokens by design.
 - **Event loss under load.** The emitter's queue is bounded at 1000 events and
   drops the oldest on overflow, logging once per 100 drops (`emitter.py`).
   Deliberate overflow is the documented behaviour, not a vulnerability.

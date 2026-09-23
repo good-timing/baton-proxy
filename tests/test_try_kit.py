@@ -547,6 +547,37 @@ def test_unwrap_still_leaves_a_separatorless_wrap_alone():
 
 
 @pytest.mark.parametrize(
+    "cmd,expected",
+    [
+        # One layer: the ordinary case, both head forms.
+        (["baton-proxy", "--", "npx", "-y", "srv"], ["npx", "-y", "srv"]),
+        (["python3", "-m", "baton_proxy", "--", "npx", "srv"], ["npx", "srv"]),
+        # Two layers: an accidental re-wrap. This is what the RECURSION is for,
+        # and restore has to peel BOTH or it writes a still-wrapped entry back
+        # into the user's config — a proxy they thought they had removed.
+        (
+            ["python3", "-m", "baton_proxy", "--", "baton-proxy", "--", "npx", "srv"],
+            ["npx", "srv"],
+        ),
+        # Not a proxy at all, and an empty command: neither peels.
+        (["npx", "-y", "srv"], ["npx", "-y", "srv"]),
+        ([], []),
+    ],
+)
+def test_unwrap_peels_every_layer(cmd, expected):
+    """`unwrap_command` peeled to a fixed point, not one layer.
+
+    Restored 2026-09-22 with a case the suite had lost. The multi-wrap input
+    lived ONLY in the parametrization of a drift test that pinned this helper
+    to `scan.py`'s donor, and it was deleted with `scan.py`. Both assertions
+    that survived cover the separatorless no-op — the same branch twice — so
+    dropping the recursion (`return upstream if upstream else cmd`) left the
+    whole suite green. Checking a helper still HAS a test is not checking it
+    still has THIS one."""
+    assert kit.unwrap_command(list(cmd)) == expected
+
+
+@pytest.mark.parametrize(
     "entry,expected",
     [
         # Every shape is_stdio rejects gets its own reason. The point of the
