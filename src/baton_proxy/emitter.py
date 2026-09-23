@@ -32,7 +32,12 @@ from typing import Any
 
 from baton_proxy import USER_AGENT as _SDK_VERSION
 from baton_proxy.config import Config
-from baton_proxy.identity import Principal, hash_principal_id
+from baton_proxy.identity import (
+    PRINCIPAL_FORM,
+    PRINCIPAL_SOURCE,
+    Principal,
+    hash_principal_id,
+)
 from baton_proxy.scrub import Scrubber
 from baton_proxy.sinks import Sink, make_sink
 
@@ -93,6 +98,28 @@ def detect_agent_runtime(meta: Mapping[str, Any] | None) -> str | None:
 
 
 @dataclass(frozen=True)
+class _PrincipalWire:
+    """The principal AS EMITTED — the finished envelope value (SPEC §11.4).
+
+    ⚠ **Not ``identity.Principal``.** That one is what a resolver HANDS US, raw
+    and pre-hash; this is what goes on the wire after ``_enqueue`` derives it.
+
+    All three members are required together — canonical wording in
+    ``baton-spec/events.schema.json`` ``$defs.PrincipalWire``, checked out
+    in-tree. ``source`` and ``form`` are ``str`` rather than literals because
+    both registered sets are OPEN and a producer must be able to emit a value
+    SPEC registers later without a release.
+    """
+
+    id: str
+    source: str
+    form: str
+
+    def to_json(self) -> dict[str, str]:
+        return {"id": self.id, "source": self.source, "form": self.form}
+
+
+@dataclass(frozen=True)
 class _Event:
     """Wire envelope, mirrors baton-console IncomingEvent shape.
 
@@ -113,11 +140,14 @@ class _Event:
     agent_runtime: str
     payload: dict[str, Any]
     runtime_meta: dict[str, Any] | None = None
-    # Hashed resolved principal (HMAC-SHA256, per-tenant, hashed at the edge — the
-    # raw principal is never emitted). None when no identity resolved or no
-    # HMAC key configured. Additive + nullable: omitted from the wire when
-    # None, so a v0.4.x console sees byte-identical output.
-    principal_id: str | None = None
+    # Who was resolved behind this event (SPEC §11.4) — the hashed id plus the
+    # two facts that classify it. Hashed at the edge, per-tenant; the raw
+    # principal is never emitted. None → the member is omitted WHOLE.
+    #
+    # ⚠ Was the flat ``principal_id`` (and ``user_id`` before 0.6.8). A console
+    # with a closed envelope schema must take the object BEFORE this ships; see
+    # CHANGELOG for which release did.
+    principal: _PrincipalWire | None = None
 
     def to_json(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -135,8 +165,8 @@ class _Event:
         }
         if self.runtime_meta is not None:
             d["runtime_meta"] = self.runtime_meta
-        if self.principal_id is not None:
-            d["principal_id"] = self.principal_id
+        if self.principal is not None:
+            d["principal"] = self.principal.to_json()
         return d
 
 
@@ -659,20 +689,28 @@ class Emitter:
         # never survives this method. No key configured → fail-open: drop the
         # field, keep emitting, warn once (it is additive analytics, never a
         # consent/authz gate).
-        principal_id: str | None = None
+        # ``source`` and ``form`` are constants, not parameters; the reasoning
+        # lives on them in identity.py. With no key there is no hash, so no
+        # classification is true and the whole member is dropped — SPEC §11.4
+        # forbids a partial object.
+        principal_wire: _PrincipalWire | None = None
         if principal is not None:
             key = self._config.principal_id_hmac_key
             if key:
-                principal_id = hash_principal_id(
-                    principal.principal_id,
-                    tenant_id=self._config.tenant_id or "",
-                    key=key,
+                principal_wire = _PrincipalWire(
+                    id=hash_principal_id(
+                        principal.principal_id,
+                        tenant_id=self._config.tenant_id or "",
+                        key=key,
+                    ),
+                    source=PRINCIPAL_SOURCE,
+                    form=PRINCIPAL_FORM,
                 )
             elif not self._warned_no_hmac_key:
                 self._warned_no_hmac_key = True
                 logger.warning(
                     "baton-proxy: identity resolved but BATON_PRINCIPAL_ID_HMAC_KEY "
-                    "is unset — dropping principal_id (events still emit)"
+                    "is unset — dropping principal (events still emit)"
                 )
 
         # Scrub PII from the payload before anything else touches it. Both
@@ -704,7 +742,7 @@ class Emitter:
             agent_runtime=agent_runtime,
             payload=payload,
             runtime_meta=runtime_meta,
-            principal_id=principal_id,
+            principal=principal_wire,
         )
 
         with self._enqueue_lock:

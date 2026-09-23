@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+**Version deliberately undecided** — the principal change below spans four
+repos and SPEC §13's entry carries no number until one is chosen.
+
+### Changed
+
+- **BREAKING (wire): the flat field `principal_id` becomes the object
+  `principal: {id, source, form}`** (SPEC §11.4). All three members are
+  required together, so the proxy emits the whole object or omits `principal`
+  entirely — there is no event carrying an id whose classification a consumer
+  has to guess. `id` is the same hashed value under the same `h1:` tag; the
+  field name was never part of the HMAC message, so **no digest moves.**
+
+  **`source` is `"asserted"`, and that is a CORRECTION rather than a new fact**
+  (SPEC §13 (5)). The proxy resolves no identity of its own, and its one real
+  caller — `baton-extmcp` — reads a gateway header (`x-gw-ims-user-id`) that no
+  verifier in the producing stack ever checked. Under the retired encoding
+  every such event stamped `h1:`, which the old rule read as attested, so these
+  principals claimed an attestation that never happened. ⚠ **Consumer
+  consequence: principals that read as verified stop reading as verified, with
+  no change in the underlying identity.** That is the removal of a false claim,
+  not a drop in data quality — and historical events cannot be corrected,
+  because the wire recorded `h1:` and the distinguishing fact was never
+  transmitted. A consumer reasoning about attestation over stored data must
+  bound its window to this release or later.
+
+  `form` is `"hashed"` on every emitted object: there is no raw mode here, and
+  with no HMAC key configured the principal is dropped WHOLE rather than
+  emitted verbatim — fail-open as before, but the whole member goes, never a
+  null id inside a present object.
+
+  ⚠ **NOT DEPLOYABLE AGAINST AN OLDER COLLECTOR.** A console with a closed
+  envelope schema rejects the whole event, not just the identity.
+  `baton-console` accepts the object at `110d75d` — measured in its ingest
+  schema, and `110d75d` is what the hub records prod as serving. That is what
+  unblocks this.
+
+  Configuration is deliberately unchanged: `principal_id_hmac_key` and
+  `BATON_PRINCIPAL_ID_HMAC_KEY` keep their names. SPEC does not ask for a
+  rename and it would break every existing deployment to chase a wire field.
+
+  ⚠ **`baton-extmcp` ships its matching `baton-spec` pin in the same release**
+  — it builds its `Principal` from this package and its own floor has no
+  ceiling, so the two cannot be split.
+
+- **The `baton-spec` pin moves `d5c8016` → `f1e0280`.** It brings the principal
+  object plus three unrelated additive things — the optional `result` on
+  `ToolCallErrorPayload`, `transport_observed`, and regenerated vectors — none
+  of which change what this proxy emits. ⚠ `result` is the field `3ba25d7`
+  already emits, so the pin stops contradicting this repo's own isError work.
+
 ### Fixed
 
 - **BREAKING (wire): a tool call that FAILED is no longer filed as a success.**

@@ -1,9 +1,9 @@
 """End-user identity capture — hash_principal_id + the Emitter edge-hash.
 
 Residency contract: a console-bound event carries only the HMAC
-HASH of the principal, never the raw value; a missing key fails open (skip
-principal_id, keep emitting). Also guards the `user_name` scrub rule against
-over-broad `name` redaction.
+HASH of the principal, never the raw value; a missing key fails open (drop the
+whole `principal` member, keep emitting). Also guards the `user_name` scrub
+rule against over-broad `name` redaction.
 """
 
 from __future__ import annotations
@@ -72,20 +72,61 @@ def _emit_one(tmp_path, *, key: bytes | None, principal: Principal | None) -> di
     return lines[-1]
 
 
-def test_principal_id_hashed_at_edge_raw_never_emitted(tmp_path) -> None:
+def test_principal_hashed_at_edge_raw_never_emitted(tmp_path) -> None:
     ev = _emit_one(tmp_path, key=KEY, principal=Principal(principal_id="u123"))
-    assert ev["principal_id"] == hash_principal_id("u123", tenant_id="acme", key=KEY)
+    assert ev["principal"]["id"] == hash_principal_id("u123", tenant_id="acme", key=KEY)
     assert "u123" not in json.dumps(ev)  # raw principal never on the wire
 
 
-def test_no_key_fail_open_skips_principal_id(tmp_path) -> None:
+def test_principal_rides_as_one_object_with_all_three_members(tmp_path) -> None:
+    """SPEC §11.4: all three members or none — a partial object is malformed.
+
+    The schema in ``test_spec_conformance.py`` enforces ``required`` and
+    ``additionalProperties`` structurally. This pins the same rule against the
+    emitter directly, so the guarantee survives a session where the submodule
+    is absent and that test skips.
+    """
+    ev = _emit_one(tmp_path, key=KEY, principal=Principal(principal_id="u123"))
+    assert set(ev["principal"]) == {"id", "source", "form"}
+    assert "principal_id" not in ev, "the flat field is retired (SPEC §13)"
+
+
+def test_the_proxy_never_claims_an_attestation(tmp_path) -> None:
+    """SPEC §13 (5): the proxy and extmcp emit ``asserted`` for header-derived
+    principals, because nothing in the producing stack verified them.
+
+    This is the CORRECTION the object exists to carry — under the retired
+    encoding these events stamped ``h1:`` and read as attested. A consumer
+    trusts only exactly ``"attested"``, so getting this value wrong presents an
+    unchecked gateway header as a verified identity.
+    """
+    ev = _emit_one(tmp_path, key=KEY, principal=Principal(principal_id="u123"))
+    assert ev["principal"]["source"] == "asserted"
+
+
+def test_form_names_the_derivation_that_actually_ran(tmp_path) -> None:
+    """``form`` is the ONLY thing a consumer may classify on (SPEC §11.4), and
+    the proxy has one derivation: it always hashes. There is no raw mode here;
+    the no-key path drops the principal rather than emitting it verbatim, and
+    that case is ``test_no_key_fail_open_drops_the_whole_principal``."""
+    ev = _emit_one(tmp_path, key=KEY, principal=Principal(principal_id="u123"))
+    assert ev["principal"]["form"] == "hashed"
+    assert ev["principal"]["id"].startswith("h1:")
+
+
+def test_no_key_fail_open_drops_the_whole_principal(tmp_path) -> None:
     ev = _emit_one(tmp_path, key=None, principal=Principal(principal_id="u123"))
-    assert "principal_id" not in ev  # additive field omitted (v0.4.x wire-compatible)
+    # Absent as a WHOLE, never a null id inside a present object: with no hash
+    # there is no classification that is true, and SPEC §11.4 has no shape for
+    # "resolved but unclassified".
+    assert "principal" not in ev
+    assert "principal_id" not in ev
     assert "u123" not in json.dumps(ev)
 
 
-def test_no_principal_omits_principal_id(tmp_path) -> None:
+def test_no_principal_omits_the_member(tmp_path) -> None:
     ev = _emit_one(tmp_path, key=KEY, principal=None)
+    assert "principal" not in ev
     assert "principal_id" not in ev
 
 
@@ -122,7 +163,7 @@ def test_user_name_field_scrubbed_but_not_name() -> None:
 #
 # If one of these ever fails, the answer is NOT to update the literal. It means
 # the two sensors have stopped agreeing about what `h1:` denotes, and every
-# stored `principal_id` was written under the other definition.
+# stored `principal.id` was written under the other definition.
 _VECTOR_PRINCIPAL = "Alice@Example.COM "
 _VECTOR_TENANT = "ten_abc"
 _VECTOR_KEY = b"shared-key-bytes"

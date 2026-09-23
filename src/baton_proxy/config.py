@@ -212,7 +212,9 @@ class Config:
     # this field being populated and the bootstrap emitting it.
     startup_warnings: tuple[str, ...] = ()
 
-    # Per-tenant secret keying the ``principal_id`` HMAC (identity.py).
+    # Per-tenant secret keying the ``principal.id`` HMAC (identity.py). The
+    # knob keeps its own name deliberately — renaming it to chase a wire field
+    # would break every existing deployment.
     # Raw identity is hashed at the edge with this key before an event reaches
     # any console-bound sink (residency contract). None → the field is
     # fail-open-skipped (events still emit, just without it); it is additive

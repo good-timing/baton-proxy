@@ -138,7 +138,7 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
         f"{SCHEMA_COVERED_EVENT_TYPES - seen_types}"
     )
 
-    # The stdio scenario resolves no principal, so ``principal_id`` never
+    # The stdio scenario resolves no principal, so ``principal`` never
     # reaches the loop above. Drive the emitter with one and an HMAC key, as
     # baton-extmcp does, and validate the hashed event it writes. Kept in this
     # test rather than a third one: try/SECURITY.md §8 counts the two tests
@@ -161,7 +161,17 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
     )
     emitter.stop()
     event = json.loads(sink.read_text().splitlines()[-1])
-    assert event["principal_id"].startswith(f"{HASH_SCHEME}:")
+    # All three members, not just the id — the schema's ``required`` would catch
+    # a missing one, but not a flat ``principal_id`` surviving BESIDE the object
+    # (``additionalProperties: false`` catches that) nor a ``source`` quietly
+    # reading "attested". Assert the shape and both values here, where the SPEC
+    # §11.4 contract is being validated rather than inferred.
+    assert "principal_id" not in event, "the flat field is retired (SPEC §13)"
+    principal = event["principal"]
+    assert set(principal) == {"id", "source", "form"}
+    assert principal["id"].startswith(f"{HASH_SCHEME}:")
+    assert principal["source"] == "asserted", "the proxy verifies nothing"
+    assert principal["form"] == "hashed"
     jsonschema.validate(event, event_schema)
 
 
