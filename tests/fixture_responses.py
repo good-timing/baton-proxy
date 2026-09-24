@@ -161,6 +161,21 @@ def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
                     "content": [{"type": "text", "text": f"Echo: {tool_args.get('text', '')}"}]
                 },
             }
+        if tool_name == "softfail":
+            # A failure the tool RETURNED rather than raised: a 200 whose body
+            # sets `isError`. This is the shape SPEC §11.4.3 added `result` for,
+            # and until it existed here the conformance gate had never seen a
+            # `tool_call_error` carrying one — the only new payload shape the
+            # isError commit introduced was the one shape the E2E could not
+            # produce, because `boom` below takes the JSON-RPC `error` lane.
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": "insufficient access"}],
+                    "isError": True,
+                },
+            }
         if tool_name == "boom":
             return {
                 "jsonrpc": "2.0",

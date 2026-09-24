@@ -76,6 +76,16 @@ E2E_REQUESTS: list[dict] = [
         "method": "tools/call",
         "params": {"name": "boom", "arguments": {}},
     },
+    # Both failure shapes, because they emit DIFFERENT payloads: `boom` is the
+    # JSON-RPC protocol fault (no `result`), `softfail` the returned-flag shape
+    # that carries the envelope. Validating only the first leaves the schema's
+    # `result` property unexercised.
+    {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {"name": "softfail", "arguments": {}},
+    },
 ]
 
 
@@ -136,6 +146,21 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
     assert seen_types == SCHEMA_COVERED_EVENT_TYPES, (
         f"scenario didn't exercise every schema-covered type, missing: "
         f"{SCHEMA_COVERED_EVENT_TYPES - seen_types}"
+    )
+
+    # ⚠ The `softfail` request alone proves the PIN, not the PRODUCER, and the
+    # difference is the whole point of adding it. Measured: gutting
+    # `is_error_result` to `return False` leaves this file GREEN (only
+    # test_iserror_reclassification reds) — `seen_types` is already satisfied
+    # by `boom`, and a `softfail` misfiled as `tool_call_end` still validates
+    # happily. So the schema's `result` property would silently stop being
+    # exercised, which is the exact blindness this scenario was extended to
+    # close. This line is what notices.
+    assert any(
+        e["event_type"] == "tool_call_error" and "result" in e["payload"] for e in covered
+    ), (
+        "no tool_call_error carried a `result` — the returned-flag shape is "
+        "unexercised and the schema's `result` property is unvalidated"
     )
 
     # The stdio scenario resolves no principal, so ``principal`` never
