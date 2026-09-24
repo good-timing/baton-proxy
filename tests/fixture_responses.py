@@ -15,16 +15,13 @@ from __future__ import annotations
 
 from typing import Any
 
-# The four tools every fixture exposes: `echo` (happy path), `boom` (raises, so
-# the failure takes the JSON-RPC `error` lane and carries no `result`),
-# `softfail` (RETURNS a failure — a 200 whose body sets `isError`, the shape
-# that does carry `result`), and `argkeys` (echoes the argument keys that
-# reached the upstream, so a test can prove which params were stripped).
+# Four tools — `echo`, `boom`, `softfail`, `argkeys`. What each does is in the
+# `tools/list` block below, which is the source of truth; this list is not.
 #
-# ⚠ Keep this list, `tools/list` and the `tools/call` dispatch in step. A tool
-# answered but not advertised makes the fixture serve a surface it does not
-# declare — the `surface_snapshot` event then lists fewer tools than the
-# scenario calls, which is not what a real server does.
+# ⚠ Keep `tools/list`, the `tools/call` dispatch and `test_intent_param.py`'s
+# tool tuple in step. A tool answered but not advertised makes the fixture
+# serve a surface it does not declare, and one missing from that tuple is
+# silently exempt from the "every upstream tool grew both params" sweep.
 
 
 def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
@@ -75,8 +72,7 @@ def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
                         "name": "softfail",
                         "description": (
                             "Returns a failure instead of raising one: a 200 whose "
-                            "body sets `isError`. The shape SPEC §11.4.3 added "
-                            "`result` for."
+                            "body sets isError."
                         ),
                         "inputSchema": {"type": "object", "properties": {}, "required": []},
                     },
@@ -178,13 +174,18 @@ def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
                     "content": [{"type": "text", "text": f"Echo: {tool_args.get('text', '')}"}]
                 },
             }
+        if tool_name == "boom":
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32000, "message": "boom"},
+            }
         if tool_name == "softfail":
-            # A failure the tool RETURNED rather than raised: a 200 whose body
-            # sets `isError`. This is the shape SPEC §11.4.3 added `result` for,
-            # and until it existed here the conformance gate had never seen a
-            # `tool_call_error` carrying one — the only new payload shape the
-            # isError commit introduced was the one shape the E2E could not
-            # produce, because `boom` below takes the JSON-RPC `error` lane.
+            # Unlike `boom` above, the failure is RETURNED rather than raised, so
+            # it rides the `result` lane. Until this existed the conformance gate
+            # had never seen a `tool_call_error` carrying a `result` — the one new
+            # payload shape the isError work introduced was the one shape the E2E
+            # could not produce.
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
@@ -192,12 +193,6 @@ def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
                     "content": [{"type": "text", "text": "insufficient access"}],
                     "isError": True,
                 },
-            }
-        if tool_name == "boom":
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": -32000, "message": "boom"},
             }
         if tool_name == "argkeys":
             return {

@@ -613,7 +613,7 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     """Shared assertions — both transports must produce this exact contract."""
     # Injection: every upstream tool grew both params; the proxy's own didn't.
     tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
-    for name in ("echo", "boom", "argkeys"):
+    for name in ("echo", "boom", "softfail", "argkeys"):
         assert USER_GOAL_PARAM_NAME in tools[name]["inputSchema"]["properties"], name
         assert EXPECTED_RESULT_PARAM_NAME in tools[name]["inputSchema"]["properties"], name
         # Default flipped to `required` 2026-09-01: the ADVERTISED list gains

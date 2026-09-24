@@ -293,11 +293,10 @@ class Config:
             # leftover old variable would otherwise just stop producing the field.
             # The value is never read or logged.
             #
-            # ⚠ Names the MEMBER, not the retired field. This said "principal_id
-            # is OFF", which stopped being checkable when the flat field left the
-            # envelope: an operator grepping their JSONL for `principal_id` finds
-            # nothing whether identity is off or merely renamed, so the sentence
-            # could not tell them which. `principal` is what is absent now.
+            # ⚠ Names the MEMBER (`principal`), never the retired flat
+            # `principal_id` — an operator greps their log for what this sentence
+            # names. Pinned by `test_config.py::test_the_renamed_hmac_env_var_is_
+            # never_read_and_warned_about_only_when_it_matters`.
             #
             # ⚠ And the REMEDY is qualified, because both callers of `from_env`
             # see this line and it is only actionable for one. `baton-extmcp`

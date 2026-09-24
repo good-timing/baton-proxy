@@ -67,6 +67,7 @@ E2E_REQUESTS: list[dict] = [
                 "text": "x",
                 "user_goal": "verify conformance",
                 "expected_result": "a valid envelope",
+                "overall_task": "verify conformance",
             },
         },
     },
@@ -76,17 +77,42 @@ E2E_REQUESTS: list[dict] = [
         "method": "tools/call",
         "params": {"name": "boom", "arguments": {}},
     },
-    # Both failure shapes, because they emit DIFFERENT payloads: `boom` is the
-    # JSON-RPC protocol fault (no `result`), `softfail` the returned-flag shape
-    # that carries the envelope. Validating only the first leaves the schema's
-    # `result` property unexercised.
+    # The returned-flag failure shape. `boom` above takes the JSON-RPC `error`
+    # lane and structurally cannot carry a `result`, so no existing request can
+    # produce this payload — see the coverage assertion below.
     {
         "jsonrpc": "2.0",
         "id": 5,
         "method": "tools/call",
         "params": {"name": "softfail", "arguments": {}},
     },
+    # A reactive annotation, for the four `AnnotationPayload` members no other
+    # request reaches. `baton_annotate` is proxy-owned and never forwarded
+    # upstream (`proxy.py:74`), so this touches no fixture. ⚠ `context` must be
+    # an OBJECT — `proxy.py:821` drops a non-dict, and a string here silently
+    # leaves the member unexercised.
+    {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {
+            "name": "baton_annotate",
+            "arguments": {
+                "signal_type": "failure",
+                "user_goal": "exercise every declared annotation member",
+                "expected_result": "all declared properties present",
+                "suggested_improvement": "return a structured empty result",
+                "workflow": "conformance coverage",
+                "context": {"tool": "softfail", "outcome": "isError"},
+            },
+        },
+    },
 ]
+
+
+def _payload_def_name(event_type: str) -> str:
+    """``tool_call_error`` -> ``ToolCallErrorPayload``, the schema's $defs key."""
+    return "".join(part.title() for part in event_type.split("_")) + "Payload"
 
 
 def _run_stdio() -> list[dict]:
@@ -148,19 +174,29 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
         f"{SCHEMA_COVERED_EVENT_TYPES - seen_types}"
     )
 
-    # ⚠ The `softfail` request alone proves the PIN, not the PRODUCER, and the
-    # difference is the whole point of adding it. Measured: gutting
-    # `is_error_result` to `return False` leaves this file GREEN (only
-    # test_iserror_reclassification reds) — `seen_types` is already satisfied
-    # by `boom`, and a `softfail` misfiled as `tool_call_end` still validates
-    # happily. So the schema's `result` property would silently stop being
-    # exercised, which is the exact blindness this scenario was extended to
-    # close. This line is what notices.
-    assert any(
-        e["event_type"] == "tool_call_error" and "result" in e["payload"] for e in covered
-    ), (
-        "no tool_call_error carried a `result` — the returned-flag shape is "
-        "unexercised and the schema's `result` property is unvalidated"
+    # ⚠ Property coverage, not one hand-picked property — the same idiom
+    # `seen_types` applies one level up, applied one level down. The gap that
+    # prompted this was exactly that shape: `result` on `tool_call_error` was
+    # declared by the schema and produced by nothing, so the pin bump that
+    # legalised it went unexercised and nothing reddened. Enumerating properties
+    # closes the NEXT such gap too; a hand-written assert closes only this one.
+    #
+    # Measured at ZERO allowlist — 31 of 31 declared properties across the five
+    # covered types. If a future property genuinely cannot be driven from here,
+    # add it to an explicit allowlist rather than deleting the loop: an empty
+    # one is what makes this worth having.
+    unexercised: dict[str, list[str]] = {}
+    for event_type in sorted(SCHEMA_COVERED_EVENT_TYPES):
+        declared = set(event_schema["$defs"][_payload_def_name(event_type)].get("properties", {}))
+        produced: set[str] = set()
+        for event in covered:
+            if event["event_type"] == event_type:
+                produced |= set(event["payload"])
+        if declared - produced:
+            unexercised[event_type] = sorted(declared - produced)
+    assert not unexercised, (
+        f"schema properties that no emitted payload exercised: {unexercised} — the "
+        "gate validates shapes this scenario never produces"
     )
 
     # The stdio scenario resolves no principal, so ``principal`` never
