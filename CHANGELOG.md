@@ -454,7 +454,8 @@ Initial public release on PyPI.
 - Consent guard: refuses to start when an `http(s)://` sink is paired with the placeholder `BATON_CONSENT_TOKEN=local`, or when an `http(s)://` sink is configured without `BATON_API_KEY`.
 - Fail-open delivery: emission runs on a background thread; Console outage never blocks the MCP pipe.
 
-[Unreleased]: https://github.com/good-timing/baton-proxy/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/good-timing/baton-proxy/compare/v0.6.11...HEAD
+[0.6.11]: https://github.com/good-timing/baton-proxy/compare/v0.6.10...v0.6.11
 [0.1.2]: https://github.com/good-timing/baton-proxy/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/good-timing/baton-proxy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/good-timing/baton-proxy/releases/tag/v0.1.0
