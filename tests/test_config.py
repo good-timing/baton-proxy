@@ -67,6 +67,20 @@ def test_the_renamed_hmac_env_var_is_never_read_and_warned_about_only_when_it_ma
     # The part that tells the operator what to do: the name to set instead.
     assert ("BATON_PRINCIPAL_ID_HMAC_KEY" in text) is warns
     assert "old-secret-value" not in text
+    if warns:
+        # ⚠ The CLAIM, not the prose. This warning's only diagnostic value is
+        # telling an operator what to look for in their event log, so it must
+        # not name a field the envelope retired: `principal_id` left with the
+        # principal object, and a sentence naming it sends the reader grepping
+        # for something that cannot appear whatever they do. Pinned as the dead
+        # name's ABSENCE plus the member that replaced it, so rewording stays
+        # free while reintroducing the defect reds.
+        #
+        # Lowercase is load-bearing — `BATON_PRINCIPAL_ID_HMAC_KEY` is upper
+        # case, so the env var name asserted above cannot satisfy this by
+        # accident.
+        assert "principal_id" not in text
+        assert "`principal`" in text
 
 
 def test_from_env_zero_config_uses_multi_sink_defaults(

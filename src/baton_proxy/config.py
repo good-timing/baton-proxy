@@ -298,11 +298,22 @@ class Config:
             # envelope: an operator grepping their JSONL for `principal_id` finds
             # nothing whether identity is off or merely renamed, so the sentence
             # could not tell them which. `principal` is what is absent now.
+            #
+            # ⚠ And the REMEDY is qualified, because both callers of `from_env`
+            # see this line and it is only actionable for one. `baton-extmcp`
+            # resolves a principal from its gateway header and logs these
+            # warnings (`server.py:73`), so setting the key restores the member
+            # there. The stdio proxy passes `principal` to the Emitter from
+            # nowhere — measured, no `Principal(` or resolver call exists outside
+            # `identity.py` — so an operator who sets the key, greps for
+            # `principal` and finds nothing would conclude the fix failed. An
+            # unqualified "turn it back on" is a promise this path cannot keep.
             warnings.append(
                 "baton-proxy: BATON_USER_ID_HMAC_KEY is set, but it was renamed to "
-                "BATON_PRINCIPAL_ID_HMAC_KEY in 0.6.8 and is no longer read, so "
-                "identity is OFF (no `principal` member on any event). Set "
-                "BATON_PRINCIPAL_ID_HMAC_KEY to turn it back on."
+                "BATON_PRINCIPAL_ID_HMAC_KEY in 0.6.8 and is no longer read, so no "
+                "event carries a `principal` member. Set BATON_PRINCIPAL_ID_HMAC_KEY "
+                "to restore it wherever an identity is resolved — the stdio proxy "
+                "resolves none of its own."
             )
         return cls(
             session_id=str(uuid.uuid4()),

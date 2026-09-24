@@ -15,8 +15,16 @@ from __future__ import annotations
 
 from typing import Any
 
-# The two tools every fixture exposes: `echo` (happy path) and `boom` (always
-# errors, for tool_call_error coverage).
+# The four tools every fixture exposes: `echo` (happy path), `boom` (raises, so
+# the failure takes the JSON-RPC `error` lane and carries no `result`),
+# `softfail` (RETURNS a failure — a 200 whose body sets `isError`, the shape
+# that does carry `result`), and `argkeys` (echoes the argument keys that
+# reached the upstream, so a test can prove which params were stripped).
+#
+# ⚠ Keep this list, `tools/list` and the `tools/call` dispatch in step. A tool
+# answered but not advertised makes the fixture serve a surface it does not
+# declare — the `surface_snapshot` event then lists fewer tools than the
+# scenario calls, which is not what a real server does.
 
 
 def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
@@ -61,6 +69,15 @@ def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
                     {
                         "name": "boom",
                         "description": "Always errors. Used to test tool_call_error emission.",
+                        "inputSchema": {"type": "object", "properties": {}, "required": []},
+                    },
+                    {
+                        "name": "softfail",
+                        "description": (
+                            "Returns a failure instead of raising one: a 200 whose "
+                            "body sets `isError`. The shape SPEC §11.4.3 added "
+                            "`result` for."
+                        ),
                         "inputSchema": {"type": "object", "properties": {}, "required": []},
                     },
                     {
