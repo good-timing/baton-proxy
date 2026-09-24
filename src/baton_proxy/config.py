@@ -292,10 +292,17 @@ class Config:
             # Renamed in 0.6.8 with no fallback. Hashed identity fails open, so a
             # leftover old variable would otherwise just stop producing the field.
             # The value is never read or logged.
+            #
+            # ⚠ Names the MEMBER, not the retired field. This said "principal_id
+            # is OFF", which stopped being checkable when the flat field left the
+            # envelope: an operator grepping their JSONL for `principal_id` finds
+            # nothing whether identity is off or merely renamed, so the sentence
+            # could not tell them which. `principal` is what is absent now.
             warnings.append(
                 "baton-proxy: BATON_USER_ID_HMAC_KEY is set, but it was renamed to "
                 "BATON_PRINCIPAL_ID_HMAC_KEY in 0.6.8 and is no longer read, so "
-                "principal_id is OFF. Set BATON_PRINCIPAL_ID_HMAC_KEY to turn it back on."
+                "identity is OFF (no `principal` member on any event). Set "
+                "BATON_PRINCIPAL_ID_HMAC_KEY to turn it back on."
             )
         return cls(
             session_id=str(uuid.uuid4()),
