@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-**Version deliberately undecided** — the principal change below spans four
-repos and SPEC §13's entry carries no number until one is chosen.
+
+## [0.6.11] — 2026-09-23
+
+Three wire changes that were sitting on `main` under `0.6.10`, a number already
+published as the behaviour they replace. Cut so `sdk_version` can tell them
+apart: every event carries `baton-proxy/<version>`, so an unreleased wire change
+is one a consumer cannot date.
 
 ### Changed
 
@@ -37,11 +42,12 @@ repos and SPEC §13's entry carries no number until one is chosen.
   emitted verbatim — fail-open as before, but the whole member goes, never a
   null id inside a present object.
 
-  ⚠ **NOT DEPLOYABLE AGAINST AN OLDER COLLECTOR.** A console with a closed
-  envelope schema rejects the whole event, not just the identity.
-  `baton-console` accepts the object at `110d75d` — measured in its ingest
-  schema, and `110d75d` is what the hub records prod as serving. That is what
-  unblocks this.
+  ⚠ **NOT DEPLOYABLE AGAINST AN OLDER COLLECTOR.** `principal` is an *envelope*
+  field, which is the level at which a closed schema refuses — so a collector
+  that rejects unknown envelope members drops the whole event, not just the
+  identity. Upgrade the collector to one that accepts `principal` before
+  upgrading the proxy, and verify that against its ingest schema rather than its
+  version string.
 
   Configuration is deliberately unchanged: `principal_id_hmac_key` and
   `BATON_PRINCIPAL_ID_HMAC_KEY` keep their names. SPEC does not ask for a
@@ -89,6 +95,22 @@ repos and SPEC §13's entry carries no number until one is chosen.
   Baton's own synthesised refusals also carry `isError: true` and are answered
   without ever being tracked as pending, so they are never filed as vendor
   failures — pinned by a test rather than left to control flow.
+
+- **The startup warning for the renamed HMAC variable named a field that no
+  longer exists, and promised a remedy one of its two readers cannot honour.**
+  It said `BATON_USER_ID_HMAC_KEY` is no longer read "so `principal_id` is OFF",
+  which stopped being checkable the moment the flat field left the envelope — an
+  operator grepping their JSONL for `principal_id` finds nothing whether
+  identity is off or merely renamed. It now names the absent member,
+  `principal`.
+
+  ⚠ **And the remedy is qualified, because both callers of `from_env` print
+  this line verbatim and it is actionable for only one of them.**
+  `baton-extmcp` resolves a principal from its gateway header, so setting the
+  key does restore the member there. The stdio proxy resolves no identity of its
+  own — there is no `Principal(` construction outside `identity.py` — so an
+  operator who set the key, grepped for `principal` and found nothing would
+  conclude the fix had failed. The sentence now says where it applies.
 
 ### Removed
 
