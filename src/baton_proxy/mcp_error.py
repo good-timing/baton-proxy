@@ -18,8 +18,20 @@ under-specified. **Do not "fix" it by adding the snake spelling**: a wire body
 that carries one did not come from an MCP server.
 
 Lives in its own module rather than inside ``proxy.py`` because ``baton-extmcp``
-sits on the same seam, depends on this package for its ``Emitter``, and
-currently implements the check itself without the ``content`` clause below.
+sits on the same seam and depends on this package for its ``Emitter``. It
+implements the check itself (``servicer.py:324``). Since the ``content`` clause
+was dropped here on 2026-09-24 they agree on read level, spelling, and the
+absence of that clause.
+
+⚠ **They do NOT agree on the flag's form, and the difference is deliberate
+here.** ``servicer.py:324`` tests ``result.get("isError")`` truthily; this
+module tests ``is True``. So ``{"isError": "false"}`` — a string, which is
+truthy — reads as a FAILURE over there and as a success here, and a truthy
+read is how a non-conformant server's own word "false" becomes a fabricated
+failure. MCP types the field as a boolean, so ``is True`` is the conformant
+spelling and the one that cannot be talked into a false positive. ``error_body``
+also still differs: extmcp JSON-dumps ``content`` and cuts at 2000 characters
+BEFORE scrubbing, which ``error_text`` below explains is a defect.
 """
 
 from __future__ import annotations
@@ -35,20 +47,30 @@ RETURNED_ERROR_TYPE = "tool_error"
 def is_error_result(result: Any) -> bool:
     """True when a ``tools/call`` result body reports the call FAILED.
 
-    ⚠ The list-valued ``content`` clause is a MUST in SPEC §11.4.3, not a
-    nicety. It excludes a caller that receives a vendor's return value
-    unconverted, where an object carrying an error flag for its own unrelated
-    reasons would otherwise read as a failed tool call.
+    ⚠ **No ``content`` clause, and it was REMOVED here on 2026-09-24 rather
+    than never written.** SPEC §11.4.3 stated one as a universal MUST, and this
+    module obeyed it. The rule was written for an in-process sensor holding a
+    library-CONVERTED result, where an object carrying an error attribute for
+    its own unrelated reasons can reach the predicate. Nothing of that shape
+    exists on the wire: what arrives here is a decoded ``tools/call`` result
+    body, so a top-level ``isError`` IS MCP's flag.
 
-    It is **not** what excludes a vendor dict spelling ``{"isError": true, …}``:
-    under the conversion a server normally applies, that dict becomes a real
-    ``CallToolResult`` whose flag is ``false``, and the flag settles it.
+    **Measured, which is what settled it:** ``CallToolResult``'s own JSON
+    schema lists ``content`` as REQUIRED with no default. A conformant server
+    therefore always sends it, so the clause excluded nothing real — and a
+    server that omits it had its failures filed as ``tool_call_end``, a success.
+    A guard that cannot fire for a conformant peer and silently miscounts a
+    non-conformant one is pure cost. SPEC §11.4.3 now scopes the MUST by
+    vantage point.
+
+    ⚠ **The kind gate at the call site is now the ONLY thing standing between
+    a vendor's own ``isError`` key and a fabricated failure**, and it is enough
+    because it is the right check: ``_emit_call_end`` is shared with the
+    resource and prompt lanes, whose bodies are vendor data, and this predicate
+    is reached only when ``call.kind == "tool"``. Do not delete that gate on
+    the grounds that this function looks careful — it no longer is on its own.
     """
-    return (
-        isinstance(result, dict)
-        and result.get("isError") is True
-        and isinstance(result.get("content"), list)
-    )
+    return isinstance(result, dict) and result.get("isError") is True
 
 
 def error_text(result: Any) -> str:
@@ -71,9 +93,22 @@ def error_text(result: Any) -> str:
     """
     if not isinstance(result, dict):
         return ""
+    content = result.get("content")
+    # ⚠ The list check lives HERE, and it moved here on 2026-09-24 when
+    # `is_error_result` stopped requiring one. That clause had been doing
+    # double duty: classifying, and incidentally keeping a non-list out of
+    # this loop. Dropping it left `{"isError": true, "content": 5}` raising
+    # `TypeError` inside the caller's emit block, which swallows it — so the
+    # call produced a `tool_call_start` and NO terminal event at all. An
+    # orphaned start is worse than the miscount the drop removed, and it is
+    # the pairing violation `proxy.py` calls a MUST NOT. Reading the reason
+    # and deciding the outcome are different jobs; the shape check belongs
+    # with the reading.
+    if not isinstance(content, list):
+        return ""
     parts = [
         part["text"]
-        for part in result.get("content") or []
+        for part in content
         if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip()
     ]
     return "\n".join(parts)

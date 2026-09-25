@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A returned error flag now counts as a failure even when the body carries no
+  `content`.** `is_error_result` required a list-valued `content` alongside the
+  flag; a server answering `{"isError": true}` without one had its failures
+  filed as `tool_call_end` — a success. That clause came from SPEC §11.4.3,
+  which stated it as a universal MUST, and this package obeyed it.
+
+  The rule was written for an in-process sensor holding a library-CONVERTED
+  result, where an object carrying an error attribute for its own unrelated
+  reasons can reach the predicate. Nothing of that shape exists on the wire: a
+  decoded `tools/call` body's top-level `isError` IS MCP's flag. **Measured:**
+  `CallToolResult`'s own JSON schema lists `content` as required with no
+  default, so the clause could never fire for a conformant server and only ever
+  miscounted a non-conformant one. SPEC §11.4.3 now scopes the MUST by vantage
+  point.
+
+  This also makes the two wire sensors agree: `baton-extmcp` (`servicer.py:324`)
+  has always tested the flag alone.
+
+  ⚠ **`error_text` gained the list check the classifier gave up**, because
+  that clause had been doing double duty. Without it,
+  `{"isError": true, "content": 5}` raised inside the emit block — which
+  swallows exceptions — and the call produced a `tool_call_start` with NO
+  terminal event. Reading the reason and deciding the outcome are different
+  jobs.
+
+  ⚠ **The flag must be the boolean `true`, not merely truthy**, and that is
+  now pinned rather than incidental: a truthy read turns a non-conformant
+  server's own string `"false"` into a fabricated failure. `baton-extmcp`
+  reads it truthily, so the two wire sensors do disagree here — recorded
+  rather than harmonised, because this is the conformant answer.
+
+  ⚠ **The kind gate at `proxy.py:1127` is now the only thing separating a
+  vendor's own `isError` key from a fabricated failure.** `_emit_call_end` is
+  shared with the resource and prompt lanes, whose bodies are vendor data. It
+  is the right check and it is pinned by a test that reddens when it is
+  deleted — but it is no longer backed up by a second one.
+
+
 
 ## [0.6.11] — 2026-09-23
 

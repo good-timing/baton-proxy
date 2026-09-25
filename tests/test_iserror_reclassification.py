@@ -34,6 +34,7 @@ from typing import Any
 
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter
+from baton_proxy.mcp_error import RETURNED_ERROR_TYPE
 from baton_proxy.proxy import ANNOTATE_TOOL_NAME, MessageProcessor, _Injection
 from baton_proxy.report import _render_trail
 
@@ -195,21 +196,78 @@ def test_a_successful_call_is_still_an_end() -> None:
     assert emitter.one("tool_call_end")["result"] == ok
 
 
-def test_detection_requires_a_list_valued_content() -> None:
-    """SPEC §11.4.3 makes the ``content`` list a MUST, not a nicety.
+def test_a_flagged_body_with_no_content_is_still_a_failure() -> None:
+    """⚠ This test asserted the OPPOSITE until 2026-09-24, and the assertion
+    was the defect.
 
-    It excludes a caller holding a vendor's own return value unconverted, where
-    an object carrying an error flag for its own unrelated reasons would read
-    as a failed tool call. ⚠ baton-extmcp does NOT apply this clause
-    (``servicer.py:319`` tests the flag alone) — a second way it is not the
-    reference implementation the thread calls it.
+    SPEC §11.4.3 required a list-valued ``content`` of every producer, so this
+    body — flag set, no ``content`` key — was filed as ``tool_call_end``, a
+    SUCCESS. The rule was written for an in-process sensor holding a converted
+    result and does not transfer to the wire: ``CallToolResult``'s own schema
+    makes ``content`` REQUIRED with no default, so the clause could never fire
+    for a conformant server and only ever miscounted a non-conformant one.
+
+    What still refuses a vendor's own ``isError`` key is the kind gate, pinned
+    by the test below — not this predicate. And dropping the clause makes this
+    package agree with ``baton-extmcp`` (``servicer.py:324``), which never had
+    it; the disagreement was the thread's, not the protocol's.
     """
     proc, emitter = _processor()
     proc.handle_client_message(_call("delete_project"))
     proc.handle_server_message(_reply({"isError": True, "rows": 3}))
 
-    assert "tool_call_error" not in emitter.types()
-    assert emitter.one("tool_call_end")["result"] == {"isError": True, "rows": 3}
+    assert "tool_call_end" not in emitter.types()
+    err = emitter.one("tool_call_error")
+    assert err["error_type"] == RETURNED_ERROR_TYPE
+    # No content, so no reason to show — honest, and the envelope still rides.
+    assert err["error_body"] == ""
+    assert err["result"] == {"isError": True, "rows": 3}
+
+
+def test_a_flagged_body_whose_content_is_not_a_list_still_pairs() -> None:
+    """⚠ The regression the `content` clause's removal introduced, pinned.
+
+    That clause had been doing double duty: classifying, AND incidentally
+    keeping a non-list out of `error_text`'s loop. With it gone,
+    `{"isError": true, "content": 5}` raised `TypeError` inside the caller's
+    emit block — which swallows exceptions — so the call produced a
+    `tool_call_start` and NO terminal event. An orphaned start is worse than
+    the miscount the removal fixed, and `proxy.py` calls that pairing failure
+    a MUST NOT. The shape check now lives in `error_text`, with the reading.
+
+    Observed before the fix, not reasoned about: `['tool_call_start']`.
+    """
+    for body in ({"isError": True, "content": 5}, {"isError": True, "content": True}):
+        proc, emitter = _processor()
+        proc.handle_client_message(_call("delete_project"))
+        proc.handle_server_message(_reply(body))
+
+        assert emitter.types() == ["tool_call_start", "tool_call_error"], body
+        err = emitter.one("tool_call_error")
+        assert err["error_body"] == ""
+        assert err["result"] == body
+
+
+def test_the_flag_must_be_the_boolean_true_not_merely_truthy() -> None:
+    """⚠ The one narrowing left in the predicate, and it was unpinned.
+
+    Mutating `is True` to `bool(...)` left all 701 tests green, so the
+    strictness was an accident of how the line was written rather than a
+    decision. It is a decision: MCP types the field as a boolean, and a truthy
+    read turns a non-conformant server's own string `"false"` into a
+    fabricated failure.
+
+    ⚠ `baton-extmcp` (`servicer.py:324`) reads it truthily, so the two wire
+    sensors genuinely disagree here. Recorded rather than silently harmonised
+    — this module's answer is the conformant one.
+    """
+    for body in ({"isError": "false"}, {"isError": 1}, {"isError": "yes"}):
+        proc, emitter = _processor()
+        proc.handle_client_message(_call("delete_project"))
+        proc.handle_server_message(_reply(body))
+
+        assert "tool_call_error" not in emitter.types(), body
+        assert emitter.one("tool_call_end")["result"] == body
 
 
 def test_the_flag_is_only_read_on_a_tool_call() -> None:
