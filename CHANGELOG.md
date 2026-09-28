@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
   Your agent reads the same JSONL and groups and explains errors better than a
   fixed template does, so the replacement is a line in the server instructions
-  naming the event file (below) rather than a second renderer.
+  naming the event file (below) rather than a second renderer. ⚠ One thing the
+  tool did that the file does not: it filtered to the current session. The
+  events file is not session-scoped, and the line that names it says so.
 
   **Who is affected:** nobody wrapping with an `http(s)` sink — that shape never
   got the tool. The default local install and `BATON_TENANT_TYPE=customer` did.
@@ -34,13 +36,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **The server instructions name the local event file.** One line, after the
-  head and ahead of both MUST clauses, telling the agent where the session's
-  JSONL is so it can answer "what went wrong" by reading it. Rendered only when
-  the sink spec has a `file://` leg, so an http-only vendor wrap is byte-for-byte
-  unchanged. On the tightest configuration (`BATON_PROACTIVE=on`) a path longer
-  than ~59 characters does not fit the instructions cap; the line is then
-  dropped rather than truncated, and the rest of the suffix is unaffected.
+- **The server instructions name the local event file.** One line, LAST in the
+  appended paragraph, telling the agent where the captured JSONL is so it can
+  answer "what went wrong" by reading it. Last because the client truncates
+  `instructions` from the end: a server with long instructions of its own loses
+  this line rather than the annotation guidance above it.
+
+  It does not claim the file holds only the current session, because it does not
+  — the default sink is one fixed path, shared across restarts and across every
+  server wrapped with the defaults, and `session_id` never reaches the agent.
+  The line says "appended across sessions, newest last" instead.
+
+  Rendered only when the sink spec has a `file://` leg, so an http-only wrap is
+  byte-for-byte unchanged. A `file`+`http` tee-to-disk does get its path named.
+  On the tightest configuration (`BATON_PROACTIVE=on`) a path longer than 35
+  characters does not fit the instructions cap; the line is then dropped rather
+  than truncated, the rest of the suffix is unaffected, and the proxy logs a
+  warning naming the path.
 
 ### Changed
 

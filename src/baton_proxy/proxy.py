@@ -1408,6 +1408,19 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
         intent_param_mode=config.intent_param_mode,
         proactive_mode=config.proactive_mode,
     )
+    # The instructions suffix DROPS the event-file line rather than breaching the
+    # length cap, because the path's length is the operator's and a deep
+    # directory must not fail a handshake. Told here for the same reason as the
+    # loop above: the alternative is an operator whose agent never learns where
+    # the events are, with nothing anywhere saying why. Reachable in practice —
+    # `BATON_PROACTIVE=on` leaves 35 chars for a path.
+    if injection.sink_path and injection.sink_path not in injection.instructions_suffix:
+        logger.warning(
+            "baton-proxy: the event file path (%s) did not fit the instructions "
+            "length cap, so the agent will not be told where to read the session. "
+            "Use a shorter sink path, or BATON_PROACTIVE=off, to restore it.",
+            injection.sink_path,
+        )
     emitter = Emitter(config)
     emitter.start()
     processor = MessageProcessor(emitter, injection, config.session_id)

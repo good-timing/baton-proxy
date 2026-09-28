@@ -241,11 +241,18 @@ forwarded untouched.
 
 **A paragraph appended to your server's `instructions`**, telling the agent that
 `baton_annotate` exists and naming the path of the local event file, so it can
-read the session back when you ask what went wrong (`_llm_text.py`,
+read the captured calls back when you ask what went wrong (`_llm_text.py`,
 `build_instructions_suffix`). Appended to whatever your server sent, never
-replacing it. The path is named only when a `file://` sink is configured; the
-line is dropped rather than truncated if it would push the paragraph past the
-length Claude Code keeps.
+replacing it, and last, so that if your server's own instructions are long
+enough for the client to truncate, this line is what it takes rather than the
+annotation guidance above it.
+
+The path is named only when a `file://` sink is configured. The line says the
+file is appended across sessions rather than scoped to one, because it is: the
+file grows for as long as the wrap is in place, and nothing the agent can see
+separates one session's lines from another's. It is dropped rather than
+truncated if it would push the paragraph past the length the client keeps, and
+the proxy logs a warning to its own stderr when that happens.
 
 Beyond those three additions, nothing is removed, renamed or rewritten: tool
 definitions, arguments, results and errors pass through unchanged.

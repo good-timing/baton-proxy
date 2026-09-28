@@ -82,6 +82,15 @@ has more than one cause the receipt names them; relay that and stop.
 holds the full arguments and results of every tool call. `receipt` prints safe
 aggregates; report those, and do not tell them you are not quoting the file.
 
+⚠ **Reading the file to answer "what went wrong" is allowed, and the wrap now
+asks for it.** The proxy's server instructions name this file's path, because
+the in-Claude report tool that used to summarise it was retired 2026-09-27. So
+the two rules divide by ACT, not by file: read it, group the failures, say which
+tool failed and why in your own words. What stays forbidden is reproducing the
+payloads — arguments, results, row contents — which is what the aggregate
+commands exist to avoid and what a reader of this file would otherwise think the
+rule above still covers.
+
 **Do not read out a credential the commands hid.** The kit shows withheld
 values as `<literal value, not shown>`. `state.json`, the `config-backup.*`
 files, the `.mcp.json` this checkout holds and the config itself hold the real

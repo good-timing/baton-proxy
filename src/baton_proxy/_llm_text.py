@@ -225,15 +225,29 @@ SIGNAL_TYPES: tuple[str, ...] = (
 # is whatever the operator's BATON_EVENT_SINK says, so this line is the only
 # piece that is DROPPED rather than allowed to breach the cap — see
 # build_instructions_suffix.
-# ⚠ WRITTEN TO A LENGTH, not to taste. `proactive_mode="on"` leaves 160 chars
-# under the cap, so a longer line would be DROPPED in that mode — silently, and
-# exactly where the retired tool's replacement is most needed. The first draft
-# of this line was 200 characters and never rendered under `on` at all. Its
-# fixed part is 100, which leaves 60 for the path: the 22-char default fits both
-# modes with room, and a deep path still fits `off`, the default mode.
+# ⚠ WRITTEN TO A LENGTH, and to a claim it can actually keep.
+#
+# LENGTH: `proactive_mode="on"` leaves 160 chars under the cap, so a longer line
+# would be DROPPED in that mode. The first draft was 200 and never rendered
+# under `on` at all. This one's fixed part is 125, leaving 35 for the path — the
+# 22-char default fits both modes; `off`, the default mode, leaves 329.
+#
+# CLAIM: it does NOT say "this session's". The default sink is one fixed path
+# (`config.DEFAULT_EVENT_SINK`), so the file accumulates across restarts and
+# across every server wrapped with the defaults, and the try kit's file grows
+# for as long as the wrap is in place. The retired tool filtered the file by
+# `session_id`; an agent cannot, because `session_id` is a per-process uuid4
+# that never reaches the model. So the line describes what is actually there —
+# appended across sessions, newest last — rather than promising a scope the
+# reader would then wrongly attribute to the current session's failures.
+# ⚠ The separator LEADS, and there is no trailing newline. `_REACTIVE_CLAUSES`
+# ends mid-sentence with no break of its own — it was always last — so appending
+# a line that carried its break at the END produced
+# "...replace answering.Tool calls and results...". Caught by reading the
+# rendered string, which is the only way this class of defect shows.
 _EVENT_FILE_LINE = (
-    "This session's tool calls and results are captured as JSONL at "
-    "{event_file_path}; read it to answer what went wrong.\n\n"
+    "\n\nTool calls and results are captured as JSONL at {event_file_path}, "
+    "appended across sessions, newest last; read it to answer what went wrong."
 )
 
 
@@ -253,10 +267,23 @@ def build_instructions_suffix(
     its vendor owns, the proxy fronts servers its operator does not, so the
     proxy ships at today's behaviour and the operator chooses.
 
-    ``event_file_path`` names the local event file, second paragraph, right
-    after the head and ahead of both MUST clauses — an agent that reads only
-    the opening gets it. None when the sink has no ``file://`` leg, which is
-    every vendor-production wrap, so that shape pays nothing for this line.
+    ``event_file_path`` names the local event file, LAST, after both MUST
+    clauses. ⚠ That is deliberate and it is the opposite of where this line first
+    went. Claude Code truncates ``instructions`` at ~2,087 from the END and the
+    proxy APPENDS to whatever the upstream server sent, so on a server with
+    roughly 920-1,040 chars of its own instructions the cut lands inside our
+    suffix — and putting this line first moved the cut onto "Filing the
+    annotation does NOT replace answering", the clause without which the agent
+    treats the annotation as satisfying the user. Last means the convenience
+    line is what truncation takes, which is the right thing to lose.
+
+    None when the sink spec has no ``file://`` leg — every http-only wrap, which
+    is the common production shape. ⚠ NOT "every production wrap": a
+    ``file+http`` tee-to-disk has a file leg and does get its path named, so an
+    absolute path the operator chose (home directory and OS username included)
+    enters the model's context on that shape. The retired tool's gate suppressed
+    itself there; this line does not, because naming a path the operator
+    configured is not the same act as rendering the file's contents.
 
     Appended to the upstream server's existing ``instructions`` field
     (rather than replacing it, as the SDK does). Raises ``ValueError`` if
@@ -271,7 +298,8 @@ def build_instructions_suffix(
     otherwise fine — a filesystem path is not a misconfiguration the way a
     500-character tool name is. Under ``proactive_mode="on"`` the rest of the
     suffix already spends 1,340 of 1,500, so this is a live branch, not a
-    defensive one.
+    defensive one. The drop is not silent to the OPERATOR: ``_bootstrap`` logs a
+    warning when a path was found and did not make it into the suffix.
     """
     head = _HEAD_PROACTIVE if proactive_mode == "on" else _HEAD_REACTIVE_ONLY
     clause = _PROACTIVE_CLAUSE if proactive_mode == "on" else ""
@@ -299,9 +327,8 @@ def build_instructions_suffix(
         # guard; `.replace` vs `.format` on this line alone is not, since
         # `.format` does not re-process what it substitutes in.
         line = _EVENT_FILE_LINE.replace("{event_file_path}", event_file_path)
-        head_end = len(head.format(annotation_tool_name=annotation_tool_name))
         if len(rendered) + len(line) <= _INSTRUCTIONS_LENGTH_CAP:
-            rendered = rendered[:head_end] + line + rendered[head_end:]
+            rendered = rendered + line
     return rendered
 
 

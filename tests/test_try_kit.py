@@ -2483,16 +2483,24 @@ WIDE_AUDIT_RE = r"urlopen|socket|http\.client|requests\.|boto3|subprocess"
 # as (path, lineno, substring-of-the-line) so a moved line fails loudly instead
 # of a bare count quietly absorbing a swap. Nothing under `try/` is in the set,
 # and `test_the_kit_contributes_no_audited_call_site` is the assertion of that.
+# ⚠ FILE + NEEDLE, no line numbers, and that is a correction rather than a
+# loosening. These carried line numbers until 2026-09-27, when the report-tool
+# deletion moved `proxy.py`'s match from 1632 to 1564 and the startup-warning
+# commit moved it again in the same afternoon — twice in one day, neither time
+# because anything the document claims had changed. SECURITY.md §9 prints a
+# regex and a COUNT; it prints no line numbers, so a line number was never part
+# of the claim being pinned, only of the churn
+# ([[feedback_no_anchor_on_rebuilt_positional_key]]).
+#
+# What still makes this a real guard is the pair below it: every expected site
+# must be present, AND the total must be exactly five, so a sixth egress call
+# anywhere under src|try reds here whatever its line.
 EXPECTED_AUDIT_HITS = {
-    # ⚠ Line number, so it moves with any edit ABOVE it in proxy.py — 1632
-    # before the report tool was deleted out of that file (2026-09-27). Re-point
-    # it; the pin is which five sites exist, and the count below is the half that
-    # catches a sixth.
-    ("src/baton_proxy/proxy.py", 1564, "subprocess.Popen("),
-    ("src/baton_proxy/transport_http.py", 135, "urllib.request.urlopen(req"),
-    ("src/baton_proxy/transport_http.py", 187, "urlopen(timeout=inf) blocks forever"),
-    ("src/baton_proxy/sinks.py", 159, "urllib.request.urlopen(req"),
-    ("src/baton_proxy/sinks.py", 191, 'boto3.client("s3")'),
+    ("src/baton_proxy/proxy.py", "subprocess.Popen("),
+    ("src/baton_proxy/transport_http.py", "urllib.request.urlopen(req"),
+    ("src/baton_proxy/transport_http.py", "urlopen(timeout=inf) blocks forever"),
+    ("src/baton_proxy/sinks.py", "urllib.request.urlopen(req"),
+    ("src/baton_proxy/sinks.py", 'boto3.client("s3")'),
 }
 
 
@@ -2548,10 +2556,12 @@ def test_security_md_section_9_narrow_grep_returns_exactly_its_five():
     Unescaping it while editing the doc would add two matches and make the
     sentence wrong, which is exactly the class this pins."""
     hits = _grep(NARROW_AUDIT_RE)
-    found = {(p, n, line.strip()) for p, n, line in hits}
-    for path, lineno, needle in EXPECTED_AUDIT_HITS:
-        assert any(p == path and n == lineno and needle in line for p, n, line in found), (
-            f"§9's expected match is gone or moved: {path}:{lineno} ({needle!r})"
+    found = {(p, line.strip()) for p, _n, line in hits}
+    for path, needle in EXPECTED_AUDIT_HITS:
+        assert any(p == path and needle in line for p, line in found), (
+            f"§9's expected match is gone: {path} ({needle!r}). A match that MOVED "
+            "within its file is fine; one that vanished means the document's "
+            "five-match promise no longer describes this tree."
         )
     assert len(hits) == 5, (
         "SECURITY.md §9 promises a reviewer FIVE matches; this grep now returns "

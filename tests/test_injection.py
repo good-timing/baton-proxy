@@ -294,10 +294,10 @@ def _run_proxy_with_env(extra_env: dict[str, str]) -> dict[int, dict]:
     )
     input_data = "".join(json.dumps(req) + "\n" for req in REQUESTS)
     try:
-        stdout, _stderr = proc.communicate(input=input_data, timeout=10)
+        stdout, stderr = proc.communicate(input=input_data, timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
-        stdout, _stderr = proc.communicate()
+        stdout, stderr = proc.communicate()
     by_id: dict[int, dict] = {}
     for line in stdout.splitlines():
         line = line.strip()
@@ -309,6 +309,13 @@ def _run_proxy_with_env(extra_env: dict[str, str]) -> dict[int, dict]:
             continue
         if "id" in msg:
             by_id[msg["id"]] = msg
+    # Stashed on the dict rather than returned as a tuple, so the existing
+    # callers keep their shape. The operator-facing log is the only place a
+    # DROPPED event-file line is visible, and it goes to the proxy's real
+    # stderr — `caplog` attaches its own handler and would pass over a
+    # deployment that logged into the void (see test_config.py's note on
+    # exactly that).
+    by_id["stderr"] = stderr  # type: ignore[index,assignment]
     return by_id
 
 
@@ -494,3 +501,39 @@ def test_baton_annotate_emits_annotation_event_end_to_end() -> None:
     assert ann["session_id"]
     assert ann["tenant_id"] == "t"
     assert ann["consent_token"] == "c"
+
+
+def test_a_dropped_event_file_line_is_logged_to_the_operator(tmp_path: Path) -> None:
+    """⚠ The one failure mode with no other witness. The line is DROPPED rather
+    than raised when the path does not fit, so an operator whose agent never
+    learns where the events are has nothing to tell them why. `BATON_PROACTIVE=on`
+    leaves 35 chars for a path, which most real paths exceed.
+
+    Read off the proxy's REAL stderr, not `caplog`: the warning fires in
+    `_bootstrap` after `_configure_logging`, and a caplog assertion would pass
+    against a handler configuration that never reaches an operator.
+    """
+    # A REAL directory: `FileSink` opens the path at startup, so a made-up one
+    # fails the proxy before it ever renders instructions — which is how the
+    # first draft of this test "passed" its warning assertion and then found no
+    # initialize response to check against.
+    deep = tmp_path / "a-directory-long-enough-to-overflow-the-cap"
+    deep.mkdir()
+    long_path = str(deep / "events.jsonl")
+    assert len(long_path) > 35
+    by_id = _run_proxy_with_env(
+        {"BATON_EVENT_SINK": f"stderr:,file://{long_path}", "BATON_PROACTIVE": "on"}
+    )
+    stderr = by_id["stderr"]
+    assert "did not fit the instructions length cap" in stderr, stderr[-900:]
+    assert long_path in stderr
+    # ...and it really was dropped, so the warning is not crying wolf.
+    assert long_path not in _instructions(by_id)
+
+
+def test_a_path_that_fits_logs_nothing() -> None:
+    """The control. Without it the assertion above passes over a warning that
+    fires on every start, which is the same as no warning at all."""
+    by_id = _run_proxy_with_env({"BATON_EVENT_SINK": "stderr:,file:///tmp/s.jsonl"})
+    assert "did not fit the instructions length cap" not in by_id["stderr"]
+    assert "/tmp/s.jsonl" in _instructions(by_id)

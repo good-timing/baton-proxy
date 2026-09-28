@@ -406,25 +406,69 @@ def test_no_path_renders_no_line_and_no_stray_paragraph() -> None:
     assert "\n\n\n" not in without
 
 
-def test_the_line_sits_ahead_of_both_must_clauses() -> None:
-    """Position is the point of the third parameter rather than an extra
-    sentence in `_REACTIVE_CLAUSES`. Claude Code truncates from the END, so a
-    line appended after the MUST clauses is the first thing cut on a server with
-    long instructions of its own — and an agent that reads only the opening
-    paragraphs would never reach it."""
+def test_the_line_sits_after_both_must_clauses() -> None:
+    """⚠ LAST, which is the reverse of where this line first shipped, and the
+    reason is what being cut DISPLACES rather than whether it survives.
+
+    The proxy APPENDS its suffix to the upstream server's own `instructions`, and
+    Claude Code truncates the result from the END at ~2,087. So on a server
+    carrying roughly 920-1,040 chars of its own text the cut falls inside our
+    suffix — and with this line first, what got cut was the tail of "Filing the
+    annotation does NOT replace answering", which this module's docstring calls
+    load-bearing: without it the agent treats the annotation as satisfying the
+    user and stops answering. Below that band nothing is cut; above it the
+    guardrail goes either way. So last strictly dominates: the only thing it
+    costs is the convenience line, which is the right thing to lose.
+    """
     rendered = build_instructions_suffix("baton_annotate", "on", event_file_path=_DEFAULT_SINK_PATH)
     where = rendered.index(_DEFAULT_SINK_PATH)
-    assert where < rendered.index("AFTER any tool")
-    assert where < rendered.index("IF a tool response")
-    assert where < rendered.index("BEFORE invoking any tool")
-    # ...and after the head, so the agent knows what is wrapping it first.
-    assert where > rendered.index("wrapped in the Baton")
+    assert where > rendered.index("AFTER any tool")
+    assert where > rendered.index("IF a tool response")
+    assert where > rendered.index("BEFORE invoking any tool")
+    # The guardrail this ordering exists to protect, named so a reword of it
+    # re-points here rather than retiring the reason silently.
+    assert where > rendered.index("does NOT replace answering")
+
+
+def test_the_line_does_not_run_into_the_clause_before_it() -> None:
+    """`_REACTIVE_CLAUSES` ends mid-sentence with no break of its own — it was
+    always last. Appending a line that carried its separator at the END rendered
+    "...does NOT replace answering.Tool calls and results...", one string with
+    two paragraphs jammed together, which every length assertion here passed
+    happily. The separator has to LEAD."""
+    rendered = build_instructions_suffix(
+        "baton_annotate", "off", event_file_path=_DEFAULT_SINK_PATH
+    )
+    assert "answering.\n\nTool calls" in rendered, repr(rendered[-260:])
+    assert "answering.Tool" not in rendered
+
+
+def test_the_line_does_not_claim_the_file_holds_only_this_session() -> None:
+    """⚠ The claim the first draft got wrong. It said "This session's tool calls
+    and results", and the file it names holds no such thing: the default sink is
+    ONE fixed path, so it accumulates across restarts and across every server
+    wrapped with the defaults, and the try kit's file grows for as long as the
+    wrap is installed.
+
+    The retired tool could say "this session" because it filtered on
+    `session_id`. An agent cannot: `session_id` is a per-process uuid4 that never
+    reaches the model. An agent told the file is this session's would report an
+    earlier session's failures, and another server's arguments, as this one's.
+    """
+    rendered = build_instructions_suffix(
+        "baton_annotate", "off", event_file_path=_DEFAULT_SINK_PATH
+    )
+    assert "This session's" not in rendered
+    assert "this session" not in rendered.lower()
+    # What it says instead has to be the true shape, not merely a hedge.
+    assert "across sessions" in rendered
+    assert "newest last" in rendered
 
 
 def test_a_path_too_long_to_fit_is_dropped_not_raised() -> None:
     """⚠ The live branch, not a defensive one. `proactive_mode="on"` spends 1,340
-    of the 1,500 cap, leaving 160 for a line whose fixed part is 101 — so a path
-    over ~59 characters does not fit, and plenty of real ones are longer.
+    of the 1,500 cap, leaving 160 for a line whose fixed part is 125 — so a path
+    over 35 characters does not fit, and most real ones are longer.
 
     Raising here would let a deep directory take down a wrap that is otherwise
     correct, on the handshake, which is the failure this whole cap exists to
@@ -432,7 +476,7 @@ def test_a_path_too_long_to_fit_is_dropped_not_raised() -> None:
     has to come back WHOLE, not truncated to make room.
     """
     long_path = "/Users/someone/Library/Application Support/baton/deeply/nested/events.jsonl"
-    assert len(long_path) > 59, "this path no longer overflows; pick a longer one"
+    assert len(long_path) > 35, "this path no longer overflows; pick a longer one"
     rendered = build_instructions_suffix("baton_annotate", "on", event_file_path=long_path)
     assert long_path not in rendered
     assert rendered == build_instructions_suffix("baton_annotate", "on")
@@ -441,9 +485,10 @@ def test_a_path_too_long_to_fit_is_dropped_not_raised() -> None:
 
 def test_the_off_mode_default_still_fits_a_deep_path() -> None:
     """The control for the test above: the drop must be caused by the BUDGET and
-    not by the path, so the same path in the default mode — which has 331 chars
-    free rather than 160 — has to render. Without this, a bug that dropped the
-    line unconditionally would pass the drop test and be invisible."""
+    not by the path, so the same path in the default mode — which leaves 329
+    chars for a path rather than 35 — has to render. Without this, a bug that
+    dropped the line unconditionally would pass the drop test and be
+    invisible."""
     long_path = "/Users/someone/Library/Application Support/baton/deeply/nested/events.jsonl"
     rendered = build_instructions_suffix("baton_annotate", "off", event_file_path=long_path)
     assert long_path in rendered
@@ -472,12 +517,15 @@ def test_the_lines_fixed_part_is_short_enough_to_leave_room_for_a_path() -> None
     rather than in the drop test, which would keep passing while the line
     stopped rendering for everyone.
 
-    101 fixed + 59 of path is the `on` mode's whole 160. The first draft of this
+    125 fixed + 35 of path is the `on` mode's whole 160. The first draft of this
     line was 200 characters and never rendered under `on` at all.
     """
     fixed = len(_EVENT_FILE_LINE.replace("{event_file_path}", ""))
     on_budget = _INSTRUCTIONS_LENGTH_CAP - len(build_instructions_suffix("baton_annotate", "on"))
-    assert fixed <= 110, f"the line's fixed part grew to {fixed}; it eats the path's room"
+    assert fixed <= 138, (
+        f"the line's fixed part grew to {fixed}; above 138 the 22-char default sink "
+        "path stops fitting proactive_mode='on' and the line silently stops rendering"
+    )
     assert fixed + len(_DEFAULT_SINK_PATH) <= on_budget, (
         f"the default sink path no longer fits proactive_mode='on': "
         f"{fixed} + {len(_DEFAULT_SINK_PATH)} > {on_budget}"
