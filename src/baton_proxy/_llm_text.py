@@ -225,29 +225,32 @@ SIGNAL_TYPES: tuple[str, ...] = (
 # is whatever the operator's BATON_EVENT_SINK says, so this line is the only
 # piece that is DROPPED rather than allowed to breach the cap — see
 # build_instructions_suffix.
-# ⚠ WRITTEN TO A LENGTH, and to a claim it can actually keep.
+# ⚠ WRITTEN TO A CLAIM IT CAN KEEP, and no longer to a length.
 #
-# LENGTH: `proactive_mode="on"` leaves 160 chars under the cap, so a longer line
-# would be DROPPED in that mode. The first draft was 200 and never rendered
-# under `on` at all. This one's fixed part is 125, leaving 35 for the path — the
-# 22-char default fits both modes; `off`, the default mode, leaves 329.
+# It used to be written to a length, and the length was distorting it. The first
+# version said "This session's tool calls and results", which is false: the
+# default sink is ONE fixed path (`config.DEFAULT_EVENT_SINK`), so the file
+# accumulates across restarts AND across every server wrapped with the defaults,
+# and the try kit's file grows for as long as the wrap is installed. The second
+# version said "appended across sessions", which is true and still narrower than
+# the truth — other SERVERS append to it too.
 #
-# CLAIM: it does NOT say "this session's". The default sink is one fixed path
-# (`config.DEFAULT_EVENT_SINK`), so the file accumulates across restarts and
-# across every server wrapped with the defaults, and the try kit's file grows
-# for as long as the wrap is in place. The retired tool filtered the file by
-# `session_id`; an agent cannot, because `session_id` is a per-process uuid4
-# that never reaches the model. So the line describes what is actually there —
-# appended across sessions, newest last — rather than promising a scope the
-# reader would then wrongly attribute to the current session's failures.
-# ⚠ The separator LEADS, and there is no trailing newline. `_REACTIVE_CLAUSES`
-# ends mid-sentence with no break of its own — it was always last — so appending
-# a line that carried its break at the END produced
-# "...replace answering.Tool calls and results...". Caught by reading the
-# rendered string, which is the only way this class of defect shows.
+# The honest sentence did not fit the 1,500-char cap under
+# `proactive_mode="on"`, which is what forced the rewording twice. It fits now
+# because the cap that applies to this line is the client's ~2,087 rather than
+# our self-imposed 1,500 — see `build_instructions_suffix` for why being LAST is
+# what earns it that.
+#
+# And it tells the agent how to actually narrow the file rather than only that it
+# cannot be trusted: every event carries `session_id` and `vendor_id`
+# (`emitter.py:155-160`), so the two things the file mixes are both filterable
+# from the file itself. The retired tool pre-filtered on `session_id`; naming the
+# field gets the same result without a renderer.
 _EVENT_FILE_LINE = (
     "\n\nTool calls and results are captured as JSONL at {event_file_path}, "
-    "appended across sessions, newest last; read it to answer what went wrong."
+    "newest last. Other sessions and other wrapped servers append to the same "
+    "file, so filter on the `session_id` and `vendor_id` that every line "
+    "carries, and read from the end. Use it to answer what went wrong."
 )
 
 
@@ -291,15 +294,27 @@ def build_instructions_suffix(
     annotation-tool name fails loudly at injection time, rather than
     silently producing a string Claude Code would truncate mid-sentence.
 
-    ⚠ With ONE exception, and it is the whole reason this function has a third
-    parameter rather than a longer template: the event-file line is DROPPED
-    when it does not fit, never raised on. Its length comes from the operator's
-    sink URL, so raising would let a long path take down a wrap that is
-    otherwise fine — a filesystem path is not a misconfiguration the way a
-    500-character tool name is. Under ``proactive_mode="on"`` the rest of the
-    suffix already spends 1,340 of 1,500, so this is a live branch, not a
-    defensive one. The drop is not silent to the OPERATOR: ``_bootstrap`` logs a
-    warning when a path was found and did not make it into the suffix.
+    ⚠ TWO CAPS, and the split is the point.
+
+    ``_INSTRUCTIONS_LENGTH_CAP`` (1,500) bounds the BASE suffix — head, optional
+    pre-call clause, both MUST clauses — and overflowing it RAISES, as it always
+    did. Its 587-char margin under the client's ~2,087 exists so that a server
+    with instructions of its own does not have OUR normative text cut.
+
+    The event-file line is measured against ``_CLAUDE_CODE_TRUNCATION_CAP``
+    instead, and it earns that by being LAST. Truncation eats the end, so this
+    line's bytes can only ever displace this line — they cannot push a MUST
+    clause over the cliff, which is the whole thing the 1,500 margin protects.
+    Holding it to 1,500 as well bought nothing and cost the sentence its
+    accuracy: it left 160 chars under ``proactive_mode="on"``, and the honest
+    wording does not fit 160.
+
+    It is still DROPPED rather than raised on when it does not fit even that,
+    because its length comes from the operator's sink URL — a filesystem path is
+    not a misconfiguration the way a 500-character tool name is, and raising
+    would fail a handshake that is otherwise correct. Rare now rather than
+    routine, and ``_bootstrap`` logs a warning when it happens, so an operator
+    whose agent was never told the path can find out why.
     """
     head = _HEAD_PROACTIVE if proactive_mode == "on" else _HEAD_REACTIVE_ONLY
     clause = _PROACTIVE_CLAUSE if proactive_mode == "on" else ""
@@ -327,8 +342,8 @@ def build_instructions_suffix(
         # guard; `.replace` vs `.format` on this line alone is not, since
         # `.format` does not re-process what it substitutes in.
         line = _EVENT_FILE_LINE.replace("{event_file_path}", event_file_path)
-        if len(rendered) + len(line) <= _INSTRUCTIONS_LENGTH_CAP:
-            rendered = rendered + line
+        if len(rendered) + len(line) <= _CLAUDE_CODE_TRUNCATION_CAP:
+            rendered += line
     return rendered
 
 

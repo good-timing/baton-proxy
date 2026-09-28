@@ -311,14 +311,21 @@ class Emitter:
     def scrub_counts(self) -> dict[str, int]:
         """Snapshot of per-category PII redaction counts since session start.
 
-        ⚠ NO production consumer since 2026-09-27. Its only reader was the
+        ⚠ NO production consumer since 2026-09-27, and this is the whole list:
+        `tests/test_emitter.py` is the only caller anywhere. Its reader was the
         injected report tool, which pre-computed the counts here rather than
-        re-parsing the JSONL; that tool is gone and the counts are instead
-        derivable from the `[REDACTED:` markers `scrub.py` writes INTO the
-        file. Kept, not deleted, because the scrubber's counter is live either
-        way and a rollup consumer is a named next step — delete it if that
-        stops being true. Returns a copy so callers can't mutate the live
-        counter.
+        re-parsing the JSONL; that tool is gone, and a consumer wanting the
+        counts now reads the `[REDACTED:` markers `scrub.py` writes INTO the
+        payloads, which need no accumulator.
+
+        Kept rather than deleted for one reason, stated so nobody has to guess
+        at a better one: the test that calls it is asserting that the EMITTER's
+        scrubber accumulated, and deleting the accessor would make that test
+        reach into `_scrubber` instead. If you want the method gone, move the
+        assertion to `tests/test_scrub.py` — where `Scrubber.counts` is already
+        the observable — and take this with it.
+
+        Returns a copy so callers can't mutate the live counter.
         """
         return dict(self._scrubber.counts)
 

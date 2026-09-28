@@ -1041,9 +1041,9 @@ def test_proactive_off_refuses_an_empty_signal_type_rather_than_recording_it() -
 
 def test_an_unknown_signal_type_is_refused_in_both_modes() -> None:
     """`signal_type` IS the friction count. Nothing downstream validates it —
-    `Emitter.enqueue_annotation` takes the string as given and `report.py`
-    renders an unrecognised value as a real signal — so one invented word
-    becomes a number someone acts on.
+    `Emitter.enqueue_annotation` takes the string as given, and a consumer
+    counting signals by type counts an unrecognised value as a real one — so one
+    invented word becomes a number someone acts on.
 
     Refused in BOTH modes: this is our own injected tool, not the vendor's, so
     no wrapped call can fail because of it and the fail-open rule is not in

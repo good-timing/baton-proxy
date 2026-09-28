@@ -175,8 +175,8 @@ def test_the_default_renders_no_pre_call_request() -> None:
 
 def test_instructions_carry_full_signal_type_enum() -> None:
     """All 8 canonical signal_type values must appear in the rendered
-    text. Downstream priority mapping (report synthesizer, Console
-    channel adapter) keys off these strings; a missing value would
+    text. Downstream priority mapping (the Console channel adapter and its
+    friction rollup) keys off these strings; a missing value would
     silently break escalation routing."""
     rendered = build_instructions_suffix(annotation_tool_name="baton_annotate")
     for value in SIGNAL_TYPES:
@@ -391,7 +391,7 @@ def test_the_event_file_line_names_the_path_in_both_modes() -> None:
             "baton_annotate", mode, event_file_path=_DEFAULT_SINK_PATH
         )
         assert _DEFAULT_SINK_PATH in rendered, f"proactive_mode={mode!r} dropped the path"
-        assert len(rendered) <= _INSTRUCTIONS_LENGTH_CAP
+        assert len(rendered) <= _CLAUDE_CODE_TRUNCATION_CAP
 
 
 def test_no_path_renders_no_line_and_no_stray_paragraph() -> None:
@@ -460,23 +460,31 @@ def test_the_line_does_not_claim_the_file_holds_only_this_session() -> None:
     )
     assert "This session's" not in rendered
     assert "this session" not in rendered.lower()
-    # What it says instead has to be the true shape, not merely a hedge.
-    assert "across sessions" in rendered
+    # What it says instead has to be the true shape, not merely a hedge. ⚠ The
+    # SECOND draft said "appended across sessions", which was true and still
+    # understated it: other wrapped SERVERS append to the same path too, so an
+    # agent reading the tail can pick up another server's failure. Both halves
+    # are asserted, and so is the filter that makes them actionable — every
+    # event carries `session_id` and `vendor_id`, so the two things the file
+    # mixes are the two things the agent can separate.
+    assert "Other sessions and other wrapped servers" in rendered
+    assert "session_id" in rendered and "vendor_id" in rendered
     assert "newest last" in rendered
 
 
 def test_a_path_too_long_to_fit_is_dropped_not_raised() -> None:
-    """⚠ The live branch, not a defensive one. `proactive_mode="on"` spends 1,340
-    of the 1,500 cap, leaving 160 for a line whose fixed part is 125 — so a path
-    over 35 characters does not fit, and most real ones are longer.
+    """Raising here would let a deep directory take down a wrap that is otherwise
+    correct, on the handshake. A filesystem path is the operator's, not ours, so
+    it is not a misconfiguration the way a 500-character tool name is. What must
+    survive the drop is everything else: the suffix comes back WHOLE, not
+    truncated to make room.
 
-    Raising here would let a deep directory take down a wrap that is otherwise
-    correct, on the handshake, which is the failure this whole cap exists to
-    avoid rather than cause. What must survive is everything else: the suffix
-    has to come back WHOLE, not truncated to make room.
+    ⚠ This became a RARE branch on 2026-09-27, when the line's cap moved from the
+    self-imposed 1,500 to the client's 2,087 — it takes a ~490-char path now,
+    where it used to take 36. Kept, and kept reachable, because the input is
+    still unbounded: nothing stops an operator's sink path being long.
     """
-    long_path = "/Users/someone/Library/Application Support/baton/deeply/nested/events.jsonl"
-    assert len(long_path) > 35, "this path no longer overflows; pick a longer one"
+    long_path = "/" + "a" * 600 + "/events.jsonl"
     rendered = build_instructions_suffix("baton_annotate", "on", event_file_path=long_path)
     assert long_path not in rendered
     assert rendered == build_instructions_suffix("baton_annotate", "on")
@@ -485,14 +493,13 @@ def test_a_path_too_long_to_fit_is_dropped_not_raised() -> None:
 
 def test_the_off_mode_default_still_fits_a_deep_path() -> None:
     """The control for the test above: the drop must be caused by the BUDGET and
-    not by the path, so the same path in the default mode — which leaves 329
-    chars for a path rather than 35 — has to render. Without this, a bug that
+    not by the path, so a merely DEEP path — the shape a real operator has — must
+    still render, and in the TIGHTER of the two modes. Without this, a bug that
     dropped the line unconditionally would pass the drop test and be
     invisible."""
     long_path = "/Users/someone/Library/Application Support/baton/deeply/nested/events.jsonl"
-    rendered = build_instructions_suffix("baton_annotate", "off", event_file_path=long_path)
+    rendered = build_instructions_suffix("baton_annotate", "on", event_file_path=long_path)
     assert long_path in rendered
-    assert len(rendered) <= _INSTRUCTIONS_LENGTH_CAP
 
 
 def test_a_path_with_braces_does_not_raise_through_the_formatter() -> None:
@@ -512,36 +519,79 @@ def test_a_path_with_braces_does_not_raise_through_the_formatter() -> None:
         assert path in rendered, path
 
 
-def test_the_lines_fixed_part_is_short_enough_to_leave_room_for_a_path() -> None:
-    """The budget, asserted as a number so a reword that spends it reds here
-    rather than in the drop test, which would keep passing while the line
-    stopped rendering for everyone.
+def test_the_line_leaves_room_for_a_real_operators_path() -> None:
+    """The budget, derived rather than restated, so a reword reds here rather than
+    in the drop test — which would keep passing while the line stopped rendering
+    for everybody.
 
-    125 fixed + 35 of path is the `on` mode's whole 160. The first draft of this
-    line was 200 characters and never rendered under `on` at all.
+    ⚠ What is asserted is a PATH length, not a line length. Writing this line to a
+    character count is what produced two false claims about the file it names, so
+    what has to hold is that a real path fits — not that the prose is short. 256
+    is `NAME_MAX` territory and comfortably past any sink path an operator types.
     """
     fixed = len(_EVENT_FILE_LINE.replace("{event_file_path}", ""))
-    on_budget = _INSTRUCTIONS_LENGTH_CAP - len(build_instructions_suffix("baton_annotate", "on"))
-    assert fixed <= 138, (
-        f"the line's fixed part grew to {fixed}; above 138 the 22-char default sink "
-        "path stops fitting proactive_mode='on' and the line silently stops rendering"
-    )
-    assert fixed + len(_DEFAULT_SINK_PATH) <= on_budget, (
-        f"the default sink path no longer fits proactive_mode='on': "
-        f"{fixed} + {len(_DEFAULT_SINK_PATH)} > {on_budget}"
+    tightest = _CLAUDE_CODE_TRUNCATION_CAP - len(build_instructions_suffix("baton_annotate", "on"))
+    room = tightest - fixed
+    assert room >= 256, (
+        f"only {room} chars of path fit in the tightest mode (the line is {fixed}); "
+        "a real operator's sink path would be dropped"
     )
 
 
-def test_the_cap_still_reserves_headroom_for_the_upstream_server() -> None:
-    """Task 2's verification, stated the way the plan asked: the WHOLE suffix
-    fits with the vendor's own instructions absent, and the margin the internal
-    cap holds back for them is real. The proxy APPENDS — `_INSTRUCTIONS_LENGTH_CAP`
-    is a self-imposed 1,500 under the measured ~2,087 truncation point, and the
-    event-file line must not have eaten that reserve."""
-    worst = build_instructions_suffix("baton_annotate", "on", event_file_path=_DEFAULT_SINK_PATH)
-    assert len(worst) <= _INSTRUCTIONS_LENGTH_CAP
-    reserve = _CLAUDE_CODE_TRUNCATION_CAP - len(worst)
-    assert reserve >= 500, (
-        f"only {reserve} chars left for the upstream server's own instructions; "
-        "the suffix has grown into the reserve the cap exists to hold"
+def test_the_base_keeps_the_reserve_and_the_event_line_is_exempt() -> None:
+    """⚠ The two-tier cap, which is the one thing here easy to collapse back by
+    accident.
+
+    The 1,500 cap's job is that a server with instructions of its OWN does not
+    have our NORMATIVE text cut: it holds 587 back under the client's ~2,087 for
+    the upstream string. That reserve belongs to the base — head, optional
+    pre-call clause, both MUST clauses — and the base must stay inside it.
+
+    The event-file line is exempt, and being LAST is what earns it: truncation
+    takes the end, so this line's bytes can only ever displace this line. Holding
+    it to 1,500 as well bought nothing and cost the sentence its accuracy — it
+    left 160 chars, and the honest wording does not fit 160.
+    """
+    for mode in ("off", "on"):
+        base = build_instructions_suffix("baton_annotate", mode)
+        assert len(base) <= _INSTRUCTIONS_LENGTH_CAP, f"the BASE overflowed in {mode!r}"
+        reserve = _CLAUDE_CODE_TRUNCATION_CAP - len(base)
+        assert reserve >= 500, (
+            f"proactive_mode={mode!r}: only {reserve} chars left for the upstream "
+            "server's own instructions; the BASE has grown into its reserve"
+        )
+        whole = build_instructions_suffix("baton_annotate", mode, _DEFAULT_SINK_PATH)
+        assert len(whole) <= _CLAUDE_CODE_TRUNCATION_CAP
+
+
+def test_the_exemption_is_real_and_not_just_unexercised() -> None:
+    """The control for the test above. If the line happened to fit inside 1,500
+    anyway, every assertion there would pass while the exemption did nothing —
+    and a later reword back to the single cap would be invisible. Under `on` the
+    whole suffix must actually EXCEED 1,500 to prove the line is being measured
+    against the client's cap instead."""
+    whole = build_instructions_suffix("baton_annotate", "on", _DEFAULT_SINK_PATH)
+    assert len(whole) > _INSTRUCTIONS_LENGTH_CAP, (
+        f"the whole suffix is {len(whole)}, inside the 1,500 base cap — the "
+        "two-tier split is not being exercised by this test"
     )
+
+
+def test_the_try_kits_own_events_path_renders_in_both_modes() -> None:
+    """⚠ Every other budget test here uses the 22-char default path, so all of
+    them stay green while the line silently stops rendering for the TRIAL — the
+    surface a prospect actually meets, and the one that used to get the retired
+    tool.
+
+    The kit's path is a checkout-relative `try/events.jsonl`, so its length is
+    the prospect's directory layout, not ours. A deleted try-kit test used to pin
+    that the kit really got the tool it was promised; nothing replaced it until
+    this.
+    """
+    from baton_proxy.sinks import find_file_sink_path
+
+    kit_path = "/Users/someone/code/a-deeply-named-evaluation-checkout/try/events.jsonl"
+    assert find_file_sink_path(f"stderr:,file://{kit_path}") == kit_path
+    for mode in ("off", "on"):
+        rendered = build_instructions_suffix("baton_annotate", mode, event_file_path=kit_path)
+        assert kit_path in rendered, f"the kit's path is dropped under proactive_mode={mode!r}"

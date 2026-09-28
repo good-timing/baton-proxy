@@ -91,6 +91,14 @@ payloads — arguments, results, row contents — which is what the aggregate
 commands exist to avoid and what a reader of this file would otherwise think the
 rule above still covers.
 
+Two things about that file the instructions also say, and they matter to what
+you report: **other sessions and other wrapped servers append to it** if they
+use the same path, so filter on the `session_id` and `vendor_id` every line
+carries before attributing a failure to this wrap. And the path is named only
+when the length fits what the client keeps — if it was dropped, the proxy logged
+a warning to its own stderr, so a session where the agent was never told the
+path is a configuration fact, not a missing file.
+
 **Do not read out a credential the commands hid.** The kit shows withheld
 values as `<literal value, not shown>`. `state.json`, the `config-backup.*`
 files, the `.mcp.json` this checkout holds and the config itself hold the real

@@ -169,7 +169,11 @@ def test_scrubs_pii_before_payload_reaches_sink() -> None:
     # via the field-name override on "email".
     assert end_result["matches"][0]["email"] == "[REDACTED:field-email]"
 
-    # Counter exposed for the report tool to consume.
+    # The accessor's only caller, anywhere. It existed for the retired report
+    # tool; what it asserts here is that the EMITTER's scrubber accumulated, not
+    # just that `Scrubber` can — see `Emitter.scrub_counts`' docstring for the
+    # condition under which this assertion should move to test_scrub.py and the
+    # method should go with it.
     counts = e.scrub_counts()
     assert counts["email"] >= 1
     assert counts["field:api_key"] == 1

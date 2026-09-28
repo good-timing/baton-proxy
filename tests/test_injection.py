@@ -517,10 +517,17 @@ def test_a_dropped_event_file_line_is_logged_to_the_operator(tmp_path: Path) -> 
     # fails the proxy before it ever renders instructions — which is how the
     # first draft of this test "passed" its warning assertion and then found no
     # initialize response to check against.
-    deep = tmp_path / "a-directory-long-enough-to-overflow-the-cap"
-    deep.mkdir()
+    #
+    # ⚠ Nested rather than one long name, and built to a MEASURED target rather
+    # than eyeballed: the line's cap moved to the client's 2,087 on 2026-09-27,
+    # so overflowing now needs ~490 chars of path where it used to need 36, and
+    # each single path COMPONENT is capped at 255 by the filesystem.
+    deep = tmp_path
+    for _ in range(3):
+        deep = deep / ("d" * 200)
+        deep.mkdir()
     long_path = str(deep / "events.jsonl")
-    assert len(long_path) > 35
+    assert len(long_path) > 490, f"{len(long_path)} chars is no longer enough to overflow"
     by_id = _run_proxy_with_env(
         {"BATON_EVENT_SINK": f"stderr:,file://{long_path}", "BATON_PROACTIVE": "on"}
     )

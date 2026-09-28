@@ -51,8 +51,13 @@ DEFAULT_VENDOR_ID = "local"
 # Console; ``customer`` = end-user install where the same person owns
 # both the proxy and the Console tenant ("Sentry for AI agents" shape).
 # ⚠ Nothing in the proxy branches on this today. Its one consumer was the
-# injected report tool's gate — vendor mode hid the tool, customer mode kept
-# it — and that tool left on 2026-09-27. The value is still validated and
+# injected report tool's gate, and that tool left on 2026-09-27. What the gate
+# did, stated precisely because the loose version of it is wrong in both
+# directions: a file sink had to exist, and then an HTTP sink SUPPRESSED the
+# tool unless tenant_type was ``customer``. So this value decided nothing on
+# the default install (``stderr:,file://``, no HTTP sink) — that shape got the
+# tool under either tenant type. It only ever broke the tie on a
+# ``file + http`` tee. The value is still validated and
 # recorded because it is a public env var the console and the docs set, and
 # because a tenant-shaped default is the kind of thing the next consumer
 # wants; it just does not steer any behaviour here yet.
