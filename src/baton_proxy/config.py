@@ -31,7 +31,6 @@ from dataclasses import dataclass
 DEFAULT_EVENT_SINK = "stderr:,file:///tmp/baton-proxy.jsonl"
 DEFAULT_TENANT_ID = "local"
 DEFAULT_CONSENT_TOKEN = "local"
-DEFAULT_TENANT_TYPE = "vendor"
 # The vendor label, and a placeholder for the same reason tenant and consent
 # are. It was REQUIRED until 2026-09-02, and that cost more than it bought:
 # the proxy IS the MCP server from the client's perspective, so a missing
@@ -45,23 +44,6 @@ DEFAULT_TENANT_TYPE = "vendor"
 # vendor``. There, `local` lands friction in a bucket nobody owns, so a
 # remote sink still refuses to start with the placeholder.
 DEFAULT_VENDOR_ID = "local"
-
-# Valid values for BATON_TENANT_TYPE. ``vendor`` = production install
-# wrapped on a customer's machine that ships signal to the vendor's
-# Console; ``customer`` = end-user install where the same person owns
-# both the proxy and the Console tenant ("Sentry for AI agents" shape).
-# ⚠ Nothing in the proxy branches on this today. Its one consumer was the
-# injected report tool's gate, and that tool left on 2026-09-27. What the gate
-# did, stated precisely because the loose version of it is wrong in both
-# directions: a file sink had to exist, and then an HTTP sink SUPPRESSED the
-# tool unless tenant_type was ``customer``. So this value decided nothing on
-# the default install (``stderr:,file://``, no HTTP sink) — that shape got the
-# tool under either tenant type. It only ever broke the tie on a
-# ``file + http`` tee. The value is still validated and
-# recorded because it is a public env var the console and the docs set, and
-# because a tenant-shaped default is the kind of thing the next consumer
-# wants; it just does not steer any behaviour here yet.
-_TENANT_TYPES: frozenset[str] = frozenset({"vendor", "customer"})
 
 # Valid values for BATON_INTENT_PARAM — the per-tool goal-param injection
 # mode. ``optional`` injects `user_goal`/`expected_result` as optional params
@@ -190,15 +172,6 @@ class Config:
     # override with BATON_PROXY_LOG_FILE for persistent debugging.
     log_file: str | None
 
-    # Which Baton tenant shape this proxy is wired to: ``vendor`` (default)
-    # ships signal to the wrapped MCP server's vendor Console; ``customer``
-    # ships to the end-user's own Baton tenant. ⚠ Recorded, not acted on —
-    # see the DEFAULT_TENANT_TYPE comment above for why it governs nothing in
-    # the proxy today. Defaulted here so tests that construct Config directly
-    # don't need to spell it out; from_env() always populates it explicitly
-    # from BATON_TENANT_TYPE.
-    tenant_type: str = DEFAULT_TENANT_TYPE
-
     # Per-tool intent-param injection mode: optional | required | off.
     # See DEFAULT_INTENT_PARAM_MODE above.
     intent_param_mode: str = DEFAULT_INTENT_PARAM_MODE
@@ -253,11 +226,6 @@ class Config:
     @classmethod
     def from_env(cls) -> Config:
         vendor_id = _env("BATON_VENDOR_ID") or DEFAULT_VENDOR_ID
-        tenant_type = _env("BATON_TENANT_TYPE") or DEFAULT_TENANT_TYPE
-        if tenant_type not in _TENANT_TYPES:
-            raise ValueError(
-                f"BATON_TENANT_TYPE must be one of {sorted(_TENANT_TYPES)}; got {tenant_type!r}."
-            )
         warnings: list[str] = []
         intent_param_mode = _env("BATON_INTENT_PARAM") or DEFAULT_INTENT_PARAM_MODE
         if intent_param_mode == "off":
@@ -329,7 +297,6 @@ class Config:
             api_key=_env("BATON_API_KEY"),
             consent_token=_env("BATON_CONSENT_TOKEN") or DEFAULT_CONSENT_TOKEN,
             vendor_id=vendor_id,
-            tenant_type=tenant_type,
             intent_param_mode=intent_param_mode,
             proactive_mode=proactive_mode,
             principal_id_hmac_key=hmac_key.encode("utf-8") if hmac_key else None,

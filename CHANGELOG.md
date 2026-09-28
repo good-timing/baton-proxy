@@ -29,10 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   it showed are still in the file, as the `[REDACTED:` markers `scrub.py`
   writes into the payloads.
 
-  ⚠ **`BATON_TENANT_TYPE` now steers nothing in this package.** The report gate
-  was its only consumer. The variable is still accepted and validated — an
-  unknown value still fails startup — so no configuration breaks; it just has
-  no effect here until something else reads it.
+  ⚠ **`BATON_TENANT_TYPE` is removed.** The report gate was its only consumer,
+  so the variable, its validation and its `Config` field went with the tool.
+  **No configuration breaks:** unknown `BATON_*` names are ignored, so an entry
+  that still sets it — as the Console's local-setup page wrote them — starts and
+  behaves identically. The one loss is that a typo (`customers`) no longer fails
+  loudly, and it was only ever loud about a value that changed nothing.
+
+  ⚠ **`Emitter.scrub_counts()` is removed** for the same reason: the tool
+  pre-computed the counts through it, and nothing else ever called it. The
+  scrubber's counter is untouched, and a consumer wanting counts reads the
+  `[REDACTED:` markers in the payloads.
 
 ### Added
 

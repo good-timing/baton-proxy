@@ -197,7 +197,14 @@ def test_the_customer_mode_arm_serves_the_same_set(tmp_path: Path) -> None:
     as its verification. `file + http(s) + BATON_TENANT_TYPE=customer` was the
     ONE combination that kept the report tool when an HTTP sink was present —
     every other http shape was already suppressed, so a deletion that missed
-    the `tenant_type` branch would leave exactly this shape still injecting.
+    that branch would leave exactly this shape still injecting.
+
+    ⚠ `BATON_TENANT_TYPE` is an unread name as of 2026-09-27 — the variable was
+    deleted with the branch. It is still SET here on purpose, and that is now the
+    second thing this test proves: a config still carrying it, as the Console's
+    local-setup page wrote them, gets the same tool set and does not fail to
+    start. A `file + http` tee is also a shape worth keeping a served-set
+    assertion on in its own right.
     """
     by_id = _run_proxy_with_env(
         {

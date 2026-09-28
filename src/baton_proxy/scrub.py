@@ -93,12 +93,12 @@ class Scrubber:
 
     Construct one per session and reuse for every event. The ``counts``
     attribute accumulates per-category redaction counts across all calls.
-    ⚠ No PRODUCTION reader since 2026-09-27 — see ``Emitter.scrub_counts`` —
-    but not an orphan: ``tests/test_scrub.py`` reads it throughout as the
-    observable for WHICH redaction rule fired, which is what makes the ruleset
-    testable at all. What a consumer in production reads instead is the
-    ``[REDACTED:`` markers written into the payloads below, which are in the
-    event file itself and need no accumulator.
+    ⚠ No PRODUCTION reader since 2026-09-27, when the retired report tool took
+    ``Emitter.scrub_counts()`` with it — but not an orphan: ``tests/test_scrub.py``
+    reads it throughout as the observable for WHICH redaction rule fired, which
+    is what makes the ruleset testable at all. What a consumer in production
+    reads instead is the ``[REDACTED:`` markers written into the payloads below,
+    which are in the event file itself and need no accumulator.
 
     Signature is ``Callable[[Any], Any]`` so the Scrubber instance plugs
     into anywhere a plain function would (keeps parity with the SDK's

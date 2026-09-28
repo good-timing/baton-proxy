@@ -175,36 +175,17 @@ def test_from_env_treats_empty_vendor_id_as_unset(
     assert Config.from_env().vendor_id == DEFAULT_VENDOR_ID
 
 
-def test_from_env_tenant_type_defaults_to_vendor(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unset BATON_TENANT_TYPE = vendor mode. Preserves existing install
-    semantics; customer mode is opt-in."""
-    _scrub_baton_env(monkeypatch)
-    _set_required_env(monkeypatch)
-    config = Config.from_env()
-    assert config.tenant_type == "vendor"
-
-
-def test_from_env_tenant_type_customer_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    """BATON_TENANT_TYPE=customer flips the report-tool gate so the
-    in-Claude tool stays injected even with a remote http sink."""
-    _scrub_baton_env(monkeypatch)
-    _set_required_env(monkeypatch)
-    monkeypatch.setenv("BATON_TENANT_TYPE", "customer")
-    config = Config.from_env()
-    assert config.tenant_type == "customer"
-
-
-def test_from_env_tenant_type_rejects_unknown_values(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Typos / unknown values fail loudly — silently treating
-    BATON_TENANT_TYPE=customers (plural) as vendor would surprise the
-    user; better to raise."""
-    _scrub_baton_env(monkeypatch)
-    _set_required_env(monkeypatch)
-    monkeypatch.setenv("BATON_TENANT_TYPE", "customers")
-    with pytest.raises(ValueError, match="BATON_TENANT_TYPE"):
-        Config.from_env()
+# ⚠ THREE TESTS LEFT HERE on 2026-09-27, with `BATON_TENANT_TYPE` itself: the
+# default, the `customer` override, and the loud rejection of a typo. They tested
+# a value that, after the injected report tool was deleted, no code read — the
+# gate was its only consumer. Recorded rather than silently dropped, because the
+# middle one's docstring ("flips the report-tool gate") was the last description
+# of that gate anywhere in the tests.
+#
+# Nothing breaks for an install that still sets the variable: unknown `BATON_*`
+# names are ignored, so a config the Console's local-setup page wrote keeps
+# working. What is lost is the loud typo check, and it was only ever loud about a
+# value that changed nothing.
 
 
 def test_from_env_proactive_defaults_to_off(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,7 +209,7 @@ def test_from_env_proactive_off_override(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_from_env_proactive_rejects_unknown_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Same reason as BATON_TENANT_TYPE: silently reading `BATON_PROACTIVE=false`
+    """Same reason `BATON_TENANT_TYPE` used to raise: silently reading `BATON_PROACTIVE=false`
     as `on` leaves an operator believing they turned something off."""
     _scrub_baton_env(monkeypatch)
     _set_required_env(monkeypatch)

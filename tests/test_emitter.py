@@ -169,12 +169,13 @@ def test_scrubs_pii_before_payload_reaches_sink() -> None:
     # via the field-name override on "email".
     assert end_result["matches"][0]["email"] == "[REDACTED:field-email]"
 
-    # The accessor's only caller, anywhere. It existed for the retired report
-    # tool; what it asserts here is that the EMITTER's scrubber accumulated, not
-    # just that `Scrubber` can — see `Emitter.scrub_counts`' docstring for the
-    # condition under which this assertion should move to test_scrub.py and the
-    # method should go with it.
-    counts = e.scrub_counts()
+    # Read off the emitter's scrubber directly. There was an `Emitter.scrub_counts()`
+    # accessor until 2026-09-27, and this was its only caller anywhere — it existed
+    # for the retired report tool, so it went with it. The assertion stays here
+    # rather than moving to test_scrub.py because what it is about is that the
+    # EMITTER's scrubber accumulated over a real event stream, not that `Scrubber`
+    # can count, which test_scrub.py already covers.
+    counts = e._scrubber.counts
     assert counts["email"] >= 1
     assert counts["field:api_key"] == 1
     assert counts["field:email"] == 1
