@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`baton_session_report` is gone, with nothing in its place.** The injected
+  tool advertised "a summary of tool calls, **errors**, and friction signals …
+  use this when the user asks *show me what went wrong*", and rendered only
+  annotations the agent had filed itself. Measured on a real returned failure it
+  answered **"Signals filed 0"** for a call this package marks
+  `status="error"` — because the renderer did no classification at all: it
+  imported `json`, `logging` and `urllib.parse`, and nothing else.
+
+  Your agent reads the same JSONL and groups and explains errors better than a
+  fixed template does, so the replacement is a line in the server instructions
+  naming the event file (below) rather than a second renderer.
+
+  **Who is affected:** nobody wrapping with an `http(s)` sink — that shape never
+  got the tool. The default local install and `BATON_TENANT_TYPE=customer` did.
+  A local wrap loses the in-Claude report and gains the path; the scrub counts
+  it showed are still in the file, as the `[REDACTED:` markers `scrub.py`
+  writes into the payloads.
+
+  ⚠ **`BATON_TENANT_TYPE` now steers nothing in this package.** The report gate
+  was its only consumer. The variable is still accepted and validated — an
+  unknown value still fails startup — so no configuration breaks; it just has
+  no effect here until something else reads it.
+
+### Added
+
+- **The server instructions name the local event file.** One line, after the
+  head and ahead of both MUST clauses, telling the agent where the session's
+  JSONL is so it can answer "what went wrong" by reading it. Rendered only when
+  the sink spec has a `file://` leg, so an http-only vendor wrap is byte-for-byte
+  unchanged. On the tightest configuration (`BATON_PROACTIVE=on`) a path longer
+  than ~59 characters does not fit the instructions cap; the line is then
+  dropped rather than truncated, and the rest of the suffix is unaffected.
+
 ### Changed
 
 - **A returned error flag now counts as a failure even when the body carries no

@@ -203,16 +203,18 @@ never writes it down).
 
 ## 3. What your agent sees that it did not before
 
-**Two added tools.** Both are answered by the proxy; neither call reaches your
+**One added tool.** It is answered by the proxy; the call never reaches your
 server.
 
 - `baton_annotate` (`proxy.py`, `ANNOTATE_TOOL_NAME`). The agent calls it to
   record what the user was trying to do and where a tool call went wrong. Its
   only effect is a line in the local event file.
-- `baton_session_report` (`proxy.py`, `_build_report_tool`). Renders a markdown
-  summary of the current session by reading the local event file. It opens no
-  network connection. It is injected whenever a file sink is configured, which
-  the try setup does (`report.py`, `should_inject_report_tool`).
+
+There were two until 2026-09-27. The second, `baton_session_report`, rendered a
+markdown summary of the session by reading the local event file, and was
+injected whenever a file sink was configured — which the try setup does, so a
+trial wrap got it. It is deleted, with nothing in its place: your agent reads
+the event file itself, which is why the paragraph below now names the path.
 
 **Three parameters added to every upstream tool's schema:** `user_goal`,
 `expected_result` and `overall_task` (`proxy.py`, `_inject_goal_params`). They
@@ -238,8 +240,12 @@ lists tools before calling them, a natively declared parameter is recognised and
 forwarded untouched.
 
 **A paragraph appended to your server's `instructions`**, telling the agent that
-`baton_annotate` exists (`_llm_text.py`, `build_instructions_suffix`). Appended
-to whatever your server sent, never replacing it.
+`baton_annotate` exists and naming the path of the local event file, so it can
+read the session back when you ask what went wrong (`_llm_text.py`,
+`build_instructions_suffix`). Appended to whatever your server sent, never
+replacing it. The path is named only when a `file://` sink is configured; the
+line is dropped rather than truncated if it would push the paragraph past the
+length Claude Code keeps.
 
 Beyond those three additions, nothing is removed, renamed or rewritten: tool
 definitions, arguments, results and errors pass through unchanged.
