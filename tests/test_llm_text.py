@@ -43,6 +43,8 @@ from baton_proxy._llm_text import (
     build_instructions_suffix,
     build_overall_task_param_description,
 )
+from baton_proxy.config import DEFAULT_EVENT_SINK
+from baton_proxy.sinks import find_file_sink_path
 
 # =============================================================================
 # Cap discipline
@@ -380,7 +382,13 @@ def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
 # misconfiguration the way a 1,500-character tool name is.
 # =============================================================================
 
-_DEFAULT_SINK_PATH = "/tmp/baton-proxy.jsonl"
+# DERIVED, not typed. Seven docstrings here reason about "the 22-char default
+# sink path", and a hardcoded copy keeps every one of them green against a path
+# the product no longer uses — while the real default silently stops fitting.
+# `tests/test_injection.py` already derives it this way; these two modules
+# disagreed until 2026-09-27.
+_DEFAULT_SINK_PATH = find_file_sink_path(DEFAULT_EVENT_SINK)
+assert _DEFAULT_SINK_PATH, f"the default sink has no file leg: {DEFAULT_EVENT_SINK!r}"
 
 
 def test_the_event_file_line_names_the_path_in_both_modes() -> None:

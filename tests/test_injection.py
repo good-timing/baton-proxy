@@ -8,7 +8,6 @@ Emission is disabled (env vars unset) so this test is fully offline.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -63,61 +62,38 @@ REQUESTS = [
 ]
 
 
-def _run_proxy() -> dict[int, dict]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "baton_proxy", "--", sys.executable, str(FIXTURE)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        # BATON_VENDOR_ID is required at startup; tests that don't otherwise
-        # exercise vendor_id semantics still need a baseline value.
-        env={**env, "PYTHONPATH": str(REPO / "src"), "BATON_VENDOR_ID": "v"},
-    )
-    input_data = "".join(json.dumps(req) + "\n" for req in REQUESTS)
-    try:
-        stdout, _stderr = proc.communicate(input=input_data, timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, _stderr = proc.communicate()
+def _instructions(by_id: dict[int, dict]) -> str:
+    init = by_id.get(1)
+    assert init is not None, "no initialize response"
+    return init.get("result", {}).get("instructions", "")
 
-    by_id: dict[int, dict] = {}
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if "id" in msg:
-            by_id[msg["id"]] = msg
-    return by_id
+
+def _served_names(by_id: dict[int, dict]) -> set[str]:
+    tools_list = by_id.get(2)
+    assert tools_list is not None, "no tools/list response"
+    return {t.get("name") for t in tools_list.get("result", {}).get("tools", [])}
+
+
+def _run_proxy() -> dict[int, dict]:
+    """The default install: no `BATON_*` at all. Literally `_run_proxy_with_env({})`
+    — it was a second copy of that body until 2026-09-27, and the copies had
+    already drifted: only one of them kept the subprocess's stderr, so the tests
+    calling this one could not see a startup warning."""
+    return _run_proxy_with_env({})
 
 
 def test_initialize_carries_injected_instructions() -> None:
     by_id = _run_proxy()
-    init = by_id.get(1)
-    assert init is not None, "no initialize response"
-    instructions = init.get("result", {}).get("instructions", "")
+    instructions = _instructions(by_id)
     assert "baton_annotate" in instructions
     assert "MUST" in instructions
 
 
 def test_tools_list_contains_injected_tool() -> None:
     by_id = _run_proxy()
-    tools_list = by_id.get(2)
-    assert tools_list is not None, "no tools/list response"
-    names = [t.get("name") for t in tools_list.get("result", {}).get("tools", [])]
+    names = _served_names(by_id)
     assert "baton_annotate" in names
     assert "echo" in names  # upstream tool still there
-
-
-def _instructions(by_id: dict[int, dict]) -> str:
-    init = by_id.get(1)
-    assert init is not None, "no initialize response"
-    return init.get("result", {}).get("instructions", "")
 
 
 def test_the_default_installs_handshake_names_its_event_file() -> None:
@@ -168,12 +144,6 @@ def test_a_custom_file_sink_is_the_path_named(tmp_path: Path) -> None:
     assert str(custom) in _instructions(by_id)
 
 
-def _served_names(by_id: dict[int, dict]) -> set[str]:
-    tools_list = by_id.get(2)
-    assert tools_list is not None, "no tools/list response"
-    return {t.get("name") for t in tools_list.get("result", {}).get("tools", [])}
-
-
 # The EXACT served set, on each sink shape that used to decide whether a second
 # tool appeared. Asserted as a set rather than as `"baton_session_report" not in
 # names`, which is the obvious form and passes against a typo, against a rename,
@@ -186,16 +156,15 @@ def _served_names(by_id: dict[int, dict]) -> set[str]:
 # thing this set exists to catch. What is hardcoded is the one name the proxy
 # ADDS, because that is the number under test — one, not two.
 def _expected_served() -> set[str]:
-    # Loaded by path, not by `import fixture_responses`: that name resolves only
-    # inside the fixture SUBPROCESS, whose sys.path starts at its own directory.
-    spec = importlib.util.spec_from_file_location(
-        "_fixture_responses", HERE / "fixture_responses.py"
-    )
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # PACKAGE-qualified: the bare name `fixture_responses` resolves only inside
+    # the fixture SUBPROCESS, whose sys.path starts at its own directory, but
+    # `tests` is a package (`tests/__init__.py`) and the repo root is on the path,
+    # so this plain import works and a `spec_from_file_location` dance does not
+    # need to. (`test_try_kit.py` genuinely needs that dance — it loads
+    # `try/kit.py`, which is outside any package.)
+    from tests.fixture_responses import result_for
 
-    listed = mod.result_for({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    listed = result_for({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     upstream = {t["name"] for t in listed["result"]["tools"]}
     assert upstream, "the fixture declares no tools; this set would assert nothing"
     return upstream | {"baton_annotate"}
@@ -327,15 +296,11 @@ def test_vendor_id_does_not_affect_tool_name() -> None:
     is a deliberate move (vendor opt-in to white-label), not an accident."""
     by_id = _run_proxy_with_env({"BATON_VENDOR_ID": "acme"})
 
-    init = by_id.get(1)
-    assert init is not None
-    instructions = init.get("result", {}).get("instructions", "")
+    instructions = _instructions(by_id)
     assert "baton_annotate" in instructions
     assert "acme_annotate" not in instructions
 
-    tools_list = by_id.get(2)
-    assert tools_list is not None
-    names = [t.get("name") for t in tools_list.get("result", {}).get("tools", [])]
+    names = _served_names(by_id)
     assert "baton_annotate" in names
     assert "acme_annotate" not in names
 

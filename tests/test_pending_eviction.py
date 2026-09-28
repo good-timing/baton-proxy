@@ -110,7 +110,7 @@ def test_eviction_survives_emitter_failure() -> None:
 
 
 def _bare_processor(emitter: Any) -> MessageProcessor:
-    injection = _Injection(tools=[], instructions_suffix="", sink_path=None)
+    injection = _Injection(tools=[], instructions_suffix="")
     return MessageProcessor(emitter, injection, "sess-test")  # type: ignore[arg-type]
 
 

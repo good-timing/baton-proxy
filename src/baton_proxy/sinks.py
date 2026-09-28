@@ -255,20 +255,32 @@ class MultiSink(Sink):
                 logger.exception("baton-proxy sink close failed")
 
 
+def _split_spec(url_spec: str | None) -> list[str]:
+    """The legs of a comma-separated sink spec, stripped, empties dropped.
+
+    One definition because there are two readers — ``make_sink`` builds sinks
+    from these legs, ``find_file_sink_path`` reads a path out of them — and the
+    tolerances (surrounding whitespace, empty segments from a trailing or
+    doubled comma) are a contract `test_make_sink_whitespace_tolerated` pins
+    once. Two copies would let a spec that builds sinks fine resolve to no path,
+    or the reverse.
+    """
+    if not url_spec:
+        return []
+    return [p.strip() for p in url_spec.split(",") if p.strip()]
+
+
 def find_file_sink_path(event_sink_url: str | None) -> str | None:
     """Return the first ``file://`` path in a (possibly comma-separated) sink
     URL spec, or None if no file sink is present.
 
     Lives here rather than with its caller because this module already owns
-    sink-spec parsing — ``make_sink`` does the same comma split and
-    ``_make_one`` the same ``file`` scheme read. Its consumer is the
-    instructions suffix, which tells the agent where the local event file is
-    so it can read the session back itself; a spec with no file leg has no
-    path to name, and the line is omitted.
+    sink-spec parsing, and it now SHARES that parsing rather than restating it.
+    Its consumer is the instructions suffix, which tells the agent where the
+    local event file is so it can read the captured calls back itself; a spec
+    with no file leg has no path to name, and the line is omitted.
     """
-    if not event_sink_url:
-        return None
-    for part in (p.strip() for p in event_sink_url.split(",") if p.strip()):
+    for part in _split_spec(event_sink_url):
         parsed = urllib.parse.urlparse(part)
         if parsed.scheme == "file" and parsed.path:
             return parsed.path
@@ -288,7 +300,7 @@ def make_sink(url_spec: str, *, api_key: str | None) -> Sink:
     raise ValueError; HTTP sinks raise if api_key is None — all caught at
     proxy startup, never silently dropped.
     """
-    parts = [p.strip() for p in url_spec.split(",") if p.strip()]
+    parts = _split_spec(url_spec)
     if not parts:
         raise ValueError(f"BATON_EVENT_SINK is empty after parsing: {url_spec!r}")
     sinks = [_make_one(p, api_key=api_key) for p in parts]
@@ -325,5 +337,6 @@ __all__ = [
     "S3Sink",
     "Sink",
     "StderrSink",
+    "find_file_sink_path",
     "make_sink",
 ]

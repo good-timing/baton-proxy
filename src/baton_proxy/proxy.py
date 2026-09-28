@@ -147,17 +147,19 @@ class _Injection:
     One injected tool, the annotate tool. There was a second — a
     session-report tool gated on a local-only sink — until 2026-09-27; it
     advertised a summary of errors and rendered only agent-filed annotations,
-    so the agent now reads the event file itself. ``sink_path`` is what is left
-    of that gate, and it is no longer a gate: it is the path the instructions
-    NAME, so the agent knows where to read.
+    so the agent now reads the event file itself, told where by a line in
+    ``instructions_suffix``.
     """
 
     tools: list[dict[str, Any]]
     instructions_suffix: str
-    # Path of the local file sink, if the spec has one — the path named in the
-    # instructions suffix. None when the sink is stderr- or http-only, in which
-    # case there is nothing local to point the agent at.
-    sink_path: str | None
+    # True when there WAS a local event file to name and the line naming it did
+    # not fit the cap. Stored rather than left for the caller to work out: the
+    # only interested party is the startup warning, and having it re-ask the
+    # rendered string put the same question in two places. Computed once, in
+    # `create`, from the one thing that settles it — whether the path is in the
+    # text that shipped.
+    event_line_dropped: bool = False
     # Intent-param injection mode: "optional" | "required" | "off". Defaulted
     # so tests that build _Injection directly keep their existing shape.
     intent_param_mode: str = "optional"
@@ -175,18 +177,25 @@ class _Injection:
     @classmethod
     def create(
         cls,
-        event_sink_url: str | None,
+        event_file_path: str | None,
         *,
         intent_param_mode: str = "optional",
         proactive_mode: str = "off",
     ) -> _Injection:
-        sink_path = find_file_sink_path(event_sink_url)
+        """``event_file_path`` is the local event file, already resolved.
+
+        Takes the PATH rather than the sink spec: `_bootstrap` resolves it with
+        `find_file_sink_path` because it also wants it for the warning below, and
+        parsing the spec in both places was the duplication this signature
+        removes.
+        """
+        suffix = build_instructions_suffix(
+            ANNOTATE_TOOL_NAME, proactive_mode, event_file_path=event_file_path
+        )
         return cls(
             tools=[_build_injected_tool(ANNOTATE_TOOL_NAME, proactive_mode)],
-            instructions_suffix=build_instructions_suffix(
-                ANNOTATE_TOOL_NAME, proactive_mode, event_file_path=sink_path
-            ),
-            sink_path=sink_path,
+            instructions_suffix=suffix,
+            event_line_dropped=bool(event_file_path) and event_file_path not in suffix,
             intent_param_mode=intent_param_mode,
             proactive_mode=proactive_mode,
         )
@@ -1403,8 +1412,9 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     # checks the log file could find.
     for warning in config.startup_warnings:
         logger.warning("%s", warning)
+    event_file = find_file_sink_path(config.event_sink)
     injection = _Injection.create(
-        config.event_sink,
+        event_file,
         intent_param_mode=config.intent_param_mode,
         proactive_mode=config.proactive_mode,
     )
@@ -1412,14 +1422,13 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     # length cap, because the path's length is the operator's and a deep
     # directory must not fail a handshake. Told here for the same reason as the
     # loop above: the alternative is an operator whose agent never learns where
-    # the events are, with nothing anywhere saying why. Reachable in practice —
-    # `BATON_PROACTIVE=on` leaves 35 chars for a path.
-    if injection.sink_path and injection.sink_path not in injection.instructions_suffix:
+    # the events are, with nothing anywhere saying why.
+    if injection.event_line_dropped:
         logger.warning(
             "baton-proxy: the event file path (%s) did not fit the instructions "
-            "length cap, so the agent will not be told where to read the session. "
-            "Use a shorter sink path, or BATON_PROACTIVE=off, to restore it.",
-            injection.sink_path,
+            "length cap, so the agent will not be told where to read the captured "
+            "calls. Use a shorter sink path, or BATON_PROACTIVE=off, to restore it.",
+            event_file,
         )
     emitter = Emitter(config)
     emitter.start()
