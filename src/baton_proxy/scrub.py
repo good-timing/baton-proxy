@@ -92,9 +92,11 @@ class Scrubber:
     """Stateful recursive scrubber with the default ruleset baked in.
 
     Construct one per session and reuse for every event. The ``counts``
-    attribute accumulates per-category redaction counts across all calls
-    so the friction report can surface "N emails, M bearer tokens" at
-    session render time.
+    attribute accumulates per-category redaction counts across all calls.
+    ⚠ Those counts have no production reader since 2026-09-27 — see
+    ``Emitter.scrub_counts``. What a consumer reads instead is the
+    ``[REDACTED:`` markers written into the payloads below, which are in the
+    event file itself and need no accumulator.
 
     Signature is ``Callable[[Any], Any]`` so the Scrubber instance plugs
     into anywhere a plain function would (keeps parity with the SDK's

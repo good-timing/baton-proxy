@@ -2484,7 +2484,11 @@ WIDE_AUDIT_RE = r"urlopen|socket|http\.client|requests\.|boto3|subprocess"
 # of a bare count quietly absorbing a swap. Nothing under `try/` is in the set,
 # and `test_the_kit_contributes_no_audited_call_site` is the assertion of that.
 EXPECTED_AUDIT_HITS = {
-    ("src/baton_proxy/proxy.py", 1632, "subprocess.Popen("),
+    # ⚠ Line number, so it moves with any edit ABOVE it in proxy.py — 1632
+    # before the report tool was deleted out of that file (2026-09-27). Re-point
+    # it; the pin is which five sites exist, and the count below is the half that
+    # catches a sixth.
+    ("src/baton_proxy/proxy.py", 1564, "subprocess.Popen("),
     ("src/baton_proxy/transport_http.py", 135, "urllib.request.urlopen(req"),
     ("src/baton_proxy/transport_http.py", 187, "urlopen(timeout=inf) blocks forever"),
     ("src/baton_proxy/sinks.py", 159, "urllib.request.urlopen(req"),
@@ -6399,26 +6403,30 @@ def test_the_single_client_assumption_is_stated_before_it_bites(rel):
 # states today. Read "step 2" below as "any summary we give before the wrap".
 #
 # Step 2's list covered the config entry, the credentials, the local file and
-# reversibility. It did not cover the two added tools or the three grafted
+# reversibility. It did not cover the added tool or the three grafted
 # parameters — which is the addition a person is most likely to SEE, since it
 # shows up in their own agent's tool list. Every `a1` run volunteered it anyway,
 # but from `SECURITY.md` §3 rather than from step 2, so an agent that skipped
 # the document gave a strictly worse summary and could not tell.
 #
-# The two claims underneath it are mechanical and pinned as such: the tool names
-# come from `proxy.py`, the parameter count from the injector itself, and the
-# report tool is GATED — it appears only because the kit writes a file sink, so
-# a summary promising it is one config change away from being false.
+# The two claims underneath it are mechanical and pinned as such: the tool name
+# comes from `proxy.py`, the parameter count from the injector itself.
+#
+# ⚠ There were TWO added tools until 2026-09-27, and a third test here pinned
+# the second one's GATE — it appeared only because the kit writes a file sink,
+# so a summary promising it was one config change away from being false. The
+# tool is retired and that test went with the promise. The gate's surviving
+# half, `find_file_sink_path`, now decides only whether the instructions can
+# name the event file, which discloses nothing a reader has to be warned about.
 # ---------------------------------------------------------------------------
 
 
-def test_the_tool_names_step_2_promises_are_the_ones_the_proxy_grafts():
-    """A rename in `proxy.py` would leave the doc naming tools that do not
+def test_the_tool_name_step_2_promises_is_the_one_the_proxy_grafts():
+    """A rename in `proxy.py` would leave the doc naming a tool that does not
     exist, in the one paragraph a person reads before approving anything."""
-    from baton_proxy.proxy import ANNOTATE_TOOL_NAME, REPORT_TOOL_NAME
+    from baton_proxy.proxy import ANNOTATE_TOOL_NAME
 
     assert ANNOTATE_TOOL_NAME == "baton_annotate"
-    assert REPORT_TOOL_NAME == "baton_session_report"
 
 
 def test_step_2s_parameter_count_is_the_injectors_own():
@@ -6432,20 +6440,6 @@ def test_step_2s_parameter_count_is_the_injectors_own():
     )
     assert "required" not in tool["inputSchema"], (
         "step 2 calls them optional; the default mode now marks one required"
-    )
-
-
-def test_the_report_tool_step_2_promises_is_one_the_kit_actually_gets(tmp_path):
-    """`baton_session_report` is injected only when a file sink is configured
-    (`report.should_inject_report_tool`). The kit writes exactly that and no
-    HTTP sink, which is what opens the gate — so the promise is true because of
-    a line in `kit.py`, not by construction."""
-    from baton_proxy.report import should_inject_report_tool
-
-    sink = kit.file_sink_uri(str(tmp_path / "events.jsonl"))
-    assert should_inject_report_tool(sink), (
-        "step 2 tells the person their agent will see baton_session_report, and "
-        "the kit's own sink no longer causes it to be injected"
     )
 
 

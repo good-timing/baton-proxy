@@ -201,8 +201,8 @@ _INSTRUCTIONS_LENGTH_CAP = 1500
 # Canonical signal_type values per SPEC §3.1. Stable and additive-only
 # until v1.0 (SPEC §13). The annotation tool's inputSchema enum and the
 # instructions text must reference the same eight values; downstream
-# escalation taxonomies (e.g., the priority mapping in the report
-# synthesizer) key off these strings.
+# escalation taxonomies (the Console's friction rollup) key off these
+# strings.
 SIGNAL_TYPES: tuple[str, ...] = (
     "failure",
     "retry_loop",

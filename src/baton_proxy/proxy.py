@@ -54,6 +54,7 @@ from baton_proxy._llm_text import (
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter, utc_now_ms
 from baton_proxy.mcp_error import RETURNED_ERROR_TYPE, error_text, is_error_result
+from baton_proxy.sinks import find_file_sink_path
 
 logger = logging.getLogger("baton_proxy")
 
@@ -72,13 +73,6 @@ EVICTED_ERROR_TYPE = "proxy_pending_evicted"
 # Underscore form matches the SDK's `derive_annotation_tool_name` rather
 # than the dot form in SPEC §5.1.1; the SDK ships underscores today.
 ANNOTATE_TOOL_NAME = "baton_annotate"
-
-# Local-only "show me a friction report for this session" tool — only
-# injected when the sink is purely local (file:// present, no http(s)://).
-# The gate maps to product mode: local-sink demo = report tool present,
-# vendor production (http sink) = no report tool, the vendor's own
-# pipeline renders the report instead.
-REPORT_TOOL_NAME = "baton_session_report"
 
 # Per-tool injected params — names + copy match baton-sdk's
 # baton.integrations._llm_text (see that module's comment for the naming
@@ -146,35 +140,24 @@ def _build_injected_tool(tool_name: str, proactive_mode: str = "off") -> dict[st
     }
 
 
-def _build_report_tool() -> dict[str, Any]:
-    return {
-        "name": REPORT_TOOL_NAME,
-        "description": (
-            "Show a friction report for the current session — a vendor-shareable "
-            "summary of tool calls, errors, and friction signals captured by the "
-            "proxy. Use this when the user asks 'show me what went wrong', 'what "
-            "would a support ticket for this look like', or wants to see a "
-            "rollup of friction in this session. Output is ready-to-paste "
-            "markdown."
-        ),
-        "inputSchema": {"type": "object", "properties": {}},
-    }
-
-
 @dataclass(frozen=True)
 class _Injection:
     """Resolved per-process injection state.
 
-    Always carries the annotate tool. Carries the session-report tool too
-    when the sink is purely local (so the customer can see the friction
-    report surface). HTTP sinks indicate production mode where the
-    vendor's own pipeline renders the report, not the proxy — so the
-    report tool is suppressed there.
+    One injected tool, the annotate tool. There was a second — a
+    session-report tool gated on a local-only sink — until 2026-09-27; it
+    advertised a summary of errors and rendered only agent-filed annotations,
+    so the agent now reads the event file itself. ``sink_path`` is what is left
+    of that gate, and it is no longer a gate: it is the path the instructions
+    NAME, so the agent knows where to read.
     """
 
     tools: list[dict[str, Any]]
     instructions_suffix: str
-    sink_path: str | None  # path of the file sink to read for the report, if any
+    # Path of the local file sink, if the spec has one — the path named in the
+    # instructions suffix. None when the sink is stderr- or http-only, in which
+    # case there is nothing local to point the agent at.
+    sink_path: str | None
     # Intent-param injection mode: "optional" | "required" | "off". Defaulted
     # so tests that build _Injection directly keep their existing shape.
     intent_param_mode: str = "optional"
@@ -198,15 +181,9 @@ class _Injection:
         intent_param_mode: str = "optional",
         proactive_mode: str = "off",
     ) -> _Injection:
-        from baton_proxy.report import find_file_sink_path, should_inject_report_tool
-
-        tools = [_build_injected_tool(ANNOTATE_TOOL_NAME, proactive_mode)]
-        sink_path: str | None = None
-        if should_inject_report_tool(event_sink_url, tenant_type=tenant_type):
-            tools.append(_build_report_tool())
-            sink_path = find_file_sink_path(event_sink_url)
+        sink_path = find_file_sink_path(event_sink_url)
         return cls(
-            tools=tools,
+            tools=[_build_injected_tool(ANNOTATE_TOOL_NAME, proactive_mode)],
             instructions_suffix=build_instructions_suffix(ANNOTATE_TOOL_NAME, proactive_mode),
             sink_path=sink_path,
             intent_param_mode=intent_param_mode,
@@ -473,8 +450,9 @@ def _refuse_unknown_signal(req: dict[str, Any], value: Any) -> dict[str, Any]:
     """The response to an annotation whose ``signal_type`` is outside the enum.
 
     Refused in both modes and never enqueued: nothing downstream validates this
-    field, and `report.py` renders an unrecognised value as a real friction
-    signal, so one invented word becomes a count someone acts on. The message
+    field, and a consumer counting signals by type counts an unrecognised value
+    as a real one, so one invented word becomes a count someone acts on. The
+    message
     lists the enum rather than suggesting a substitute, because suggesting one
     is how a made-up signal gets filed.
     """
@@ -536,27 +514,16 @@ def _refuse_proactive(req: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _handle_injected_call(
-    req: dict[str, Any],
-    *,
-    injection: _Injection,
-    session_id: str,
-    emitter: Emitter,
-) -> dict[str, Any]:
+def _handle_injected_call(req: dict[str, Any]) -> dict[str, Any]:
     """Synthesise a response for whichever injected tool was called.
 
     The annotation event itself is enqueued by the caller before this is
-    invoked; this only builds the JSON-RPC envelope to send back. Dispatch
-    is by tool name — annotate vs session_report — with a defensive
-    fallback that never raises (a bug here MUST NOT break MCP traffic).
+    invoked; this only builds the JSON-RPC envelope to send back. There is one
+    injected tool, so there is no name fork left — the shape stays
+    name-dispatched-by-default rather than asserting the name, because a bug
+    here MUST NOT break MCP traffic.
     """
     params = req.get("params") or {}
-    name = params.get("name") if isinstance(params, dict) else None
-    if name == REPORT_TOOL_NAME:
-        return _build_report_response(
-            req, injection=injection, session_id=session_id, emitter=emitter
-        )
-    # Default / ANNOTATE_TOOL_NAME path.
     args = params.get("arguments") if isinstance(params, dict) else None
     args = args or {}
     signal = args.get("signal_type")
@@ -572,37 +539,6 @@ def _handle_injected_call(
         "jsonrpc": "2.0",
         "id": req.get("id"),
         "result": {"content": [{"type": "text", "text": confirmation}]},
-    }
-
-
-def _build_report_response(
-    req: dict[str, Any],
-    *,
-    injection: _Injection,
-    session_id: str,
-    emitter: Emitter,
-) -> dict[str, Any]:
-    from baton_proxy.report import synthesize
-
-    if injection.sink_path is None:
-        # Shouldn't happen — report tool is only injected when there IS a
-        # file sink — but defend defensively rather than raise into the
-        # MCP wire.
-        text = "Friction report unavailable — no local file sink configured."
-    else:
-        try:
-            text = synthesize(
-                injection.sink_path,
-                session_id,
-                scrub_counts=emitter.scrub_counts(),
-            )
-        except Exception:
-            logger.exception("baton-proxy: report synthesis failed")
-            text = "Friction report synthesis failed — see proxy log for details."
-    return {
-        "jsonrpc": "2.0",
-        "id": req.get("id"),
-        "result": {"content": [{"type": "text", "text": text}]},
     }
 
 
@@ -800,12 +736,13 @@ class MessageProcessor:
                     signal_type = args.get("signal_type")
                     # A value outside the advertised enum is refused in BOTH
                     # modes. It is not pedantry: `signal_type` IS the friction
-                    # count, nothing downstream validates it
-                    # (`Emitter.enqueue_annotation`), and `report.py` buckets an
-                    # unknown value as a real signal. An agent that invents one
-                    # to satisfy a MUST corrupts the only number here worth
-                    # protecting. Refusing our OWN injected tool is not the
-                    # fail-open question — no vendor call is affected.
+                    # count and nothing downstream validates it
+                    # (`Emitter.enqueue_annotation` records what it is handed),
+                    # so an unknown value is counted as a real signal by every
+                    # consumer. An agent that invents one to satisfy a MUST
+                    # corrupts the only number here worth protecting. Refusing
+                    # our OWN injected tool is not the fail-open question — no
+                    # vendor call is affected.
                     if signal_type is not None and signal_type not in SIGNAL_TYPES:
                         return _ClientAction(respond=_refuse_unknown_signal(req, signal_type))
                     # `is None` was `not signal_type`'s job until 2026-09-01:
@@ -847,12 +784,7 @@ class MessageProcessor:
                         if args.get("user_goal") and not args.get("signal_type"):
                             self._proactive_emitted = True
                 try:
-                    response = _handle_injected_call(
-                        req,
-                        injection=self._injection,
-                        session_id=self._session_id,
-                        emitter=self._emitter,
-                    )
+                    response = _handle_injected_call(req)
                 except Exception:
                     logger.exception("baton-proxy: synthesising injected response failed")
                     # Fail-open: a synthesis bug must still return *something*

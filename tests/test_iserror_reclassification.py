@@ -36,7 +36,6 @@ from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter
 from baton_proxy.mcp_error import RETURNED_ERROR_TYPE
 from baton_proxy.proxy import ANNOTATE_TOOL_NAME, MessageProcessor, _Injection
-from baton_proxy.report import _render_trail
 
 REASON = "You do not have sufficient access to delete this Project"
 ENVELOPE: dict[str, Any] = {
@@ -388,59 +387,3 @@ def test_the_error_emitter_is_callable_without_a_result(tmp_path: Path) -> None:
     # Omitted, not nulled: §11.4.3 makes it optional, and an explicit null
     # asserts there was a body and it was empty about a call that had none.
     assert "result" not in event["payload"]
-
-
-# --- what the reclassified failure looks like in the proxy's own report ----
-
-
-def test_a_multiline_reason_stays_inside_its_list_item() -> None:
-    """⚠ New exposure from the reclassification, on the line it is most visible.
-
-    A reason used to come from JSON-RPC ``error.message``, effectively
-    single-line. It now comes from a result's ``content`` text, which routinely
-    is not — a fastmcp traceback, a multi-line validation message. Rendered raw
-    into ``   - `tool` → **type**: {body}``, the second line lands at column 0,
-    which ENDS the markdown list item and drops the rest of the trail out of
-    the list.
-    """
-    steps = [
-        {
-            "intent": "delete it",
-            "tool_calls": [
-                {
-                    "tool": "rm",
-                    "status": "error",
-                    "error_type": "tool_error",
-                    "error_body": "Traceback:\n  line one\n  line two",
-                }
-            ],
-        }
-    ]
-    lines = _render_trail(steps)
-    body_lines = [ln for ln in lines if ln.startswith("   - ")]
-    assert len(body_lines) == 1
-    assert "\n" not in body_lines[0]
-    assert "line one line two" in body_lines[0]
-    # Every rendered line belongs to the list; none escaped to column 0.
-    assert all(ln.startswith(("1.", "   - ")) for ln in lines), lines
-
-
-def test_a_failure_with_no_message_says_so() -> None:
-    """``error_text`` is empty when no content part carries text.
-
-    An empty ``content``, or a server that puts the reason in
-    ``structuredContent`` and returns an image or resource part. Rendered bare
-    that is a colon with nothing after it, which reads as our rendering bug
-    rather than as a vendor who said nothing.
-    """
-    steps = [
-        {
-            "intent": "delete it",
-            "tool_calls": [
-                {"tool": "rm", "status": "error", "error_type": "tool_error", "error_body": ""}
-            ],
-        }
-    ]
-    line = next(ln for ln in _render_trail(steps) if ln.startswith("   - "))
-    assert not line.rstrip().endswith(":"), line
-    assert "no message" in line

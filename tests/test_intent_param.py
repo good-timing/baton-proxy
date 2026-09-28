@@ -272,12 +272,15 @@ def test_registry_skips_proxy_own_tools() -> None:
     """
     proc, _ = _processor()
     out = proc.handle_server_message(_tools_list_response([_tool("alpha")]))
-    own = {"baton_annotate", "baton_session_report"}
+    own = {"baton_annotate"}
 
     served = {t["name"] for t in out["result"]["tools"]}
-    # `baton_session_report` is only injected when a file sink is configured,
-    # which this fixture has not; `baton_annotate` is always served, and its
-    # presence is what makes the registry assertion below meaningful.
+    # `baton_annotate` is always served, and its presence is what makes the
+    # registry assertion below meaningful. It is the only tool the proxy adds
+    # since the report tool was retired (2026-09-27); `own` is kept as a SET
+    # rather than collapsed to the one name, because the property under test is
+    # "no tool of OURS enters the registry" and a second one would have to be
+    # added here to be checked.
     assert "baton_annotate" in served
 
     with proc._registry_lock:

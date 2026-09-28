@@ -255,6 +255,26 @@ class MultiSink(Sink):
                 logger.exception("baton-proxy sink close failed")
 
 
+def find_file_sink_path(event_sink_url: str | None) -> str | None:
+    """Return the first ``file://`` path in a (possibly comma-separated) sink
+    URL spec, or None if no file sink is present.
+
+    Lives here rather than with its caller because this module already owns
+    sink-spec parsing — ``make_sink`` does the same comma split and
+    ``_make_one`` the same ``file`` scheme read. Its consumer is the
+    instructions suffix, which tells the agent where the local event file is
+    so it can read the session back itself; a spec with no file leg has no
+    path to name, and the line is omitted.
+    """
+    if not event_sink_url:
+        return None
+    for part in (p.strip() for p in event_sink_url.split(",") if p.strip()):
+        parsed = urllib.parse.urlparse(part)
+        if parsed.scheme == "file" and parsed.path:
+            return parsed.path
+    return None
+
+
 def make_sink(url_spec: str, *, api_key: str | None) -> Sink:
     """Build a Sink (or MultiSink) from a comma-separated URL spec.
 

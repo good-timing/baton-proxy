@@ -50,8 +50,12 @@ DEFAULT_VENDOR_ID = "local"
 # wrapped on a customer's machine that ships signal to the vendor's
 # Console; ``customer`` = end-user install where the same person owns
 # both the proxy and the Console tenant ("Sentry for AI agents" shape).
-# Different defaults follow: vendor mode hides the in-Claude report tool
-# (Console renders reports server-side), customer mode keeps it.
+# ⚠ Nothing in the proxy branches on this today. Its one consumer was the
+# injected report tool's gate — vendor mode hid the tool, customer mode kept
+# it — and that tool left on 2026-09-27. The value is still validated and
+# recorded because it is a public env var the console and the docs set, and
+# because a tenant-shaped default is the kind of thing the next consumer
+# wants; it just does not steer any behaviour here yet.
 _TENANT_TYPES: frozenset[str] = frozenset({"vendor", "customer"})
 
 # Valid values for BATON_INTENT_PARAM — the per-tool goal-param injection
@@ -183,12 +187,11 @@ class Config:
 
     # Which Baton tenant shape this proxy is wired to: ``vendor`` (default)
     # ships signal to the wrapped MCP server's vendor Console; ``customer``
-    # ships to the end-user's own Baton tenant. Controls whether the
-    # in-Claude ``baton_session_report`` tool is injected when an HTTP sink
-    # is configured — vendor mode hides it (Console renders reports
-    # server-side); customer mode keeps it. Defaulted here so tests that
-    # construct Config directly don't need to spell it out; from_env()
-    # always populates it explicitly from BATON_TENANT_TYPE.
+    # ships to the end-user's own Baton tenant. ⚠ Recorded, not acted on —
+    # see the DEFAULT_TENANT_TYPE comment above for why it governs nothing in
+    # the proxy today. Defaulted here so tests that construct Config directly
+    # don't need to spell it out; from_env() always populates it explicitly
+    # from BATON_TENANT_TYPE.
     tenant_type: str = DEFAULT_TENANT_TYPE
 
     # Per-tool intent-param injection mode: optional | required | off.

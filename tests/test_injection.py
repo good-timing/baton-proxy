@@ -8,6 +8,7 @@ Emission is disabled (env vars unset) so this test is fully offline.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -113,21 +114,50 @@ def test_tools_list_contains_injected_tool() -> None:
     assert "echo" in names  # upstream tool still there
 
 
-def test_report_tool_injected_for_default_install() -> None:
-    """Default install (no env vars) -> sink defaults to stderr + file ->
-    report tool MUST appear in tools/list. This is the gateway demo: the
-    customer should discover ``baton_session_report`` naturally."""
-    by_id = _run_proxy()
+def _served_names(by_id: dict[int, dict]) -> set[str]:
     tools_list = by_id.get(2)
-    assert tools_list is not None
-    names = [t.get("name") for t in tools_list.get("result", {}).get("tools", [])]
-    assert "baton_session_report" in names
+    assert tools_list is not None, "no tools/list response"
+    return {t.get("name") for t in tools_list.get("result", {}).get("tools", [])}
 
 
-def test_report_tool_NOT_injected_when_http_sink() -> None:
-    """Any http(s) sink = vendor production mode. The report tool must be
-    suppressed — the vendor's own pipeline renders the report, not the
-    proxy."""
+# The EXACT served set, on each sink shape that used to decide whether a second
+# tool appeared. Asserted as a set rather than as `"baton_session_report" not in
+# names`, which is the obvious form and passes against a typo, against a rename,
+# and against a third tool nobody meant to add
+# ([[feedback_a_negative_test_must_be_able_to_fail]]).
+#
+# The upstream half is READ OFF THE FIXTURE's own tools/list rather than listed
+# here: a hardcoded copy reds when the fixture gains a fifth tool, which is a
+# maintenance failure dressed as a finding, and it would not have caught the
+# thing this set exists to catch. What is hardcoded is the one name the proxy
+# ADDS, because that is the number under test — one, not two.
+def _expected_served() -> set[str]:
+    # Loaded by path, not by `import fixture_responses`: that name resolves only
+    # inside the fixture SUBPROCESS, whose sys.path starts at its own directory.
+    spec = importlib.util.spec_from_file_location(
+        "_fixture_responses", HERE / "fixture_responses.py"
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    listed = mod.result_for({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    upstream = {t["name"] for t in listed["result"]["tools"]}
+    assert upstream, "the fixture declares no tools; this set would assert nothing"
+    return upstream | {"baton_annotate"}
+
+
+def test_the_default_install_serves_annotate_and_the_upstream_tool_only() -> None:
+    """Default install (no env vars) -> sink defaults to stderr + file, which is
+    the shape that USED to inject a second tool, `baton_session_report`. It was
+    retired 2026-09-27; the file sink now only decides whether the instructions
+    can name a path."""
+    assert _served_names(_run_proxy()) == _expected_served()
+
+
+def test_an_http_sink_serves_the_same_set() -> None:
+    """Vendor production mode. It never got the second tool, so this shape is
+    the control: it was already equal to the set above, and it still is."""
     by_id = _run_proxy_with_env(
         {
             "BATON_EVENT_SINK": "https://collector.example.com",
@@ -136,11 +166,26 @@ def test_report_tool_NOT_injected_when_http_sink() -> None:
             "BATON_CONSENT_TOKEN": "real-token",
         }
     )
-    tools_list = by_id.get(2)
-    assert tools_list is not None
-    names = [t.get("name") for t in tools_list.get("result", {}).get("tools", [])]
-    assert "baton_annotate" in names  # annotate is always present
-    assert "baton_session_report" not in names
+    assert _served_names(by_id) == _expected_served()
+
+
+def test_the_customer_mode_arm_serves_the_same_set(tmp_path: Path) -> None:
+    """⚠ The arm most likely to regress, and the one the retirement plan named
+    as its verification. `file + http(s) + BATON_TENANT_TYPE=customer` was the
+    ONE combination that kept the report tool when an HTTP sink was present —
+    every other http shape was already suppressed, so a deletion that missed
+    the `tenant_type` branch would leave exactly this shape still injecting.
+    """
+    by_id = _run_proxy_with_env(
+        {
+            "BATON_EVENT_SINK": f"file://{tmp_path / 'events.jsonl'},https://collector.example.com",
+            "BATON_API_KEY": "k",
+            "BATON_TENANT_ID": "acme",
+            "BATON_CONSENT_TOKEN": "real-token",
+            "BATON_TENANT_TYPE": "customer",
+        }
+    )
+    assert _served_names(by_id) == _expected_served()
 
 
 def test_injected_tool_call_handled_by_proxy() -> None:
@@ -261,23 +306,8 @@ def test_proactive_annotation_handled_without_signal_type() -> None:
     emit the event, and not invent a signal_type='unknown' for the
     user-visible confirmation — the absence of signal_type is the
     semantic marker that this was proactive."""
-    from baton_proxy.config import Config
-    from baton_proxy.emitter import Emitter
-    from baton_proxy.proxy import _handle_injected_call, _Injection
+    from baton_proxy.proxy import _handle_injected_call
 
-    injection = _Injection.create(event_sink_url=None)
-    session_id = "test-session"
-    emitter = Emitter(
-        Config(
-            session_id=session_id,
-            event_sink=None,
-            tenant_id="t",
-            api_key=None,
-            consent_token="c",
-            vendor_id="v",
-            log_file=None,
-        )
-    )
     resp = _handle_injected_call(
         {
             "jsonrpc": "2.0",
@@ -291,9 +321,6 @@ def test_proactive_annotation_handled_without_signal_type() -> None:
                 },
             },
         },
-        injection=injection,
-        session_id=session_id,
-        emitter=emitter,
     )
     assert resp["id"] == 99
     # The handler should not fabricate signal_type='unknown' for proactives.
@@ -304,34 +331,15 @@ def test_proactive_annotation_handled_without_signal_type() -> None:
 def test_handle_injected_call_null_params_does_not_crash() -> None:
     """JSON-RPC permits params: null. dict.get's default fires on missing
     keys, not on explicit None, so the chained get pattern must coerce."""
-    from baton_proxy.config import Config
-    from baton_proxy.emitter import Emitter
-    from baton_proxy.proxy import _handle_injected_call, _Injection
-
-    injection = _Injection.create(event_sink_url=None)
-    session_id = "test-session"
-    # _handle_injected_call needs an Emitter for the report-tool branch; a
-    # disabled-emission instance is enough to satisfy the type without
-    # spinning a sink. The defensive branches under test never call
-    # emitter.scrub_counts(), but we pass a real instance so the signature
-    # is honored.
-    emitter = Emitter(
-        Config(
-            session_id=session_id,
-            event_sink=None,
-            tenant_id="t",
-            api_key=None,
-            consent_token="c",
-            vendor_id="v",
-            log_file=None,
-        )
-    )
+    # An Emitter, a Config and an `_Injection` were built here purely to satisfy
+    # the signature's report-tool branch, which read the sink path and the scrub
+    # counts. The branch is gone (2026-09-27) and so is the scaffolding — the
+    # handler now takes the request and nothing else, which is what these
+    # defensive cases were ever about.
+    from baton_proxy.proxy import _handle_injected_call
 
     resp = _handle_injected_call(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call"},
-        injection=injection,
-        session_id=session_id,
-        emitter=emitter,
     )
     assert resp["id"] == 1
     # No params at all → no signal_type → confirmation surfaces it as a
@@ -341,9 +349,6 @@ def test_handle_injected_call_null_params_does_not_crash() -> None:
 
     resp = _handle_injected_call(
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": None},
-        injection=injection,
-        session_id=session_id,
-        emitter=emitter,
     )
     assert resp["id"] == 2
 
@@ -354,9 +359,6 @@ def test_handle_injected_call_null_params_does_not_crash() -> None:
             "method": "tools/call",
             "params": {"name": "baton_annotate", "arguments": None},
         },
-        injection=injection,
-        session_id=session_id,
-        emitter=emitter,
     )
     assert resp["id"] == 3
 

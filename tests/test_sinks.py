@@ -22,6 +22,7 @@ from baton_proxy.sinks import (
     MultiSink,
     Sink,
     StderrSink,
+    find_file_sink_path,
     make_sink,
 )
 
@@ -257,3 +258,29 @@ def test_make_sink_whitespace_tolerated(tmp_path: Path) -> None:
 def test_make_sink_empty_raises() -> None:
     with pytest.raises(ValueError, match="empty"):
         make_sink(",,,", api_key=None)
+
+
+# =============================================================================
+# find_file_sink_path — the spec reader that is not a factory.
+#
+# Moved here from test_report.py on 2026-09-27 with the function itself. It used
+# to open the injected report tool's gate; its consumer now is the instructions
+# suffix, which NAMES the path so the agent can read the session back. The
+# behaviour pinned is unchanged, which is the point of moving the tests rather
+# than rewriting them.
+# =============================================================================
+
+
+def test_find_file_sink_path_returns_first_file_url() -> None:
+    assert find_file_sink_path("file:///tmp/a.jsonl") == "/tmp/a.jsonl"
+
+
+def test_find_file_sink_path_skips_non_file_urls() -> None:
+    assert find_file_sink_path("stderr:,file:///tmp/a.jsonl") == "/tmp/a.jsonl"
+
+
+def test_find_file_sink_path_returns_none_when_no_file() -> None:
+    assert find_file_sink_path("stderr:") is None
+    assert find_file_sink_path("https://example.com") is None
+    assert find_file_sink_path(None) is None
+    assert find_file_sink_path("") is None

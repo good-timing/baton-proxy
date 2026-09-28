@@ -195,10 +195,10 @@ class Emitter:
         # Sink set up in start(); None until then.
         self._sink: Sink | None = None
         # Source-side PII scrubber. Stateful — accumulates per-category
-        # counts across every payload that flows through _enqueue, so the
-        # report tool can surface "N emails, M bearer tokens" without
-        # re-parsing the JSONL. Applied BEFORE the queue, so file sink
-        # and HTTP sink both see scrubbed values.
+        # counts across every payload that flows through _enqueue. Applied
+        # BEFORE the queue, so file sink and HTTP sink both see scrubbed
+        # values. The counts are exposed by `scrub_counts()` below — see that
+        # docstring for the state of its consumer.
         self._scrubber = Scrubber()
         # The client the handshake named, latched by set_agent_runtime. A plain
         # attribute: one str assignment, written once on the transport's reader
@@ -310,9 +310,16 @@ class Emitter:
 
     def scrub_counts(self) -> dict[str, int]:
         """Snapshot of per-category PII redaction counts since session start.
-        Read by the report tool to surface "N emails, M tokens" without
-        re-parsing the JSONL stream. Returns a copy so callers can't mutate
-        the live counter."""
+
+        ⚠ NO production consumer since 2026-09-27. Its only reader was the
+        injected report tool, which pre-computed the counts here rather than
+        re-parsing the JSONL; that tool is gone and the counts are instead
+        derivable from the `[REDACTED:` markers `scrub.py` writes INTO the
+        file. Kept, not deleted, because the scrubber's counter is live either
+        way and a rollup consumer is a named next step — delete it if that
+        stops being true. Returns a copy so callers can't mutate the live
+        counter.
+        """
         return dict(self._scrubber.counts)
 
     def enqueue_tool_call_start(
