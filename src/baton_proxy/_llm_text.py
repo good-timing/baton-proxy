@@ -215,7 +215,33 @@ SIGNAL_TYPES: tuple[str, ...] = (
 )
 
 
-def build_instructions_suffix(annotation_tool_name: str, proactive_mode: str = "off") -> str:
+# The line that tells the agent where the session's own events are, rendered
+# only when there IS a local file to name. It replaces the retired
+# `baton_session_report` tool (2026-09-27): that tool rendered a fixed template
+# over this same file and classified nothing, so the agent reading the file
+# directly is the better answer AND the smaller surface.
+#
+# ⚠ The one part of this suffix whose length the proxy does not control. A path
+# is whatever the operator's BATON_EVENT_SINK says, so this line is the only
+# piece that is DROPPED rather than allowed to breach the cap — see
+# build_instructions_suffix.
+# ⚠ WRITTEN TO A LENGTH, not to taste. `proactive_mode="on"` leaves 160 chars
+# under the cap, so a longer line would be DROPPED in that mode — silently, and
+# exactly where the retired tool's replacement is most needed. The first draft
+# of this line was 200 characters and never rendered under `on` at all. Its
+# fixed part is 100, which leaves 60 for the path: the 22-char default fits both
+# modes with room, and a deep path still fits `off`, the default mode.
+_EVENT_FILE_LINE = (
+    "This session's tool calls and results are captured as JSONL at "
+    "{event_file_path}; read it to answer what went wrong.\n\n"
+)
+
+
+def build_instructions_suffix(
+    annotation_tool_name: str,
+    proactive_mode: str = "off",
+    event_file_path: str | None = None,
+) -> str:
     """Build the proxy's instructions suffix.
 
     ``proactive_mode="off"`` reframes the head and drops the pre-call
@@ -227,11 +253,25 @@ def build_instructions_suffix(annotation_tool_name: str, proactive_mode: str = "
     its vendor owns, the proxy fronts servers its operator does not, so the
     proxy ships at today's behaviour and the operator chooses.
 
+    ``event_file_path`` names the local event file, second paragraph, right
+    after the head and ahead of both MUST clauses — an agent that reads only
+    the opening gets it. None when the sink has no ``file://`` leg, which is
+    every vendor-production wrap, so that shape pays nothing for this line.
+
     Appended to the upstream server's existing ``instructions`` field
     (rather than replacing it, as the SDK does). Raises ``ValueError`` if
     the rendered output exceeds the safety cap so a misconfigured
     annotation-tool name fails loudly at injection time, rather than
     silently producing a string Claude Code would truncate mid-sentence.
+
+    ⚠ With ONE exception, and it is the whole reason this function has a third
+    parameter rather than a longer template: the event-file line is DROPPED
+    when it does not fit, never raised on. Its length comes from the operator's
+    sink URL, so raising would let a long path take down a wrap that is
+    otherwise fine — a filesystem path is not a misconfiguration the way a
+    500-character tool name is. Under ``proactive_mode="on"`` the rest of the
+    suffix already spends 1,340 of 1,500, so this is a live branch, not a
+    defensive one.
     """
     head = _HEAD_PROACTIVE if proactive_mode == "on" else _HEAD_REACTIVE_ONLY
     clause = _PROACTIVE_CLAUSE if proactive_mode == "on" else ""
@@ -249,6 +289,19 @@ def build_instructions_suffix(annotation_tool_name: str, proactive_mode: str = "
             f"(Claude Code truncates at ~{_CLAUDE_CODE_TRUNCATION_CAP}). "
             f"Shorten annotation_tool_name."
         )
+    if event_file_path:
+        # Spliced into the ALREADY-FORMATTED string, so the path never sits
+        # inside the multi-field template above. That template is formatted with
+        # `annotation_tool_name` and `again`, so a `{` or `}` in the operator's
+        # sink path would raise KeyError out of it — at injection time, on the
+        # handshake, over a punctuation character in a directory name. Composing
+        # the line here rather than adding it to that template is the whole
+        # guard; `.replace` vs `.format` on this line alone is not, since
+        # `.format` does not re-process what it substitutes in.
+        line = _EVENT_FILE_LINE.replace("{event_file_path}", event_file_path)
+        head_end = len(head.format(annotation_tool_name=annotation_tool_name))
+        if len(rendered) + len(line) <= _INSTRUCTIONS_LENGTH_CAP:
+            rendered = rendered[:head_end] + line + rendered[head_end:]
     return rendered
 
 

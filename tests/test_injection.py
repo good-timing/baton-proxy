@@ -114,6 +114,60 @@ def test_tools_list_contains_injected_tool() -> None:
     assert "echo" in names  # upstream tool still there
 
 
+def _instructions(by_id: dict[int, dict]) -> str:
+    init = by_id.get(1)
+    assert init is not None, "no initialize response"
+    return init.get("result", {}).get("instructions", "")
+
+
+def test_the_default_installs_handshake_names_its_event_file() -> None:
+    """⚠ The retired report tool's replacement, measured on the WIRE rather than
+    on the template. `baton_session_report` is gone; what an agent gets instead
+    is the path, in `instructions`, so it can read the session back itself.
+
+    The unit tests in test_llm_text.py pin the rendering. This pins the wiring —
+    that `find_file_sink_path` runs over the REAL default sink spec and its
+    answer reaches `InitializeResult`. Before this, nothing in front of the model
+    named the path: the startup log prints session, emission, tools, intent mode,
+    proactive mode and the upstream command, and not the sink.
+    """
+    from baton_proxy.config import DEFAULT_EVENT_SINK
+    from baton_proxy.sinks import find_file_sink_path
+
+    expected = find_file_sink_path(DEFAULT_EVENT_SINK)
+    assert expected, f"the default sink has no file leg: {DEFAULT_EVENT_SINK!r}"
+    instructions = _instructions(_run_proxy())
+    assert expected in instructions, f"the default install's handshake never names {expected!r}"
+
+
+def test_an_http_only_wrap_names_no_event_file() -> None:
+    """Vendor production: no local file, so nothing to point at, and the line
+    must not render as a dangling sentence. This is also what keeps the suffix
+    the same size it was on the surface where size decides whether Claude Code
+    defers tool loading at all.
+    """
+    by_id = _run_proxy_with_env(
+        {
+            "BATON_EVENT_SINK": "https://collector.example.com",
+            "BATON_API_KEY": "k",
+            "BATON_TENANT_ID": "acme",
+            "BATON_CONSENT_TOKEN": "real-token",
+        }
+    )
+    instructions = _instructions(by_id)
+    assert "captured as JSONL" not in instructions
+    assert "baton_annotate" in instructions, "the rest of the suffix went with it"
+
+
+def test_a_custom_file_sink_is_the_path_named(tmp_path: Path) -> None:
+    """The control for the test above: a DIFFERENT path has to come through, so
+    the first test cannot be passing on a hardcoded default that the code never
+    actually looked up."""
+    custom = tmp_path / "somewhere-else.jsonl"
+    by_id = _run_proxy_with_env({"BATON_EVENT_SINK": f"stderr:,file://{custom}"})
+    assert str(custom) in _instructions(by_id)
+
+
 def _served_names(by_id: dict[int, dict]) -> set[str]:
     tools_list = by_id.get(2)
     assert tools_list is not None, "no tools/list response"

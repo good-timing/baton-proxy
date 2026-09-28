@@ -18,8 +18,8 @@ so the two modules stay coherent. Load-bearing properties:
   injected params, and the suffix asking for it again taught the agent
   otherwise.
 - All 8 canonical signal_type enum values must appear in the rendered
-  text; downstream taxonomies (priority mapping in the report
-  synthesizer, the Console channel adapter) key off these strings.
+  text; downstream taxonomies (the Console channel adapter and its
+  friction rollup) key off these strings.
 - The "annotation doesn't replace answering" guardrail is load-bearing —
   without it the agent treats the annotation as proxy-satisfaction and
   stops answering the user.
@@ -35,6 +35,8 @@ import re
 import pytest
 
 from baton_proxy._llm_text import (
+    _CLAUDE_CODE_TRUNCATION_CAP,
+    _EVENT_FILE_LINE,
     _INSTRUCTIONS_LENGTH_CAP,
     SIGNAL_TYPES,
     build_annotation_tool_description,
@@ -359,3 +361,139 @@ def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
                 f"{where} still names the retired param {retired!r}; an agent will send "
                 f"it and the value will be dropped"
             )
+
+
+# =============================================================================
+# The event-file line — the retired report tool's replacement.
+#
+# `baton_session_report` rendered a fixed template over the local JSONL and
+# classified nothing; it was deleted 2026-09-27 and the answer is the agent
+# reading that file itself. Which only works if the agent is TOLD where the
+# file is: before this line, the startup log printed session, emission, tools,
+# intent mode, proactive mode and the upstream command, and not the sink path,
+# so nothing in front of the model named it.
+#
+# What these pin is the one property the rest of this module's cap discipline
+# does not cover: this is the only piece of the suffix whose length the proxy
+# does not choose. The path is the operator's, so the line must be DROPPED when
+# it does not fit rather than raised on — a deep directory is not a
+# misconfiguration the way a 1,500-character tool name is.
+# =============================================================================
+
+_DEFAULT_SINK_PATH = "/tmp/baton-proxy.jsonl"
+
+
+def test_the_event_file_line_names_the_path_in_both_modes() -> None:
+    """The default sink path must survive both proactive modes — `on` is the
+    tighter one and it is where a too-long line would vanish."""
+    for mode in ("off", "on"):
+        rendered = build_instructions_suffix(
+            "baton_annotate", mode, event_file_path=_DEFAULT_SINK_PATH
+        )
+        assert _DEFAULT_SINK_PATH in rendered, f"proactive_mode={mode!r} dropped the path"
+        assert len(rendered) <= _INSTRUCTIONS_LENGTH_CAP
+
+
+def test_no_path_renders_no_line_and_no_stray_paragraph() -> None:
+    """Every vendor-production wrap: an http-only sink has no local file, so
+    there is nothing to name. The suffix must be byte-identical to what it was
+    before this parameter existed — an empty paragraph would spend the budget
+    saying nothing."""
+    without = build_instructions_suffix("baton_annotate", "off")
+    assert build_instructions_suffix("baton_annotate", "off", event_file_path=None) == without
+    assert build_instructions_suffix("baton_annotate", "off", event_file_path="") == without
+    assert "captured as JSONL" not in without
+    assert "\n\n\n" not in without
+
+
+def test_the_line_sits_ahead_of_both_must_clauses() -> None:
+    """Position is the point of the third parameter rather than an extra
+    sentence in `_REACTIVE_CLAUSES`. Claude Code truncates from the END, so a
+    line appended after the MUST clauses is the first thing cut on a server with
+    long instructions of its own — and an agent that reads only the opening
+    paragraphs would never reach it."""
+    rendered = build_instructions_suffix("baton_annotate", "on", event_file_path=_DEFAULT_SINK_PATH)
+    where = rendered.index(_DEFAULT_SINK_PATH)
+    assert where < rendered.index("AFTER any tool")
+    assert where < rendered.index("IF a tool response")
+    assert where < rendered.index("BEFORE invoking any tool")
+    # ...and after the head, so the agent knows what is wrapping it first.
+    assert where > rendered.index("wrapped in the Baton")
+
+
+def test_a_path_too_long_to_fit_is_dropped_not_raised() -> None:
+    """⚠ The live branch, not a defensive one. `proactive_mode="on"` spends 1,340
+    of the 1,500 cap, leaving 160 for a line whose fixed part is 101 — so a path
+    over ~59 characters does not fit, and plenty of real ones are longer.
+
+    Raising here would let a deep directory take down a wrap that is otherwise
+    correct, on the handshake, which is the failure this whole cap exists to
+    avoid rather than cause. What must survive is everything else: the suffix
+    has to come back WHOLE, not truncated to make room.
+    """
+    long_path = "/Users/someone/Library/Application Support/baton/deeply/nested/events.jsonl"
+    assert len(long_path) > 59, "this path no longer overflows; pick a longer one"
+    rendered = build_instructions_suffix("baton_annotate", "on", event_file_path=long_path)
+    assert long_path not in rendered
+    assert rendered == build_instructions_suffix("baton_annotate", "on")
+    assert len(rendered) <= _INSTRUCTIONS_LENGTH_CAP
+
+
+def test_the_off_mode_default_still_fits_a_deep_path() -> None:
+    """The control for the test above: the drop must be caused by the BUDGET and
+    not by the path, so the same path in the default mode — which has 331 chars
+    free rather than 160 — has to render. Without this, a bug that dropped the
+    line unconditionally would pass the drop test and be invisible."""
+    long_path = "/Users/someone/Library/Application Support/baton/deeply/nested/events.jsonl"
+    rendered = build_instructions_suffix("baton_annotate", "off", event_file_path=long_path)
+    assert long_path in rendered
+    assert len(rendered) <= _INSTRUCTIONS_LENGTH_CAP
+
+
+def test_a_path_with_braces_does_not_raise_through_the_formatter() -> None:
+    """The path must never sit inside the suffix's multi-field template.
+
+    That template is formatted with `annotation_tool_name` and `again`, so a `{`
+    or `}` in the operator's sink path reaches the formatter as an unknown field
+    and raises KeyError — at injection time, on the handshake, over a
+    punctuation character in a directory name. Verified by mutation: moving the
+    line into that template reds this test with `KeyError: 'b'`. What does NOT
+    matter, and what this deliberately does not claim, is `.replace` vs
+    `.format` on the line by itself — `.format` does not re-process what it
+    substitutes in, so both are safe there.
+    """
+    for path in ("/tmp/a{b}c.jsonl", "/tmp/{}.jsonl", "/tmp/only{.jsonl"):
+        rendered = build_instructions_suffix("baton_annotate", "off", event_file_path=path)
+        assert path in rendered, path
+
+
+def test_the_lines_fixed_part_is_short_enough_to_leave_room_for_a_path() -> None:
+    """The budget, asserted as a number so a reword that spends it reds here
+    rather than in the drop test, which would keep passing while the line
+    stopped rendering for everyone.
+
+    101 fixed + 59 of path is the `on` mode's whole 160. The first draft of this
+    line was 200 characters and never rendered under `on` at all.
+    """
+    fixed = len(_EVENT_FILE_LINE.replace("{event_file_path}", ""))
+    on_budget = _INSTRUCTIONS_LENGTH_CAP - len(build_instructions_suffix("baton_annotate", "on"))
+    assert fixed <= 110, f"the line's fixed part grew to {fixed}; it eats the path's room"
+    assert fixed + len(_DEFAULT_SINK_PATH) <= on_budget, (
+        f"the default sink path no longer fits proactive_mode='on': "
+        f"{fixed} + {len(_DEFAULT_SINK_PATH)} > {on_budget}"
+    )
+
+
+def test_the_cap_still_reserves_headroom_for_the_upstream_server() -> None:
+    """Task 2's verification, stated the way the plan asked: the WHOLE suffix
+    fits with the vendor's own instructions absent, and the margin the internal
+    cap holds back for them is real. The proxy APPENDS — `_INSTRUCTIONS_LENGTH_CAP`
+    is a self-imposed 1,500 under the measured ~2,087 truncation point, and the
+    event-file line must not have eaten that reserve."""
+    worst = build_instructions_suffix("baton_annotate", "on", event_file_path=_DEFAULT_SINK_PATH)
+    assert len(worst) <= _INSTRUCTIONS_LENGTH_CAP
+    reserve = _CLAUDE_CODE_TRUNCATION_CAP - len(worst)
+    assert reserve >= 500, (
+        f"only {reserve} chars left for the upstream server's own instructions; "
+        "the suffix has grown into the reserve the cap exists to hold"
+    )

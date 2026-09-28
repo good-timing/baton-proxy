@@ -177,14 +177,15 @@ class _Injection:
         cls,
         event_sink_url: str | None,
         *,
-        tenant_type: str = "vendor",
         intent_param_mode: str = "optional",
         proactive_mode: str = "off",
     ) -> _Injection:
         sink_path = find_file_sink_path(event_sink_url)
         return cls(
             tools=[_build_injected_tool(ANNOTATE_TOOL_NAME, proactive_mode)],
-            instructions_suffix=build_instructions_suffix(ANNOTATE_TOOL_NAME, proactive_mode),
+            instructions_suffix=build_instructions_suffix(
+                ANNOTATE_TOOL_NAME, proactive_mode, event_file_path=sink_path
+            ),
             sink_path=sink_path,
             intent_param_mode=intent_param_mode,
             proactive_mode=proactive_mode,
@@ -1404,7 +1405,6 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
         logger.warning("%s", warning)
     injection = _Injection.create(
         config.event_sink,
-        tenant_type=config.tenant_type,
         intent_param_mode=config.intent_param_mode,
         proactive_mode=config.proactive_mode,
     )
