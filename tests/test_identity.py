@@ -12,7 +12,7 @@ import json
 
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter
-from baton_proxy.identity import HASH_SCHEME, Principal, hash_principal_id
+from baton_proxy.identity import Principal, hash_principal_id
 from baton_proxy.scrub import Scrubber
 
 KEY = b"tenant-secret-key"
@@ -24,7 +24,9 @@ KEY = b"tenant-secret-key"
 def test_hash_deterministic_and_scheme_prefixed() -> None:
     a = hash_principal_id("u123", tenant_id="t1", key=KEY)
     assert a == hash_principal_id("u123", tenant_id="t1", key=KEY)
-    assert a.startswith(f"{HASH_SCHEME}:")
+    # No tag from 0.6.12. Asserted as "no colon" so a reintroduced tag of ANY
+    # letter reds here, where naming `h1:` would let `h2:` through.
+    assert ":" not in a
 
 
 def test_same_principal_different_tenants_never_collide() -> None:
@@ -111,7 +113,7 @@ def test_form_names_the_derivation_that_actually_ran(tmp_path) -> None:
     that case is ``test_no_key_fail_open_drops_the_whole_principal``."""
     ev = _emit_one(tmp_path, key=KEY, principal=Principal(principal_id="u123"))
     assert ev["principal"]["form"] == "hashed"
-    assert ev["principal"]["id"].startswith("h1:")
+    assert ":" not in ev["principal"]["id"]
 
 
 def test_no_key_fail_open_drops_the_whole_principal(tmp_path) -> None:
@@ -153,7 +155,7 @@ def test_user_name_field_scrubbed_but_not_name() -> None:
 # "issuer=None matches the pre-issuer form" check asserts
 # `hash_principal_id(x) == hash_principal_id(x, issuer=None)` — both sides from the same
 # module — so a layout change applied to BOTH repos on the same day stays green
-# in both while every `h1:` hash ever emitted becomes unreproducible. A frozen
+# in both while every hash ever emitted becomes unreproducible. A frozen
 # literal is the only thing that reds for that, because it was computed before
 # the change and no edit can move it.
 #
@@ -162,14 +164,22 @@ def test_user_name_field_scrubbed_but_not_name() -> None:
 # is a divergence in the hash.
 #
 # If one of these ever fails, the answer is NOT to update the literal. It means
-# the two sensors have stopped agreeing about what `h1:` denotes, and every
-# stored `principal.id` was written under the other definition.
+# the two sensors have stopped agreeing about the derivation, and every stored
+# `principal.id` was written under the other definition.
+#
+# ⚠ **The HEX was edited ONCE, at 0.6.12, and only by DELETING the `h1:` in
+# front of it.** That release took the tag off the value (SPEC §11.4, §13 entry
+# 0.8.11) and the tag was never part of the HMAC message, so the 64 hex
+# characters below are byte-for-byte what they were when frozen on 2026-09-10 —
+# the guard still pins exactly what it was written to pin. **That is the only
+# edit this comment permits: removing a prefix.** A change to any hex digit means
+# the derivation moved, and the answer is still to revert the code.
 _VECTOR_PRINCIPAL = "Alice@Example.COM "
 _VECTOR_TENANT = "ten_abc"
 _VECTOR_KEY = b"shared-key-bytes"
 _VECTOR_ISSUER = "https://idp.example.com"
-_VECTOR_ISSUERLESS = "h1:b8556c3cd4564b06af433259553eadee690754318e27ca392deabba8aac7843b"
-_VECTOR_WITH_ISSUER = "h1:9fc18f492b9dfe9092acf9d330d710b648d29b4aa131ecf702938df9409f0e78"
+_VECTOR_ISSUERLESS = "b8556c3cd4564b06af433259553eadee690754318e27ca392deabba8aac7843b"
+_VECTOR_WITH_ISSUER = "9fc18f492b9dfe9092acf9d330d710b648d29b4aa131ecf702938df9409f0e78"
 
 
 def test_the_shared_cross_repo_vector_issuerless() -> None:

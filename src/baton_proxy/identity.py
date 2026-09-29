@@ -35,21 +35,25 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Protocol
 
-# Scheme tag prefixed onto every hash. It names the HMAC KEY GENERATION and
-# NOTHING ELSE (SPEC §11.4). This is the ROTATION seam: rotate the HMAC key by
-# cutting new hashes to ``h2:`` while historical events stay under ``h1:``, so a
-# consumer comparing two values knows they are incomparable rather than two
-# people. A single principal produces different hashes across the rotation
-# boundary — an accepted, documented discontinuity (the raw value was never
-# stored, so it can't be re-hashed).
+# ⚠ **``HASH_SCHEME = "h1"`` lived here and is GONE at 0.6.12** (SPEC §11.4, §13
+# entry 0.8.11). A hashed principal is the BARE digest: no tag, no prefix, no
+# scheme, and **none may be reintroduced** — not for provenance, not for a key
+# generation, not for anything.
 #
-# ⚠ **It is not a provenance marker and not a classifier.** Both facts now ride
-# ``_PrincipalWire.source`` and ``.form``, which exist in every derivation mode —
-# something a tag cannot do, because ``"raw"`` emits none. The SDK's
-# ``VENDOR_HASH_SCHEME = "v1"`` was RETIRED for exactly that reason (SPEC §13).
-# **Do not reintroduce a provenance tag here** — a second meaning on this prefix
-# is the joining that change undid.
-HASH_SCHEME = "h1"
+# It named the HMAC key generation, and a fact ABOUT a value must not ride INSIDE
+# the value — the rule ``_PrincipalWire``'s three members exist to make
+# structural. Provenance is ``source`` and the classification is ``form``, and
+# both ride every derivation mode, which a tag cannot do because ``"raw"`` emits
+# none. The SDK's ``VENDOR_HASH_SCHEME = "v1"`` went first, at 0.8.10, for that
+# same reason.
+#
+# ⚠ **What 0.6.12 gave up, stated so nobody rediscovers it as a bug:** nothing
+# now records WHICH key produced a digest, so rotating the secret replaces a
+# tenant's whole population with no marker anywhere. Accepted — the generation
+# could not have re-joined a person across the boundary anyway, since the raw
+# value was never stored and no consumer can match new digests to old. If
+# rotation awareness is ever wanted it is an OPTIONAL wire member, never a tag
+# on this string.
 
 # What this package can truthfully say about a principal's provenance, and it is
 # one value: **nothing in this stack verifies an identity.** ``baton-proxy``
@@ -128,7 +132,10 @@ def hash_principal_id(
     ``tenant_id`` is folded into the HMAC MESSAGE (not just the key) so the same
     principal under two tenants can never collide or be cross-tenant-correlated,
     even if an operator misconfigures one shared key — the per-tenant guarantee
-    the residency contract requires. Returns ``"<scheme>:<hex>"`` (e.g. ``"h1:9f2c…"``).
+    the residency contract requires. Returns the BARE lowercase hex digest (e.g.
+    ``"9f2c…"``) — no tag, no prefix, no scheme. ⚠ It returned ``"h1:<hex>"``
+    until 0.6.12; the tag was never part of the HMAC message, so taking it off
+    moved no digit of the digest.
 
     ``issuer`` — the OIDC ``iss`` claim — is folded in the same way when
     supplied, because a ``sub`` is unique only within the provider that minted
@@ -139,13 +146,18 @@ def hash_principal_id(
     ⚠ **``issuer=None`` MUST hash byte-identically to the pre-issuer form**,
     and the append-only message layout below is what guarantees it. Every hash
     this package and the extmcp gateway have produced since 0.5.0 was
-    issuer-less, and a format change under the same ``h1:`` tag would leave one
-    derivation tag naming two different derivations across the sensor family —
-    precisely what the scheme prefix exists to prevent. Do NOT change the
-    layout a second time: the append-only shape is what makes ``None``
-    compatible, and a second divergence would have no compatible default to
-    hide behind. Pinned byte-for-byte by ``test_identity.py``'s shared vector,
-    which the SDK asserts on the same values.
+    issuer-less. Do NOT change the layout a second time: the append-only shape
+    is what makes ``None`` compatible, and a second divergence would have no
+    compatible default to hide behind. Pinned byte-for-byte by
+    ``test_identity.py``'s shared vector, which the SDK asserts on the same
+    values.
+
+    ⚠ **That rule got STRICTER at 0.6.12, and the reason is the tag's removal.**
+    A layout change used to be survivable by cutting a new generation — the tag
+    would have said which derivation produced a digest. There is no tag now, so
+    two layouts produce two indistinguishable populations of hex with nothing
+    anywhere recording the difference, in a column nobody can reverse. If the
+    layout must ever move, the marker goes on the wire as a member first.
 
     Added 2026-09-10, closing the divergence this module's own header opened:
     ``baton.identity`` grew ``issuer`` on 2026-09-09 while the docstring above
@@ -154,5 +166,4 @@ def hash_principal_id(
     message = f"{tenant_id}\x00{_canonicalize(raw_principal)}"
     if issuer is not None:
         message += f"\x00{_canonicalize(issuer)}"
-    digest = hmac.new(key, message.encode(), sha256).hexdigest()
-    return f"{HASH_SCHEME}:{digest}"
+    return hmac.new(key, message.encode(), sha256).hexdigest()

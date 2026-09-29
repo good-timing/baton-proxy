@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — `principal.id` stops carrying a tag. A hashed principal is the
+  bare hex digest.** It was `h1:<hex>` and is now `<hex>`. No member is added or
+  removed: `principal` keeps `id` + `source` + `form`, all three required.
+  SPEC §11.4 and the §13 entry for `0.8.11`. `HASH_SCHEME` is gone from
+  `baton_proxy.identity`.
+
+  **Why, and it is not a grouping fix.** The tag only ever changed when the
+  digest changed (a rotation), so keying on the whole string and keying on the
+  bare hash gave the same answer in every case the contract permitted — a
+  production sweep on 2026-09-29 found zero principals split by a tag. It went
+  because `principal`'s members exist to keep a fact *about* a value out of the
+  value, and this tag was the last survivor of the encoding `0.6.11` dismantled
+  when provenance became `source`.
+
+  ⚠ **Consumer consequence — a value change on an existing member.** A consumer
+  comparing whole `principal.id` strings across this upgrade sees one actor
+  become two, for **every** hashed principal. Stripping a leading `h<n>:` before
+  comparing is unaffected. **No backfill**: stored events keep their tag, so both
+  spellings of one digest coexist in a collector permanently and must not read as
+  two people.
+
+  ⚠ **`baton-extmcp` rides this**, as it does every wire change here: it builds
+  its `Principal` through this package's Emitter and pins `baton-proxy` by floor
+  with no ceiling, so its hashed ids go bare on whichever image resolves this
+  release. Nothing in that repo changes.
+
+  ⚠ **Rotation is now an unmarked discontinuity, deliberately.** Nothing records
+  which key produced a digest, so cutting the HMAC secret replaces a tenant's
+  whole population with no marker anywhere. The generation could not have
+  re-joined a person across the boundary — the raw value is never stored — so a
+  member carrying it would have labelled a discontinuity it could not repair.
+
+  ⚠ **And `identity.py`'s "do not change the message layout" rule got stricter
+  for the same reason.** A layout change used to be survivable by cutting a new
+  generation, because the tag said which derivation produced a digest. Two
+  layouts now produce two indistinguishable populations of hex, in a column
+  nobody can reverse.
+
+  ⚠ **TWO THINGS ARE RELEASE-GATED AND MUST HAPPEN WHEN `v0.6.12` IS TAGGED.**
+  Neither can be done before the tag exists, and both are invisible from this
+  repo's own gate:
+
+  1. **`try/kit.py`'s `PASTE_VERSION` is already `0.6.12` here, and the console's
+     copy still says `v0.6.11`.** `tests/test_try_kit.py` holds `PASTE_VERSION`
+     equal to `__version__`, so the bump was forced by the version bump — but the
+     pair NAMES the release the collector's copy is pinned to, and that copy
+     (its own `tag` and `version` fields) points at `v0.6.11`. The paste TEXT did not change —
+     `PASTE_SHA256` is untouched — so the console's copy is textually correct and
+     only its label is stale. Relabel it once the tag exists; doing it sooner
+     points at a tag that does not.
+  2. **`baton-extmcp`'s floor.** It pins `baton-proxy>=0.6.11` with no ceiling, so
+     its hashed ids go bare on whichever image resolves. Raise the floor to
+     `>=0.6.12` + lock, and fix the two places that still name the tag there: the
+     `HASH_SCHEME` import and `startswith` in `tests/test_spec_conformance.py`,
+     and the docstring at `servicer.py:149`. ⚠ Not done now on purpose: that
+     repo's venv installs `baton-proxy` **from PyPI**, so the edits would red
+     against the published 0.6.11 rather than against this change.
+
+  **The shared cross-repo vector was re-pinned by DELETING the prefix and
+  nothing else** — the 64 hex characters in `tests/test_identity.py` are
+  byte-for-byte what they were when frozen on 2026-09-10, and identical to the
+  SDK's copy, which is what proves the removal was a relabel rather than a
+  recomputation.
+
 ### Fixed
 
 - **`Config.from_env` no longer authors a remedy that is false for its other

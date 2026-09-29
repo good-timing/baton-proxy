@@ -28,7 +28,7 @@ import pytest
 
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter
-from baton_proxy.identity import HASH_SCHEME, Principal
+from baton_proxy.identity import Principal
 
 HERE = Path(__file__).parent
 REPO = HERE.parent
@@ -230,7 +230,10 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
     assert "principal_id" not in event, "the flat field is retired (SPEC §13)"
     principal = event["principal"]
     assert set(principal) == {"id", "source", "form"}
-    assert principal["id"].startswith(f"{HASH_SCHEME}:")
+    # SPEC 0.8.11 / proxy 0.6.12: a hashed id is the BARE digest. Asserted as
+    # "64 hex, no colon" rather than "not h1:", so a tag of any letter reds.
+    assert ":" not in principal["id"]
+    assert len(principal["id"]) == 64
     assert principal["source"] == "asserted", "the proxy verifies nothing"
     assert principal["form"] == "hashed"
     jsonschema.validate(event, event_schema)
