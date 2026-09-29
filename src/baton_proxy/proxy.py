@@ -1407,8 +1407,7 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     # "config entry" to remove. See `Config.from_env`'s docstring.
     config = Config.from_env(
         removal_hint=(
-            "To stop the injection entirely, remove the proxy from the server's "
-            "config entry."
+            "To stop the injection entirely, remove the proxy from the server's config entry."
         )
     )
     _configure_logging(config.log_file)
