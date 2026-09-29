@@ -1826,7 +1826,7 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "MCP proxy. Wraps a stdio MCP server (subprocess) OR bridges to an "
             "HTTPS Streamable-HTTP MCP server (--url), injects an annotation "
-            "tool into the handshake, and emits friction events to baton-console."
+            "tool into the handshake, and emits friction events to a collector."
         ),
     )
     parser.add_argument(

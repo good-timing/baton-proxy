@@ -7,7 +7,7 @@ every tool failure as a success.
 
 ⚠ **For a WIRE sensor that is 100% of failures, not a subset.** Measured on a
 real stdio round trip across `mcp` 1.27.2 / 2.2.0 and `fastmcp` 2.14.7 / 4.0.3
-(hub: `docs/design-notes/iserror_sensor_probe.md`, the wire addendum): every
+— every
 library converts a RAISED exception into a 200 carrying ``isError: true``
 *before the bytes leave the process*. The in-process SDKs see the exception and
 already file it correctly; the proxy never does. So on the wire there is ONE

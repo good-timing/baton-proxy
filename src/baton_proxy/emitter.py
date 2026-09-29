@@ -121,10 +121,10 @@ class _PrincipalWire:
 
 @dataclass(frozen=True)
 class _Event:
-    """Wire envelope, mirrors baton-console IncomingEvent shape.
+    """Wire envelope, mirrors the collector's IncomingEvent shape.
 
     Schemas are mirrored rather than imported so the proxy isn't lock-stepped
-    to a baton-console release. The console accepts `spec_version: str = "0.1"`
+    to a collector release. The collector accepts `spec_version: str = "0.1"`
     with a default and `extra="forbid"` on everything else.
     """
 
@@ -227,8 +227,8 @@ class Emitter:
         ``clientInfo.name`` arrives on ``initialize``, which precedes every
         event this process emits — including ``surface_snapshot``, which is
         sequence 1 and carries no ``_meta`` at all. That matters because the
-        consumers that ask a session what it ran in read its FIRST event
-        (baton-console's ``channels.pylon`` and ``worker.correlate``), so the
+        consumers that ask a session what it ran in read its FIRST event —
+        both the report renderer and the correlator do — so the
         per-event ``_meta`` heuristic alone can never reach them: by the time
         any ``_meta`` exists, event 1 is already written.
 

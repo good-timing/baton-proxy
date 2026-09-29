@@ -2,6 +2,13 @@
 
 Transparent MCP proxy. Wraps a stdio MCP server as a subprocess, **or** bridges to a remote Streamable-HTTP MCP server (`--url`); injects an annotation tool and three intent parameters into the handshake, and emits friction events to one or more sinks (stderr, a JSONL file, or a Baton Console).
 
+> **"Console" vs "collector".** The receiver is called the **Console** in places
+> throughout this repo's docstrings, for brevity. It is just whatever HTTP
+> collector you point `BATON_EVENT_SINK` at — a self-hosted ingest service, a
+> hosted one, or a third-party-built one. Nothing here requires a particular
+> receiver, and vendors who only need local capture can use the stderr or file
+> sinks and ignore it entirely. Same disclaimer the SDK's `SPEC.md` carries.
+
 Zero changes to the underlying MCP server. The proxy *is* the MCP server from Claude's perspective; the real server is either its child process (stdio) or the endpoint it forwards to (`--url`).
 
 ```
@@ -55,7 +62,7 @@ Either form is started by your MCP client, not by you: the proxy speaks JSON-RPC
 
 ## Where events go
 
-`BATON_EVENT_SINK` takes a comma-separated list, and the URL scheme picks the sink: `stderr:` writes JSON Lines to stderr, `file:///tmp/events.jsonl` appends one JSON object per event, and `https://console.example.com` POSTs to `{url}/v0/events`. The default is `stderr:,file:///tmp/baton-proxy.jsonl`, so a bare install writes only to your own machine.
+`BATON_EVENT_SINK` takes a comma-separated list, and the URL scheme picks the sink: `stderr:` writes JSON Lines to stderr, `file:///tmp/events.jsonl` appends one JSON object per event, and `https://collector.example.com` POSTs to `{url}/v0/events`. The default is `stderr:,file:///tmp/baton-proxy.jsonl`, so a bare install writes only to your own machine.
 
 A misconfigured sink fails loudly at startup rather than silently dropping events. The full variable list, covering timeouts, tenant shape, the upstream token and the intent-parameter mode, is in the [configuration reference](https://goodtiming.ai/docs.html#configuration).
 

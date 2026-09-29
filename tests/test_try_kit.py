@@ -3225,8 +3225,8 @@ def test_the_wrapped_entry_exits_when_the_client_disconnects(stdio_run):
 # launches, bearer travels, events land — and until this test the composed path
 # was first exercised on a prospect's machine.
 #
-# The graders are lifted from `baton-internal/spikes/http_entry_wrap/
-# check_kit_bridge.py:29-34,:54-55`, WITH their reasoning, because they were
+# The graders are lifted from an internal scoring rig, WITH their reasoning,
+# because they were
 # spending an LLM to grade something a scripted client can grade for free. The
 # design note's residue for the agent tier is narrow and none of it is here:
 # `${VAR}` expansion is a CLIENT behaviour, and a session's MCP server set
@@ -5470,9 +5470,8 @@ def test_security_md_says_the_file_can_leave_and_who_makes_it_leave():
 # the question is gone. Both labels reading the same is fine; neither is
 # authenticated, and `SECURITY.md` §5 already says so.
 #
-# `--tenant` itself survives as an override — `baton-internal/harness/kit_run.sh`
-# and `spikes/http_entry_wrap/run_kit_bridge_e2e.sh` both pass it to tell their
-# runs apart. What is banned is ASKING, not the flag, so the sweep is over the
+# `--tenant` itself survives as an override — internal harness scripts pass it
+# to tell their runs apart. What is banned is ASKING, not the flag, so the sweep is over the
 # prose and over the documented commands, not over the argparse declaration.
 # ---------------------------------------------------------------------------
 

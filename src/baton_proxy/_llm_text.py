@@ -416,7 +416,7 @@ _EXPECTED_RESULT_PARAM_DESCRIPTION = (
 #
 # Granularity is a KNOWN, MEASURED weakness of this text, kept anyway because
 # the obvious fix is worse. Do not reword without scoring against both corpora
-# in baton-internal `spikes/overall_task_a5/` (40 paired live-agent sessions,
+# in a scored internal experiment (40 paired live-agent sessions,
 # 2026-08-11, one build per run): the candidate ("the specific task the user is
 # working on right now — not the overall theme") fixes boundary detection
 # (0.700 -> 1.000) but relabels *within* one task (0.200 then 0.400 over-split

@@ -132,7 +132,7 @@ class FileSink(Sink):
 class HttpSink(Sink):
     """POST events to ``{base_url}/v0/events`` with Authorization: Bearer.
 
-    Same wire contract as baton-sdk's HttpSink and baton-console's
+    Same wire contract as baton-sdk's HttpSink and the collector's
     ``IncomingEvent`` schema. Uses stdlib urllib (no httpx) — the proxy is
     zero-deps by design."""
 

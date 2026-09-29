@@ -2,7 +2,7 @@
 
 Wraps a stdio MCP server as a subprocess, or bridges to a remote
 Streamable-HTTP MCP server (`--url`); injects an annotation tool into the
-handshake, and emits friction events to a baton-console.
+handshake, and emits friction events to a collector.
 
 See README.md for usage.
 """

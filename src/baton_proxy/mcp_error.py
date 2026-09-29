@@ -12,8 +12,8 @@ because it holds a Python object and mcp 2.x's ``mcp_types`` rewrite renamed the
 attribute. This module reads the WIRE, where that rename never happened: MCP's
 schema is camelCase and every server serialises ``model_dump_json(by_alias=
 True)``. Measured across `mcp` 1.27.2 / 2.2.0 and `fastmcp` 2.14.7 / 4.0.3 on a
-real stdio round trip — seven observations, all ``isError`` — in the hub's
-``docs/design-notes/iserror_sensor_probe.md``. So this is version-proof, not
+real stdio round trip — seven observations, all ``isError``. So this is
+version-proof, not
 under-specified. **Do not "fix" it by adding the snake spelling**: a wire body
 that carries one did not come from an MCP server.
 

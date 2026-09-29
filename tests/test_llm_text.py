@@ -275,7 +275,7 @@ def test_description_does_not_duplicate_triggers() -> None:
 # ---------------------------------------------------------------------------
 # The task label's wording is a result, not a style choice.
 #
-# It comes out of a scored experiment (baton-internal `spikes/overall_task_a5/`,
+# It comes out of a scored internal experiment (
 # 40 paired live-agent sessions): one wording misses task boundaries the user
 # does not announce, the other splits single tasks, and the trade was decided
 # in favour of the text below. Rewording it re-runs that experiment on live
