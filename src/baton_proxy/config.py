@@ -224,7 +224,30 @@ class Config:
         return self.consent_token == DEFAULT_CONSENT_TOKEN
 
     @classmethod
-    def from_env(cls) -> Config:
+    def from_env(cls, *, removal_hint: str | None = None) -> Config:
+        """Read the environment into a Config, collecting startup warnings.
+
+        ⚠ **`removal_hint` exists because this method has TWO callers and only
+        one of them is the stdio proxy.** `baton-extmcp` imports this Config and
+        drains `startup_warnings` verbatim (`server.py:_config_from_env`), so a
+        remedy written here in stdio's shape — "remove the proxy from the
+        server's config entry" — reached a gateway operator as an instruction
+        about a config entry their deployment does not have. A warning that
+        tells someone to do something that does not exist in their setup is
+        worse than one that stops at the fact.
+
+        So this method states only what is TRUE everywhere, and the caller
+        supplies the sentence describing how to remove Baton from ITS path.
+        `None` omits the remedy rather than guessing one: no advice beats wrong
+        advice, and an embedder that forgets to pass one still ships an accurate
+        warning.
+
+        The sibling `BATON_USER_ID_HMAC_KEY` warning below needs no hint — it
+        was already rewritten to be true on both surfaces by naming the
+        condition ("wherever an identity is resolved") instead of a surface.
+        That is the other way to solve this, and it works when the remedy
+        differs by DEGREE; `removal_hint` is for when it differs in KIND.
+        """
         vendor_id = _env("BATON_VENDOR_ID") or DEFAULT_VENDOR_ID
         warnings: list[str] = []
         intent_param_mode = _env("BATON_INTENT_PARAM") or DEFAULT_INTENT_PARAM_MODE
@@ -248,8 +271,8 @@ class Config:
                 f"been ignored; the intent params are injected as "
                 f"{DEFAULT_INTENT_PARAM_MODE!r}. They are stripped from every call "
                 "before it is forwarded, so your server still receives exactly the "
-                "arguments it would receive unwrapped. To stop the injection entirely, "
-                "remove the proxy from the server's config entry."
+                "arguments it would receive unwrapped."
+                + (f" {removal_hint}" if removal_hint else "")
             )
             intent_param_mode = DEFAULT_INTENT_PARAM_MODE
         if intent_param_mode not in _INTENT_PARAM_MODES:

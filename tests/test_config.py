@@ -252,10 +252,45 @@ def test_intent_param_off_is_ignored_with_a_warning_and_the_proxy_starts(
     assert caplog.text == ""
     text = "\n".join(cfg.startup_warnings)
     # The warning has to say the thing a reviewer actually needs: their server
-    # is unaffected, and here is the real way to turn it off.
+    # is unaffected.
     assert "no longer supported" in text
     assert "stripped from every call" in text
-    assert "remove the proxy from the server's config entry" in text
+    # ⚠ And it must NOT author the remedy, because `baton-extmcp` drains these
+    # same strings and has no "config entry" to remove. `from_env` states only
+    # what is true on every surface; the caller supplies how to remove Baton
+    # from ITS path. Asserting the ABSENCE is what keeps a future edit from
+    # quietly moving a stdio-shaped sentence back in here.
+    assert "config entry" not in text
+    assert "remove the proxy" not in text
+
+
+def test_from_env_places_the_callers_remedy_and_omits_it_when_absent() -> None:
+    """The other half of the same rule: a caller that HAS a remedy gets it
+    appended verbatim, and one that passes none ships an accurate warning
+    rather than a guessed one."""
+    import os
+
+    from baton_proxy.config import Config
+
+    old = os.environ.get("BATON_INTENT_PARAM")
+    os.environ["BATON_INTENT_PARAM"] = "off"
+    try:
+        hint = "Unplug the frobnicator."
+        with_hint = "\n".join(Config.from_env(removal_hint=hint).startup_warnings)
+        without = "\n".join(Config.from_env().startup_warnings)
+    finally:
+        if old is None:
+            os.environ.pop("BATON_INTENT_PARAM", None)
+        else:
+            os.environ["BATON_INTENT_PARAM"] = old
+
+    assert hint in with_hint
+    assert with_hint.endswith(hint)
+    assert hint not in without
+    # Without a hint the sentence still carries the fact, and does not trail a
+    # dangling space where the remedy would have gone.
+    assert "stripped from every call" in without
+    assert without == without.rstrip()
 
 
 def test_the_bootstrap_drains_startup_warnings_into_the_configured_log_file(

@@ -1402,7 +1402,15 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     preamble both transports need. Callers do the transport-specific work (spawn
     a subprocess / open an HTTP client) and log their own startup line.
     """
-    config = Config.from_env()
+    # The remedy is supplied HERE, not in `from_env`, because it is true only
+    # of this surface: `baton-extmcp` drains the same warnings and has no
+    # "config entry" to remove. See `Config.from_env`'s docstring.
+    config = Config.from_env(
+        removal_hint=(
+            "To stop the injection entirely, remove the proxy from the server's "
+            "config entry."
+        )
+    )
     _configure_logging(config.log_file)
     # Drained here, not logged where they were raised: `from_env` runs before
     # this line, so a warning emitted there goes out through

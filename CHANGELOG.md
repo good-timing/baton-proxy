@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Config.from_env` no longer authors a remedy that is false for its other
+  caller.** The retired-`BATON_INTENT_PARAM=off` warning ended with "remove the
+  proxy from the server's config entry" — an instruction about an MCP client
+  config entry, which is this proxy's shape and not the shape of an embedder
+  that drains the same `startup_warnings` verbatim. A gateway operator was told
+  to remove something their deployment does not have, inside a warning that
+  otherwise reads as authoritative. `from_env` now states only what is true on
+  every surface and takes `removal_hint` for the caller's own sentence; `None`
+  omits the remedy rather than guessing one, since no advice beats wrong advice.
+  Two tests, one asserting the stdio sentence is ABSENT from `from_env`'s own
+  output so a future edit cannot quietly move it back.
+
 ### Removed
 
 - **`baton_session_report` is gone, with nothing in its place.** The injected
