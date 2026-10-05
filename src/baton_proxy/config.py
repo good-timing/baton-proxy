@@ -193,16 +193,6 @@ class Config:
     # this field being populated and the bootstrap emitting it.
     startup_warnings: tuple[str, ...] = ()
 
-    # Per-tenant secret keying the ``principal.id`` HMAC (identity.py). The
-    # knob keeps its own name deliberately — renaming it to chase a wire field
-    # would break every existing deployment.
-    # Raw identity is hashed at the edge with this key before an event reaches
-    # any console-bound sink (residency contract). None → the field is
-    # fail-open-skipped (events still emit, just without it); it is additive
-    # analytics, never a consent/authz gate. Populated from
-    # BATON_PRINCIPAL_ID_HMAC_KEY (raw UTF-8 secret) by from_env().
-    principal_id_hmac_key: bytes | None = None
-
     @property
     def emission_enabled(self) -> bool:
         """True when the envelope-essential fields are populated. With
@@ -241,12 +231,6 @@ class Config:
         `None` omits the remedy rather than guessing one: no advice beats wrong
         advice, and an embedder that forgets to pass one still ships an accurate
         warning.
-
-        The sibling `BATON_USER_ID_HMAC_KEY` warning below needs no hint — it
-        was already rewritten to be true on both surfaces by naming the
-        condition ("wherever an identity is resolved") instead of a surface.
-        That is the other way to solve this, and it works when the remedy
-        differs by DEGREE; `removal_hint` is for when it differs in KIND.
         """
         vendor_id = _env("BATON_VENDOR_ID") or DEFAULT_VENDOR_ID
         warnings: list[str] = []
@@ -286,33 +270,6 @@ class Config:
                 f"BATON_PROACTIVE must be one of {sorted(_PROACTIVE_MODES)}; "
                 f"got {proactive_mode!r}."
             )
-        hmac_key = _env("BATON_PRINCIPAL_ID_HMAC_KEY")
-        if not hmac_key and _env("BATON_USER_ID_HMAC_KEY"):
-            # Renamed in 0.6.8 with no fallback. Hashed identity fails open, so a
-            # leftover old variable would otherwise just stop producing the field.
-            # The value is never read or logged.
-            #
-            # ⚠ Names the MEMBER (`principal`), never the retired flat
-            # `principal_id` — an operator greps their log for what this sentence
-            # names. Pinned by `test_config.py::test_the_renamed_hmac_env_var_is_
-            # never_read_and_warned_about_only_when_it_matters`.
-            #
-            # ⚠ And the REMEDY is qualified, because both callers of `from_env`
-            # see this line and it is only actionable for one. `baton-extmcp`
-            # resolves a principal from its gateway header and logs these
-            # warnings (`server.py:73`), so setting the key restores the member
-            # there. The stdio proxy passes `principal` to the Emitter from
-            # nowhere — measured, no `Principal(` or resolver call exists outside
-            # `identity.py` — so an operator who sets the key, greps for
-            # `principal` and finds nothing would conclude the fix failed. An
-            # unqualified "turn it back on" is a promise this path cannot keep.
-            warnings.append(
-                "baton-proxy: BATON_USER_ID_HMAC_KEY is set, but it was renamed to "
-                "BATON_PRINCIPAL_ID_HMAC_KEY in 0.6.8 and is no longer read, so no "
-                "event carries a `principal` member. Set BATON_PRINCIPAL_ID_HMAC_KEY "
-                "to restore it wherever an identity is resolved — the stdio proxy "
-                "resolves none of its own."
-            )
         return cls(
             session_id=str(uuid.uuid4()),
             event_sink=_env("BATON_EVENT_SINK") or DEFAULT_EVENT_SINK,
@@ -322,7 +279,6 @@ class Config:
             vendor_id=vendor_id,
             intent_param_mode=intent_param_mode,
             proactive_mode=proactive_mode,
-            principal_id_hmac_key=hmac_key.encode("utf-8") if hmac_key else None,
             log_file=_env("BATON_PROXY_LOG_FILE"),
             startup_warnings=tuple(warnings),
         )

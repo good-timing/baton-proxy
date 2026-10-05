@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import threading
 import time
 import uuid
@@ -33,10 +34,11 @@ from typing import Any
 from baton_proxy import USER_AGENT as _SDK_VERSION
 from baton_proxy.config import Config
 from baton_proxy.identity import (
-    PRINCIPAL_FORM,
+    PRINCIPAL_FORM_RAW,
+    PRINCIPAL_FORMS,
+    PRINCIPAL_ID_MAX_LEN,
     PRINCIPAL_SOURCE,
     Principal,
-    hash_principal_id,
 )
 from baton_proxy.scrub import Scrubber
 from baton_proxy.sinks import Sink, make_sink
@@ -101,14 +103,12 @@ def detect_agent_runtime(meta: Mapping[str, Any] | None) -> str | None:
 class _PrincipalWire:
     """The principal AS EMITTED — the finished envelope value (SPEC §11.4).
 
-    ⚠ **Not ``identity.Principal``.** That one is what a resolver HANDS US, raw
-    and pre-hash; this is what goes on the wire after ``_enqueue`` derives it.
+    ⚠ **Not ``identity.Principal``.** That one is what a resolver HANDS US;
+    this is what ``_wire_principal`` puts on the wire for it.
 
     All three members are required together — canonical wording in
     ``baton-spec/events.schema.json`` ``$defs.PrincipalWire``, checked out
-    in-tree. ``source`` and ``form`` are ``str`` rather than literals because
-    both registered sets are OPEN and a producer must be able to emit a value
-    SPEC registers later without a release.
+    in-tree.
     """
 
     id: str
@@ -117,6 +117,58 @@ class _PrincipalWire:
 
     def to_json(self) -> dict[str, str]:
         return {"id": self.id, "source": self.source, "form": self.form}
+
+
+# A lone surrogate cannot be UTF-8 encoded and U+0000 is refused by Postgres
+# text; either would cost a collector the whole EVENT, not the principal.
+_UNSENDABLE = re.compile("[\x00\ud800-\udfff]")
+
+
+def _wire_principal(principal: Principal | None) -> _PrincipalWire | None:
+    """The resolver's principal as the wire object, or ``None``.
+
+    The id is sent as given and not scrubbed: a scrubber that redacts emails
+    would map every user onto one redaction constant and merge them into a
+    single actor.
+    """
+    if principal is None:
+        return None
+    if not isinstance(principal, Principal):
+        logger.warning(
+            "baton-proxy: resolver returned %s, not a Principal — dropping "
+            "principal (events still emit)",
+            type(principal).__name__,
+        )
+        return None
+    principal_id = principal.principal_id
+    if not isinstance(principal_id, str) or not principal_id.strip():
+        # A blank id names nobody, and every such caller would merge into one
+        # actor.
+        logger.warning(
+            "baton-proxy: resolver returned an empty or non-string principal_id "
+            "— dropping principal (events still emit)"
+        )
+        return None
+    if _UNSENDABLE.search(principal_id):
+        logger.warning(
+            "baton-proxy: resolver returned a principal_id holding a lone surrogate "
+            "or U+0000 — dropping principal (events still emit)"
+        )
+        return None
+    form = principal.form
+    if not isinstance(form, str) or form not in PRINCIPAL_FORMS:
+        # SPEC §11.4: anything not "hashed" is personal data, so that is the
+        # only safe reading of a form nobody registered.
+        logger.warning(
+            "baton-proxy: resolver returned form %r, expected one of %s — sending it as %r",
+            form,
+            sorted(PRINCIPAL_FORMS),
+            PRINCIPAL_FORM_RAW,
+        )
+        form = PRINCIPAL_FORM_RAW
+    return _PrincipalWire(
+        id=principal_id[:PRINCIPAL_ID_MAX_LEN], source=PRINCIPAL_SOURCE, form=form
+    )
 
 
 @dataclass(frozen=True)
@@ -140,13 +192,8 @@ class _Event:
     agent_runtime: str
     payload: dict[str, Any]
     runtime_meta: dict[str, Any] | None = None
-    # Who was resolved behind this event (SPEC §11.4) — the hashed id plus the
-    # two facts that classify it. Hashed at the edge, per-tenant; the raw
-    # principal is never emitted. None → the member is omitted WHOLE.
-    #
-    # ⚠ Was the flat ``principal_id`` (and ``user_id`` before 0.6.8). A console
-    # with a closed envelope schema must take the object BEFORE this ships; see
-    # CHANGELOG for which release did.
+    # Who was resolved behind this event (SPEC §11.4) — the id plus the two
+    # facts that classify it. None → the member is omitted WHOLE.
     principal: _PrincipalWire | None = None
 
     def to_json(self) -> dict[str, Any]:
@@ -190,8 +237,6 @@ class Emitter:
         # the queue between our get and put.
         self._enqueue_lock = threading.Lock()
         self._drop_count = 0
-        # One-shot guard so a missing HMAC key logs once, not per event.
-        self._warned_no_hmac_key = False
         # Sink set up in start(); None until then.
         self._sink: Sink | None = None
         # Source-side PII scrubber. Stateful — accumulates per-category
@@ -681,34 +726,7 @@ class Emitter:
         if not self._config.emission_enabled or self._thread is None:
             return
 
-        # Hash the principal AT THE EDGE — the console DB is metadata-only and
-        # may only ever see the hash (residency contract). The raw principal
-        # never survives this method. No key configured → fail-open: drop the
-        # field, keep emitting, warn once (it is additive analytics, never a
-        # consent/authz gate).
-        # ``source`` and ``form`` are constants, not parameters; the reasoning
-        # lives on them in identity.py. With no key there is no hash, so no
-        # classification is true and the whole member is dropped — SPEC §11.4
-        # forbids a partial object.
-        principal_wire: _PrincipalWire | None = None
-        if principal is not None:
-            key = self._config.principal_id_hmac_key
-            if key:
-                principal_wire = _PrincipalWire(
-                    id=hash_principal_id(
-                        principal.principal_id,
-                        tenant_id=self._config.tenant_id or "",
-                        key=key,
-                    ),
-                    source=PRINCIPAL_SOURCE,
-                    form=PRINCIPAL_FORM,
-                )
-            elif not self._warned_no_hmac_key:
-                self._warned_no_hmac_key = True
-                logger.warning(
-                    "baton-proxy: identity resolved but BATON_PRINCIPAL_ID_HMAC_KEY "
-                    "is unset — dropping principal (events still emit)"
-                )
+        principal_wire = _wire_principal(principal)
 
         # Scrub PII from the payload before anything else touches it. Both
         # the file sink and any HTTP sink will see only the scrubbed copy,

@@ -1,57 +1,23 @@
-"""End-user identity capture — hash_principal_id + the Emitter edge-hash.
+"""End-user identity capture — the Emitter sends a resolver's principal as stated.
 
-Residency contract: a console-bound event carries only the HMAC
-HASH of the principal, never the raw value; a missing key fails open (drop the
-whole `principal` member, keep emitting). Also guards the `user_name` scrub
-rule against over-broad `name` redaction.
+Also guards the `user_name` scrub rule against over-broad `name` redaction.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+from typing import Any
+
+import pytest
 
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter
-from baton_proxy.identity import Principal, hash_principal_id
+from baton_proxy.identity import Principal
 from baton_proxy.scrub import Scrubber
 
-KEY = b"tenant-secret-key"
 
-
-# ---- hash_principal_id (pure) ---------------------------------------------------
-
-
-def test_hash_deterministic_and_scheme_prefixed() -> None:
-    a = hash_principal_id("u123", tenant_id="t1", key=KEY)
-    assert a == hash_principal_id("u123", tenant_id="t1", key=KEY)
-    # No tag from 0.6.12. Asserted as "no colon" so a reintroduced tag of ANY
-    # letter reds here, where naming `h1:` would let `h2:` through.
-    assert ":" not in a
-
-
-def test_same_principal_different_tenants_never_collide() -> None:
-    # tenant folded into the message — per-tenant guarantee even with a shared key.
-    assert hash_principal_id("u123", tenant_id="t1", key=KEY) != hash_principal_id(
-        "u123", tenant_id="t2", key=KEY
-    )
-
-
-def test_canonicalization_strip_and_lowercase() -> None:
-    assert hash_principal_id("  U123 ", tenant_id="t", key=KEY) == hash_principal_id(
-        "u123", tenant_id="t", key=KEY
-    )
-
-
-def test_different_key_different_hash() -> None:
-    assert hash_principal_id("u", tenant_id="t", key=b"k1") != hash_principal_id(
-        "u", tenant_id="t", key=b"k2"
-    )
-
-
-# ---- Emitter edge-hash -----------------------------------------------------
-
-
-def _config(path: str, *, key: bytes | None) -> Config:
+def _config(path: str) -> Config:
     return Config(
         session_id="s",
         event_sink=f"file://{path}",
@@ -60,13 +26,12 @@ def _config(path: str, *, key: bytes | None) -> Config:
         consent_token="c",
         vendor_id="v",
         log_file=None,
-        principal_id_hmac_key=key,
     )
 
 
-def _emit_one(tmp_path, *, key: bytes | None, principal: Principal | None) -> dict:
+def _emit_one(tmp_path, *, principal: Principal | None) -> dict:
     p = tmp_path / "events.jsonl"
-    e = Emitter(_config(str(p), key=key))
+    e = Emitter(_config(str(p)))
     e.start()
     e.enqueue_tool_call_start(tool_name="echo", params={"x": 1}, principal=principal)
     e.stop()
@@ -74,10 +39,47 @@ def _emit_one(tmp_path, *, key: bytes | None, principal: Principal | None) -> di
     return lines[-1]
 
 
-def test_principal_hashed_at_edge_raw_never_emitted(tmp_path) -> None:
-    ev = _emit_one(tmp_path, key=KEY, principal=Principal(principal_id="u123"))
-    assert ev["principal"]["id"] == hash_principal_id("u123", tenant_id="acme", key=KEY)
-    assert "u123" not in json.dumps(ev)  # raw principal never on the wire
+def test_the_id_is_sent_as_the_resolver_returned_it(tmp_path) -> None:
+    ev = _emit_one(tmp_path, principal=Principal(principal_id="Alice@Example.COM"))
+    assert ev["principal"] == {"id": "Alice@Example.COM", "source": "asserted", "form": "raw"}
+
+
+def test_a_form_the_resolver_states_reaches_the_wire_with_the_id_untouched(tmp_path) -> None:
+    digest = "9F2C" + "ab" * 30
+    ev = _emit_one(tmp_path, principal=Principal(principal_id=digest, form="hashed"))
+    assert ev["principal"] == {"id": digest, "source": "asserted", "form": "hashed"}
+
+
+@pytest.mark.parametrize("form", ["encrypted", "HASHED", None, ["hashed"]])
+def test_an_unregistered_form_is_sent_as_raw(
+    tmp_path, caplog: pytest.LogCaptureFixture, form: Any
+) -> None:
+    """SPEC §11.4: anything not ``"hashed"`` is personal data."""
+    with caplog.at_level(logging.WARNING):
+        ev = _emit_one(tmp_path, principal=Principal(principal_id="u123", form=form))
+    assert ev["principal"] == {"id": "u123", "source": "asserted", "form": "raw"}
+    assert "form" in caplog.text
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n", None, 7, "a\ud800b", "jane\x00"])
+def test_a_blank_unsendable_or_non_string_id_emits_no_principal(tmp_path, blank: Any) -> None:
+    ev = _emit_one(tmp_path, principal=Principal(principal_id=blank))
+    assert "principal" not in ev
+    assert ev["event_type"] == "tool_call_start"
+
+
+@pytest.mark.parametrize("returned", [{"principal_id": "u123"}, "u123", 7])
+def test_a_resolver_return_that_is_not_a_principal_cannot_fail_the_emit(
+    tmp_path, returned: Any
+) -> None:
+    ev = _emit_one(tmp_path, principal=returned)
+    assert "principal" not in ev
+    assert ev["event_type"] == "tool_call_start"
+
+
+def test_the_id_is_capped(tmp_path) -> None:
+    ev = _emit_one(tmp_path, principal=Principal(principal_id="x" * 500))
+    assert ev["principal"]["id"] == "x" * 128
 
 
 def test_principal_rides_as_one_object_with_all_three_members(tmp_path) -> None:
@@ -88,46 +90,20 @@ def test_principal_rides_as_one_object_with_all_three_members(tmp_path) -> None:
     emitter directly, so the guarantee survives a session where the submodule
     is absent and that test skips.
     """
-    ev = _emit_one(tmp_path, key=KEY, principal=Principal(principal_id="u123"))
+    ev = _emit_one(tmp_path, principal=Principal(principal_id="u123"))
     assert set(ev["principal"]) == {"id", "source", "form"}
     assert "principal_id" not in ev, "the flat field is retired (SPEC §13)"
 
 
 def test_the_proxy_never_claims_an_attestation(tmp_path) -> None:
-    """SPEC §13 (5): the proxy and extmcp emit ``asserted`` for header-derived
-    principals, because nothing in the producing stack verified them.
-
-    This is the CORRECTION the object exists to carry — under the retired
-    encoding these events stamped ``h1:`` and read as attested. A consumer
-    trusts only exactly ``"attested"``, so getting this value wrong presents an
-    unchecked gateway header as a verified identity.
-    """
-    ev = _emit_one(tmp_path, key=KEY, principal=Principal(principal_id="u123"))
+    """A consumer trusts only exactly ``"attested"``, and nothing in the
+    producing stack verifies a principal."""
+    ev = _emit_one(tmp_path, principal=Principal(principal_id="u123", form="hashed"))
     assert ev["principal"]["source"] == "asserted"
 
 
-def test_form_names_the_derivation_that_actually_ran(tmp_path) -> None:
-    """``form`` is the ONLY thing a consumer may classify on (SPEC §11.4), and
-    the proxy has one derivation: it always hashes. There is no raw mode here;
-    the no-key path drops the principal rather than emitting it verbatim, and
-    that case is ``test_no_key_fail_open_drops_the_whole_principal``."""
-    ev = _emit_one(tmp_path, key=KEY, principal=Principal(principal_id="u123"))
-    assert ev["principal"]["form"] == "hashed"
-    assert ":" not in ev["principal"]["id"]
-
-
-def test_no_key_fail_open_drops_the_whole_principal(tmp_path) -> None:
-    ev = _emit_one(tmp_path, key=None, principal=Principal(principal_id="u123"))
-    # Absent as a WHOLE, never a null id inside a present object: with no hash
-    # there is no classification that is true, and SPEC §11.4 has no shape for
-    # "resolved but unclassified".
-    assert "principal" not in ev
-    assert "principal_id" not in ev
-    assert "u123" not in json.dumps(ev)
-
-
 def test_no_principal_omits_the_member(tmp_path) -> None:
-    ev = _emit_one(tmp_path, key=KEY, principal=None)
+    ev = _emit_one(tmp_path, principal=None)
     assert "principal" not in ev
     assert "principal_id" not in ev
 
@@ -140,70 +116,3 @@ def test_user_name_field_scrubbed_but_not_name() -> None:
     assert out["user_name"].startswith("[REDACTED")
     assert out["name"] == "get_thing"  # prompt/tool names must survive
     assert out["tool_name"] == "echo"
-
-
-# --------------------------------------------------------------------------
-# The CROSS-REPO vector — the only assertion that can catch a joint drift
-# --------------------------------------------------------------------------
-
-# One principal, one tenant, one key, and the two digests they must produce.
-# ⚠ These literals are DUPLICATED VERBATIM in the sibling sensor
-# (`baton/tests/test_identity_adapter.py` <-> `baton-proxy/tests/test_identity.py`)
-# and that duplication is the entire point: `hash_principal_id` is a hand-maintained
-# copy across two repos that cannot import each other, and every other test of
-# it compares the implementation to ITSELF. The pre-existing
-# "issuer=None matches the pre-issuer form" check asserts
-# `hash_principal_id(x) == hash_principal_id(x, issuer=None)` — both sides from the same
-# module — so a layout change applied to BOTH repos on the same day stays green
-# in both while every hash ever emitted becomes unreproducible. A frozen
-# literal is the only thing that reds for that, because it was computed before
-# the change and no edit can move it.
-#
-# The principal carries a trailing space and mixed case on purpose: canonical-
-# isation (NFC, strip, lower) is part of the derivation, so a divergence there
-# is a divergence in the hash.
-#
-# If one of these ever fails, the answer is NOT to update the literal. It means
-# the two sensors have stopped agreeing about the derivation, and every stored
-# `principal.id` was written under the other definition.
-#
-# ⚠ **The HEX was edited ONCE, at 0.6.12, and only by DELETING the `h1:` in
-# front of it.** That release took the tag off the value (SPEC §11.4, §13 entry
-# 0.8.11) and the tag was never part of the HMAC message, so the 64 hex
-# characters below are byte-for-byte what they were when frozen on 2026-09-10 —
-# the guard still pins exactly what it was written to pin. **That is the only
-# edit this comment permits: removing a prefix.** A change to any hex digit means
-# the derivation moved, and the answer is still to revert the code.
-_VECTOR_PRINCIPAL = "Alice@Example.COM "
-_VECTOR_TENANT = "ten_abc"
-_VECTOR_KEY = b"shared-key-bytes"
-_VECTOR_ISSUER = "https://idp.example.com"
-_VECTOR_ISSUERLESS = "b8556c3cd4564b06af433259553eadee690754318e27ca392deabba8aac7843b"
-_VECTOR_WITH_ISSUER = "9fc18f492b9dfe9092acf9d330d710b648d29b4aa131ecf702938df9409f0e78"
-
-
-def test_the_shared_cross_repo_vector_issuerless() -> None:
-    """Frozen 2026-09-10, when the two copies were verified byte-identical."""
-    assert (
-        hash_principal_id(_VECTOR_PRINCIPAL, tenant_id=_VECTOR_TENANT, key=_VECTOR_KEY)
-        == _VECTOR_ISSUERLESS
-    )
-
-
-def test_the_shared_cross_repo_vector_with_an_issuer() -> None:
-    """The issuer fold is append-only, so this pins the APPENDED layout too.
-
-    Without it, only the issuer-less half would be nailed down and the two
-    repos could still diverge on where the issuer goes — which is the failure
-    the docstring warns cannot be hidden behind a compatible default a second
-    time.
-    """
-    assert (
-        hash_principal_id(
-            _VECTOR_PRINCIPAL,
-            tenant_id=_VECTOR_TENANT,
-            key=_VECTOR_KEY,
-            issuer=_VECTOR_ISSUER,
-        )
-        == _VECTOR_WITH_ISSUER
-    )

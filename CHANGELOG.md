@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — the proxy no longer hashes `principal.id`; the resolver decides
+  what is sent.** An `IdentityResolver` returns `Principal(principal_id=...,
+  form=...)` and the emitter puts both on the wire as given, with
+  `source: "asserted"`. `form` defaults to `"raw"`; a resolver that wants a
+  pseudonym hashes the value itself and returns `form="hashed"`. An
+  unregistered `form` is sent as `"raw"`, and the id is capped at 128
+  characters. A `principal_id` that is blank, not a string, or holds a lone
+  surrogate or U+0000 emits no `principal`.
+
+### Removed
+
+- `Config.principal_id_hmac_key` and the `BATON_PRINCIPAL_ID_HMAC_KEY`
+  environment variable. Neither is read; with no key the principal is no
+  longer dropped.
+- `baton_proxy.identity.hash_principal_id` and `PRINCIPAL_FORM`.
+
 
 ## [0.6.12] — 2026-09-29
 

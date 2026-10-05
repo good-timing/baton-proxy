@@ -200,8 +200,8 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
     )
 
     # The stdio scenario resolves no principal, so ``principal`` never
-    # reaches the loop above. Drive the emitter with one and an HMAC key, as
-    # baton-extmcp does, and validate the hashed event it writes. Kept in this
+    # reaches the loop above. Drive the emitter with one, as baton-extmcp
+    # does, and validate the event it writes. Kept in this
     # test rather than a third one: try/SECURITY.md §8 counts the two tests
     # that skip without the submodule, and test_try_kit.py pins that count.
     sink = tmp_path / "events.jsonl"
@@ -213,7 +213,6 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
         consent_token="ct_conformance",
         vendor_id="conformance-vendor",
         log_file=None,
-        principal_id_hmac_key=b"conformance-key",
     )
     emitter = Emitter(config)
     emitter.start()
@@ -230,12 +229,9 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
     assert "principal_id" not in event, "the flat field is retired (SPEC §13)"
     principal = event["principal"]
     assert set(principal) == {"id", "source", "form"}
-    # SPEC 0.8.11 / proxy 0.6.12: a hashed id is the BARE digest. Asserted as
-    # "64 hex, no colon" rather than "not h1:", so a tag of any letter reds.
-    assert ":" not in principal["id"]
-    assert len(principal["id"]) == 64
+    assert principal["id"] == "u123"
     assert principal["source"] == "asserted", "the proxy verifies nothing"
-    assert principal["form"] == "hashed"
+    assert principal["form"] == "raw"
     jsonschema.validate(event, event_schema)
 
 
