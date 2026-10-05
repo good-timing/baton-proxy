@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.13] — 2026-10-05
+
+⚠ A BREAKING release on a patch number: the identity change below. Read it
+before upgrading if you set `BATON_PRINCIPAL_ID_HMAC_KEY` or pass an
+`IdentityResolver`.
+
 ### Changed
 
 - **BREAKING — the proxy no longer hashes `principal.id`; the resolver decides
