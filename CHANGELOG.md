@@ -19,13 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **A call whose start was emitted is always closed.** Two requests sent with
-  the same JSON-RPC id used to leave the first with no end and no error, and a
-  request with no id or an id that is not a string or number was never closed
-  (a list or object id also raised). The displaced call now gets a
-  `proxy_request_id_reused` error and the unmatchable one a
-  `proxy_request_id_invalid` error, for tool, resource and prompt calls alike.
-  The request is still forwarded unchanged.
+- **A call whose start was emitted is closed while the proxy runs.** Two
+  requests sent with the same JSON-RPC id used to leave the first with no end
+  and no error; it now gets a `proxy_request_id_reused` error. The upstream's
+  two answers still cannot be told apart, so the first to arrive closes the
+  later call. A request with no id, or an id that is not a string or number
+  (a boolean included), now gets a `proxy_request_id_invalid` error at once:
+  before, a missing or null id was closed only at shutdown, and a list or
+  object id was never closed.
+- **A request with a list or object id is forwarded** like any other. The
+  proxy used to answer it with `-32603` and not send it upstream.
 
 ## [0.6.13] — 2026-10-05
 

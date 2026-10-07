@@ -59,11 +59,8 @@ from baton_proxy.sinks import find_file_sink_path
 
 logger = logging.getLogger("baton_proxy")
 
-# Cap the in-flight tool-call tracking dict. Well above realistic MCP
-# concurrency (1-10 parallel calls); the cap exists to bound memory if the
-# upstream stops responding. When exceeded, oldest entries are evicted and
-# a synthetic tool_call_error is emitted so the worker sees a well-formed
-# start/error pair rather than a dangling start.
+# Bounds memory if the upstream stops responding; far above realistic MCP
+# concurrency. Past it the oldest call is evicted and closed with an error.
 MAX_PENDING = 256
 EVICTED_ERROR_TYPE = "proxy_pending_evicted"
 REUSED_ID_ERROR_TYPE = "proxy_request_id_reused"
@@ -230,8 +227,8 @@ class _PendingCall:
 
 
 def _is_request_id(value: Any) -> bool:
-    """An id a response can be matched on: JSON-RPC allows a string or a number."""
-    return isinstance(value, str | int | float)
+    # bool is an int in Python: True would share a pending slot with 1.
+    return isinstance(value, str | int | float) and not isinstance(value, bool)
 
 
 def _emit_call_end(
@@ -328,7 +325,6 @@ def _emit_call_error(
 def _close_unanswered(
     emitter: Emitter, call: _PendingCall, error_type: str, error_body: str
 ) -> None:
-    """Write the error leg for a start the upstream will not answer."""
     try:
         _emit_call_error(
             emitter, call, error_type, error_body, max(0, utc_now_ms() - call.started_ms)
@@ -687,12 +683,16 @@ class MessageProcessor:
         self._emitted_surface_hashes: set[str] = set()
         self._surface_lock = threading.Lock()
 
-    def _track(self, req_id: Any, call: _PendingCall) -> None:
-        """Register an in-flight call whose start is already emitted.
-
-        Every start gets a close: a call that cannot be tracked, or that is
-        displaced by a later request reusing its id, is closed here.
-        """
+    def _track(
+        self,
+        req_id: Any,
+        kind: str,
+        subject: str,
+        runtime_meta: dict[str, Any] | None,
+        call_id: str | None = None,
+    ) -> None:
+        """Register an in-flight call whose start is already emitted."""
+        call = _PendingCall(kind, subject, utc_now_ms(), runtime_meta, call_id)
         if not _is_request_id(req_id):
             _close_unanswered(
                 self._emitter,
@@ -702,6 +702,7 @@ class MessageProcessor:
             )
             return
         with self._pending_lock:
+            # Pop first so a reused id becomes the newest entry, not the next evicted.
             displaced = self._pending.pop(req_id, None)
             self._pending[req_id] = call
             _evict_overflow(self._pending, self._emitter)
@@ -712,6 +713,13 @@ class MessageProcessor:
                 REUSED_ID_ERROR_TYPE,
                 "a later request reused this request's id before it was answered",
             )
+
+    def _pop_pending(self, req_id: Any) -> _PendingCall | None:
+        # An id that is not a string or number may be unhashable.
+        if not _is_request_id(req_id):
+            return None
+        with self._pending_lock:
+            return self._pending.pop(req_id, None)
 
     def handle_client_message(self, req: dict[str, Any]) -> _ClientAction:
         """Intercept/emit for a client->server message; return the transport's action."""
@@ -914,16 +922,7 @@ class MessageProcessor:
             except Exception:
                 logger.exception("baton-proxy: enqueue tool_call_start failed")
             else:
-                self._track(
-                    req_id,
-                    _PendingCall(
-                        kind="tool",
-                        subject=safe_tool_name,
-                        started_ms=utc_now_ms(),
-                        runtime_meta=runtime_meta,
-                        call_id=call_id,
-                    ),
-                )
+                self._track(req_id, "tool", safe_tool_name, runtime_meta, call_id)
 
         elif method == "resources/read":
             params = req.get("params", {}) or {}
@@ -939,15 +938,7 @@ class MessageProcessor:
             except Exception:
                 logger.exception("baton-proxy: enqueue resource_read_start failed")
             else:
-                self._track(
-                    req_id,
-                    _PendingCall(
-                        kind="resource_read",
-                        subject=uri,
-                        started_ms=utc_now_ms(),
-                        runtime_meta=runtime_meta,
-                    ),
-                )
+                self._track(req_id, "resource_read", uri, runtime_meta)
 
         elif method == "resources/list":
             params = req.get("params", {}) or {}
@@ -958,15 +949,7 @@ class MessageProcessor:
             except Exception:
                 logger.exception("baton-proxy: enqueue resource_list_start failed")
             else:
-                self._track(
-                    req_id,
-                    _PendingCall(
-                        kind="resource_list",
-                        subject="",
-                        started_ms=utc_now_ms(),
-                        runtime_meta=runtime_meta,
-                    ),
-                )
+                self._track(req_id, "resource_list", "", runtime_meta)
 
         elif method == "prompts/get":
             params = req.get("params", {}) or {}
@@ -982,15 +965,7 @@ class MessageProcessor:
             except Exception:
                 logger.exception("baton-proxy: enqueue prompt_get_start failed")
             else:
-                self._track(
-                    req_id,
-                    _PendingCall(
-                        kind="prompt_get",
-                        subject=name,
-                        started_ms=utc_now_ms(),
-                        runtime_meta=runtime_meta,
-                    ),
-                )
+                self._track(req_id, "prompt_get", name, runtime_meta)
 
         elif method == "prompts/list":
             params = req.get("params", {}) or {}
@@ -1001,15 +976,7 @@ class MessageProcessor:
             except Exception:
                 logger.exception("baton-proxy: enqueue prompt_list_start failed")
             else:
-                self._track(
-                    req_id,
-                    _PendingCall(
-                        kind="prompt_list",
-                        subject="",
-                        started_ms=utc_now_ms(),
-                        runtime_meta=runtime_meta,
-                    ),
-                )
+                self._track(req_id, "prompt_list", "", runtime_meta)
 
         return _ClientAction(forward=req)
 
@@ -1079,45 +1046,42 @@ class MessageProcessor:
         """Correlate/emit for a server->client message; return the message to write out."""
         # Correlate this response to a pending call (by id) and emit the
         # matching end/error event.
-        msg_id = msg.get("id")
-        if _is_request_id(msg_id):
-            with self._pending_lock:
-                call = self._pending.pop(msg_id, None)
-            if call is not None:
-                try:
-                    duration_ms = max(0, utc_now_ms() - call.started_ms)
-                    if "error" in msg:
-                        err = msg["error"] or {}
+        call = self._pop_pending(msg.get("id"))
+        if call is not None:
+            try:
+                duration_ms = max(0, utc_now_ms() - call.started_ms)
+                if "error" in msg:
+                    err = msg["error"] or {}
+                    _emit_call_error(
+                        self._emitter,
+                        call,
+                        str(err.get("code", "")) or "unknown",
+                        str(err.get("message", "")),
+                        duration_ms,
+                    )
+                else:
+                    result = msg.get("result")
+                    # ⚠ A failed tools/call is a 200 with `isError` set —
+                    # and on the WIRE that covers a RAISE too, because the
+                    # server converts the exception before serialising. So
+                    # this lane, not the `error` member above, is where the
+                    # bulk of real tool failures arrive. Gated on the tool
+                    # kind: `_emit_call_end` is shared with the resource
+                    # and prompt lanes, whose bodies never carry the flag
+                    # and whose own `isError` key would be vendor data.
+                    if call.kind == "tool" and is_error_result(result):
                         _emit_call_error(
                             self._emitter,
                             call,
-                            str(err.get("code", "")) or "unknown",
-                            str(err.get("message", "")),
+                            RETURNED_ERROR_TYPE,
+                            error_text(result),
                             duration_ms,
+                            result,
                         )
                     else:
-                        result = msg.get("result")
-                        # ⚠ A failed tools/call is a 200 with `isError` set —
-                        # and on the WIRE that covers a RAISE too, because the
-                        # server converts the exception before serialising. So
-                        # this lane, not the `error` member above, is where the
-                        # bulk of real tool failures arrive. Gated on the tool
-                        # kind: `_emit_call_end` is shared with the resource
-                        # and prompt lanes, whose bodies never carry the flag
-                        # and whose own `isError` key would be vendor data.
-                        if call.kind == "tool" and is_error_result(result):
-                            _emit_call_error(
-                                self._emitter,
-                                call,
-                                RETURNED_ERROR_TYPE,
-                                error_text(result),
-                                duration_ms,
-                                result,
-                            )
-                        else:
-                            _emit_call_end(self._emitter, call, result, duration_ms)
-                except Exception:
-                    logger.exception("baton-proxy: enqueue end/error failed")
+                        _emit_call_end(self._emitter, call, result, duration_ms)
+            except Exception:
+                logger.exception("baton-proxy: enqueue end/error failed")
 
         # Surface capture runs BEFORE both injections below, so the snapshot
         # records the vendor-true surface (no baton_* tools, no intent param,
@@ -1254,10 +1218,7 @@ class MessageProcessor:
         with no end/error pair. Pop it and emit the matching error so the wire
         stream stays well-formed. No-op if the id isn't tracked.
         """
-        if not _is_request_id(req_id):
-            return
-        with self._pending_lock:
-            call = self._pending.pop(req_id, None)
+        call = self._pop_pending(req_id)
         if call is not None:
             _close_unanswered(self._emitter, call, error_type, error_body)
 
