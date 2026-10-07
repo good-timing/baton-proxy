@@ -195,6 +195,7 @@ class _Event:
     # Who was resolved behind this event (SPEC §11.4) — the id plus the two
     # facts that classify it. None → the member is omitted WHOLE.
     principal: _PrincipalWire | None = None
+    call_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -214,6 +215,8 @@ class _Event:
             d["runtime_meta"] = self.runtime_meta
         if self.principal is not None:
             d["principal"] = self.principal.to_json()
+        if self.call_id is not None:
+            d["call_id"] = self.call_id
         return d
 
 
@@ -369,6 +372,7 @@ class Emitter:
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
         principal: Principal | None = None,
+        call_id: str | None = None,
     ) -> None:
         # `call_intent` / `call_expected` / `call_workflow` are the values
         # stripped from the injected per-tool params. They ride the payload as
@@ -395,6 +399,7 @@ class Emitter:
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
             session_id=session_id,
             principal=principal,
+            call_id=call_id,
         )
 
     def enqueue_surface_snapshot(
@@ -435,6 +440,7 @@ class Emitter:
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
         principal: Principal | None = None,
+        call_id: str | None = None,
     ) -> None:
         # session_id/principal are additive: the stdio proxy omits them (1-process-
         # per-user → _enqueue falls back to the process session). A hosted adapter
@@ -446,6 +452,7 @@ class Emitter:
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
             session_id=session_id,
             principal=principal,
+            call_id=call_id,
         )
 
     def enqueue_tool_call_error(
@@ -459,6 +466,7 @@ class Emitter:
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
         principal: Principal | None = None,
+        call_id: str | None = None,
     ) -> None:
         """SPEC §11.4.3. ``result`` carries the full MCP envelope for a failure
         the tool RETURNED, and is None for a protocol fault, where there is no
@@ -491,6 +499,7 @@ class Emitter:
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
             session_id=session_id,
             principal=principal,
+            call_id=call_id,
         )
 
     def enqueue_resource_read_start(
@@ -717,6 +726,7 @@ class Emitter:
         runtime_meta: dict[str, Any] | None,
         session_id: str | None = None,
         principal: Principal | None = None,
+        call_id: str | None = None,
     ) -> None:
         # `session_id` overrides the per-process session for callers that
         # carry their own session identity per event (the ExtMCP adapter keys
@@ -758,6 +768,7 @@ class Emitter:
             payload=payload,
             runtime_meta=runtime_meta,
             principal=principal_wire,
+            call_id=call_id,
         )
 
         with self._enqueue_lock:

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Every tool call carries a `call_id`.** The proxy mints one per `tools/call`
+  and sends the same value on `tool_call_start` and on its `tool_call_end` or
+  `tool_call_error`, including the error it writes for a call that never got
+  an answer. A consumer can pair the two legs on it (SPEC §11.4).
+  `Emitter.enqueue_tool_call_start`, `_end` and `_error` take an optional
+  `call_id`; a caller that passes none sends none. Resource, prompt and
+  annotation events carry none.
+
 ## [0.6.13] — 2026-10-05
 
 ⚠ A BREAKING release on a patch number: the identity change below. Read it

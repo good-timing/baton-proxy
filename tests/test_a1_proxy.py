@@ -79,12 +79,20 @@ class _CapturingEmitter:
 
 def test_emit_call_end_tool() -> None:
     em = _CapturingEmitter()
-    call = _PendingCall(kind="tool", subject="my_tool", started_ms=0, runtime_meta=None)
+    call = _PendingCall(
+        kind="tool", subject="my_tool", started_ms=0, runtime_meta=None, call_id="c1"
+    )
     _emit_call_end(em, call, {"out": 1}, 50)
     assert em.calls == [
         (
             "tool_call_end",
-            {"tool_name": "my_tool", "result": {"out": 1}, "duration_ms": 50, "runtime_meta": None},
+            {
+                "tool_name": "my_tool",
+                "result": {"out": 1},
+                "duration_ms": 50,
+                "runtime_meta": None,
+                "call_id": "c1",
+            },
         )
     ]
 
@@ -146,7 +154,9 @@ def test_emit_call_end_prompt_list_extracts_count() -> None:
 
 def test_emit_call_error_tool() -> None:
     em = _CapturingEmitter()
-    call = _PendingCall(kind="tool", subject="my_tool", started_ms=0, runtime_meta=None)
+    call = _PendingCall(
+        kind="tool", subject="my_tool", started_ms=0, runtime_meta=None, call_id="c1"
+    )
     _emit_call_error(em, call, "timeout", "upstream did not respond", 5000)
     assert em.calls == [
         (
@@ -162,6 +172,7 @@ def test_emit_call_error_tool() -> None:
                 # tests/test_iserror_reclassification.py.
                 "result": None,
                 "runtime_meta": None,
+                "call_id": "c1",
             },
         )
     ]

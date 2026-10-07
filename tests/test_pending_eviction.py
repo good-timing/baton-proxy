@@ -53,7 +53,11 @@ def _make_pending(n: int) -> OrderedDict[Any, _PendingCall]:
     pending: OrderedDict[Any, _PendingCall] = OrderedDict()
     for i in range(n):
         pending[i] = _PendingCall(
-            kind="tool", subject=f"t{i}", started_ms=1000 + i, runtime_meta=None
+            kind="tool",
+            subject=f"t{i}",
+            started_ms=1000 + i,
+            runtime_meta=None,
+            call_id=f"c{i}",
         )
     return pending
 
@@ -80,6 +84,7 @@ def test_eviction_drops_oldest_and_emits_error() -> None:
     ]  # tool_name kwarg from enqueue_tool_call_error
     assert all(e["error_type"] == EVICTED_ERROR_TYPE for e in emitter.errors)
     assert all(e["duration_ms"] >= 0 for e in emitter.errors)
+    assert [e["call_id"] for e in emitter.errors] == ["c0", "c1", "c2"]
     # The evicted entries are gone; newer ones remain.
     assert 0 not in pending
     assert MAX_PENDING + 2 in pending
@@ -136,6 +141,9 @@ def test_drain_pending_emits_error_for_each_outstanding() -> None:
     proc.drain_pending("proxy_upstream_closed", "gone")
     assert [e["tool_name"] for e in emitter.errors] == ["t1", "t2"]
     assert all(e["error_type"] == "proxy_upstream_closed" for e in emitter.errors)
+    start_ids = [s["call_id"] for s in emitter.starts]
+    assert len(set(start_ids)) == 2 and all(start_ids)
+    assert [e["call_id"] for e in emitter.errors] == start_ids
 
     # Draining again is a no-op — pending was cleared.
     proc.drain_pending("x", "y")

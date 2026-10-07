@@ -453,6 +453,8 @@ def test_unreachable_upstream_fails_open_without_hang() -> None:
     # A synthetic tool_call_error keeps the wire stream's start/error paired.
     synth = _of(events, "tool_call_error")
     assert any(e["payload"].get("error_type") == "proxy_upstream_unreachable" for e in synth)
+    start_ids = {e["call_id"] for e in _of(events, "tool_call_start")}
+    assert start_ids and {e["call_id"] for e in synth} <= start_ids
 
 
 def test_unreachable_upstream_degrades_handshake_keeping_session_alive() -> None:
@@ -592,6 +594,8 @@ def test_accepted_but_no_response_does_not_hang_client(http_server: str) -> None
     # The dangling tool_call_start is resolved with a synthetic error.
     synth = _of(events, "tool_call_error")
     assert any(e["payload"].get("error_type") == "proxy_no_response" for e in synth)
+    start_ids = {e["call_id"] for e in _of(events, "tool_call_start")}
+    assert start_ids and {e["call_id"] for e in synth} <= start_ids
 
 
 def test_malformed_message_does_not_kill_the_bridge(http_server: str) -> None:

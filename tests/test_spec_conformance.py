@@ -107,6 +107,14 @@ E2E_REQUESTS: list[dict] = [
             },
         },
     },
+    # A second call to a tool already called, so a call_id is shown to belong
+    # to the call and not to the tool name.
+    {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": "argkeys", "arguments": {"text": "y"}},
+    },
 ]
 
 
@@ -243,3 +251,21 @@ def test_vectors_still_conform_to_the_schema_shipped_alongside_them(event_schema
     for vector_path in vectors:
         event = json.loads(vector_path.read_text())
         jsonschema.validate(event, event_schema)
+
+
+def test_a_tool_call_carries_one_call_id_on_both_legs() -> None:
+    events = _run_stdio()
+    starts = [e for e in events if e["event_type"] == "tool_call_start"]
+    closes = [e for e in events if e["event_type"] in ("tool_call_end", "tool_call_error")]
+    assert [e["payload"]["tool_name"] for e in starts] == ["argkeys", "boom", "softfail", "argkeys"]
+
+    start_ids = [e["call_id"] for e in starts]
+    assert all(isinstance(i, str) and i for i in start_ids)
+    assert len(set(start_ids)) == len(starts)
+    assert sorted((e["call_id"], e["payload"]["tool_name"]) for e in closes) == sorted(
+        (e["call_id"], e["payload"]["tool_name"]) for e in starts
+    )
+
+    others = [e for e in events if not e["event_type"].startswith("tool_call_")]
+    assert others
+    assert all("call_id" not in e for e in others)

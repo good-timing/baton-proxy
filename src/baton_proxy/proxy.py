@@ -37,6 +37,7 @@ import signal
 import subprocess
 import sys
 import threading
+import uuid
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -209,7 +210,7 @@ class _PendingCall:
     empty string for list kinds.
     """
 
-    __slots__ = ("kind", "subject", "started_ms", "runtime_meta")
+    __slots__ = ("kind", "subject", "started_ms", "runtime_meta", "call_id")
 
     def __init__(
         self,
@@ -217,11 +218,13 @@ class _PendingCall:
         subject: str,
         started_ms: int,
         runtime_meta: dict[str, Any] | None,
+        call_id: str | None = None,
     ) -> None:
         self.kind = kind
         self.subject = subject
         self.started_ms = started_ms
         self.runtime_meta = runtime_meta
+        self.call_id = call_id
 
 
 def _emit_call_end(
@@ -237,6 +240,7 @@ def _emit_call_end(
             result=result,
             duration_ms=duration_ms,
             runtime_meta=call.runtime_meta,
+            call_id=call.call_id,
         )
     elif call.kind == "resource_read":
         emitter.enqueue_resource_read_end(
@@ -280,6 +284,7 @@ def _emit_call_error(
             duration_ms=duration_ms,
             result=result,
             runtime_meta=call.runtime_meta,
+            call_id=call.call_id,
         )
     elif call.kind == "resource_read":
         emitter.enqueue_resource_read_error(
@@ -856,6 +861,7 @@ class MessageProcessor:
                 else:
                     self._proactive_emitted = True
 
+            call_id = str(uuid.uuid4())
             try:
                 self._emitter.enqueue_tool_call_start(
                     tool_name=safe_tool_name,
@@ -872,6 +878,7 @@ class MessageProcessor:
                         else None
                     ),
                     runtime_meta=runtime_meta,
+                    call_id=call_id,
                 )
             except Exception:
                 logger.exception("baton-proxy: enqueue tool_call_start failed")
@@ -883,6 +890,7 @@ class MessageProcessor:
                         subject=safe_tool_name,
                         started_ms=utc_now_ms(),
                         runtime_meta=runtime_meta,
+                        call_id=call_id,
                     ),
                 )
 
