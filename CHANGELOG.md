@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `call_id`; a caller that passes none sends none. Resource, prompt and
   annotation events carry none.
 
+### Fixed
+
+- **A call whose start was emitted is always closed.** Two requests sent with
+  the same JSON-RPC id used to leave the first with no end and no error, and a
+  request with no id or an id that is not a string or number was never closed
+  (a list or object id also raised). The displaced call now gets a
+  `proxy_request_id_reused` error and the unmatchable one a
+  `proxy_request_id_invalid` error, for tool, resource and prompt calls alike.
+  The request is still forwarded unchanged.
+
 ## [0.6.13] — 2026-10-05
 
 ⚠ A BREAKING release on a patch number: the identity change below. Read it

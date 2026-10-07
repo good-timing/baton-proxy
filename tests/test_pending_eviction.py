@@ -14,7 +14,9 @@ import pytest
 
 from baton_proxy.proxy import (
     EVICTED_ERROR_TYPE,
+    INVALID_ID_ERROR_TYPE,
     MAX_PENDING,
+    REUSED_ID_ERROR_TYPE,
     MessageProcessor,
     _ClientAction,
     _evict_overflow,
@@ -148,6 +150,62 @@ def test_drain_pending_emits_error_for_each_outstanding() -> None:
     # Draining again is a no-op — pending was cleared.
     proc.drain_pending("x", "y")
     assert len(emitter.errors) == 2
+
+
+def _call(req_id: Any, name: str) -> dict[str, Any]:
+    msg: dict[str, Any] = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {"name": name, "arguments": {}},
+    }
+    if req_id is not _NO_ID:
+        msg["id"] = req_id
+    return msg
+
+
+_NO_ID = object()
+
+
+def test_a_reused_request_id_closes_the_call_it_displaces() -> None:
+    emitter = _RecordingEmitter()
+    proc = _bare_processor(emitter)
+    proc.handle_client_message(_call(5, "first"))
+    proc.handle_client_message(_call(5, "second"))
+    first, second = emitter.starts
+
+    assert [(e["tool_name"], e["error_type"], e["call_id"]) for e in emitter.errors] == [
+        ("first", REUSED_ID_ERROR_TYPE, first["call_id"])
+    ]
+
+    proc.drain_pending("proxy_upstream_closed", "gone")
+    assert [(e["tool_name"], e["call_id"]) for e in emitter.errors[1:]] == [
+        ("second", second["call_id"])
+    ]
+
+
+@pytest.mark.parametrize("req_id", [[1], {"a": 1}, None, _NO_ID])
+def test_a_request_id_no_response_can_match_closes_the_call_at_once(req_id: Any) -> None:
+    emitter = _RecordingEmitter()
+    proc = _bare_processor(emitter)
+    proc.handle_client_message(_call(req_id, "t"))
+    (start,) = emitter.starts
+
+    assert [(e["tool_name"], e["error_type"], e["call_id"]) for e in emitter.errors] == [
+        ("t", INVALID_ID_ERROR_TYPE, start["call_id"])
+    ]
+    proc.drain_pending("proxy_upstream_closed", "gone")
+    assert len(emitter.errors) == 1
+
+
+@pytest.mark.parametrize("bad_id", [[1], {"a": 1}])
+def test_an_unhashable_id_from_the_upstream_or_transport_is_ignored(bad_id: Any) -> None:
+    emitter = _RecordingEmitter()
+    proc = _bare_processor(emitter)
+    proc.handle_client_message(_call(1, "t"))
+
+    proc.handle_server_message({"jsonrpc": "2.0", "id": bad_id, "result": {}})
+    proc.synthesize_pending_error(bad_id, "proxy_upstream_unreachable", "down")
+    assert emitter.errors == []
 
 
 def test_client_action_requires_exactly_one_field() -> None:

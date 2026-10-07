@@ -66,6 +66,8 @@ logger = logging.getLogger("baton_proxy")
 # start/error pair rather than a dangling start.
 MAX_PENDING = 256
 EVICTED_ERROR_TYPE = "proxy_pending_evicted"
+REUSED_ID_ERROR_TYPE = "proxy_request_id_reused"
+INVALID_ID_ERROR_TYPE = "proxy_request_id_invalid"
 
 # Baton-branded tool name for the injected annotation surface. v1 posture:
 # the proxy is the gateway demo for customers evaluating Baton, so Baton
@@ -227,6 +229,11 @@ class _PendingCall:
         self.call_id = call_id
 
 
+def _is_request_id(value: Any) -> bool:
+    """An id a response can be matched on: JSON-RPC allows a string or a number."""
+    return isinstance(value, str | int | float)
+
+
 def _emit_call_end(
     emitter: Emitter,
     call: _PendingCall,
@@ -318,24 +325,28 @@ def _emit_call_error(
         )
 
 
-def _evict_overflow(pending: OrderedDict[Any, _PendingCall], emitter: Emitter) -> None:
-    """Evict oldest pending entries down to MAX_PENDING; caller holds pending_lock.
+def _close_unanswered(
+    emitter: Emitter, call: _PendingCall, error_type: str, error_body: str
+) -> None:
+    """Write the error leg for a start the upstream will not answer."""
+    try:
+        _emit_call_error(
+            emitter, call, error_type, error_body, max(0, utc_now_ms() - call.started_ms)
+        )
+    except Exception:
+        logger.exception("baton-proxy: enqueue %s error failed", error_type)
 
-    Each eviction emits a synthetic error event so the wire stream doesn't
-    carry a dangling start with no end/error pair.
-    """
+
+def _evict_overflow(pending: OrderedDict[Any, _PendingCall], emitter: Emitter) -> None:
+    """Evict oldest pending entries down to MAX_PENDING; caller holds pending_lock."""
     while len(pending) > MAX_PENDING:
         _evicted_id, evicted = pending.popitem(last=False)
-        try:
-            _emit_call_error(
-                emitter,
-                evicted,
-                EVICTED_ERROR_TYPE,
-                "proxy pending dict overflowed without upstream response",
-                max(0, utc_now_ms() - evicted.started_ms),
-            )
-        except Exception:
-            logger.exception("baton-proxy: enqueue evicted error failed")
+        _close_unanswered(
+            emitter,
+            evicted,
+            EVICTED_ERROR_TYPE,
+            "proxy pending dict overflowed without upstream response",
+        )
 
 
 def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
@@ -677,10 +688,30 @@ class MessageProcessor:
         self._surface_lock = threading.Lock()
 
     def _track(self, req_id: Any, call: _PendingCall) -> None:
-        """Register an in-flight call + evict overflow, under the pending lock."""
+        """Register an in-flight call whose start is already emitted.
+
+        Every start gets a close: a call that cannot be tracked, or that is
+        displaced by a later request reusing its id, is closed here.
+        """
+        if not _is_request_id(req_id):
+            _close_unanswered(
+                self._emitter,
+                call,
+                INVALID_ID_ERROR_TYPE,
+                "request id is missing or is not a string or number, so no response can match it",
+            )
+            return
         with self._pending_lock:
+            displaced = self._pending.pop(req_id, None)
             self._pending[req_id] = call
             _evict_overflow(self._pending, self._emitter)
+        if displaced is not None:
+            _close_unanswered(
+                self._emitter,
+                displaced,
+                REUSED_ID_ERROR_TYPE,
+                "a later request reused this request's id before it was answered",
+            )
 
     def handle_client_message(self, req: dict[str, Any]) -> _ClientAction:
         """Intercept/emit for a client->server message; return the transport's action."""
@@ -1049,7 +1080,7 @@ class MessageProcessor:
         # Correlate this response to a pending call (by id) and emit the
         # matching end/error event.
         msg_id = msg.get("id")
-        if msg_id is not None:
+        if _is_request_id(msg_id):
             with self._pending_lock:
                 call = self._pending.pop(msg_id, None)
             if call is not None:
@@ -1223,20 +1254,12 @@ class MessageProcessor:
         with no end/error pair. Pop it and emit the matching error so the wire
         stream stays well-formed. No-op if the id isn't tracked.
         """
+        if not _is_request_id(req_id):
+            return
         with self._pending_lock:
             call = self._pending.pop(req_id, None)
-        if call is None:
-            return
-        try:
-            _emit_call_error(
-                self._emitter,
-                call,
-                error_type,
-                error_body,
-                max(0, utc_now_ms() - call.started_ms),
-            )
-        except Exception:
-            logger.exception("baton-proxy: enqueue synthetic error failed")
+        if call is not None:
+            _close_unanswered(self._emitter, call, error_type, error_body)
 
     def drain_pending(self, error_type: str, error_body: str) -> None:
         """Emit a synthetic *_error for every still-pending call, then clear.
@@ -1249,16 +1272,7 @@ class MessageProcessor:
             outstanding = list(self._pending.values())
             self._pending.clear()
         for call in outstanding:
-            try:
-                _emit_call_error(
-                    self._emitter,
-                    call,
-                    error_type,
-                    error_body,
-                    max(0, utc_now_ms() - call.started_ms),
-                )
-            except Exception:
-                logger.exception("baton-proxy: enqueue drain error failed")
+            _close_unanswered(self._emitter, call, error_type, error_body)
 
 
 def _pump_client_to_server(
