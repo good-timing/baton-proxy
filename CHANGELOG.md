@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.14] — 2026-10-07
+
 ### Added
 
 - **Every tool call carries a `call_id`.** The proxy mints one per `tools/call`
