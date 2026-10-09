@@ -24,6 +24,9 @@ from typing import Any
 # silently exempt from the "every upstream tool grew both params" sweep.
 
 
+BAD_CURSOR = "no-such-page"
+
+
 def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
     """Build the JSON-RPC response for a request, or None for a notification."""
     method = req.get("method")
@@ -32,6 +35,13 @@ def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
     # Notification (no id) — no response.
     if req_id is None:
         return None
+
+    if (req.get("params") or {}).get("cursor") == BAD_CURSOR:
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32602, "message": "Invalid cursor"},
+        }
 
     if method == "initialize":
         return {

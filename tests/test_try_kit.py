@@ -7334,6 +7334,7 @@ def test_security_md_says_what_the_scrubber_does_not_see(tmp_path):
         tool_name="echo",
         params={"note": "mail dave@example.com"},
         runtime_meta={"claudecode/toolUseId": "tu_1", "progressToken": 3},
+        call_id="c1",
     )
     emitter.stop(timeout=5.0)
 

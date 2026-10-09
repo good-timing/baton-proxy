@@ -1,19 +1,6 @@
-"""Every event baton-proxy actually emits (over stdio, against the fixture
-upstream) validates against the shared wire schema in the ``baton-spec``
-submodule (SPEC §11.4) — the cross-repo counterpart to baton-sdk's own
-``tests/functional/test_spec_conformance.py``. This is what would have
-caught the SPEC §13 `name`/`names` divergence between the SDK and
-baton-proxy before it shipped.
-
-Scope note: baton-proxy also emits tool_list_* events, which the pinned
-schema predates, and resource_read_*/resource_list_*/
-prompt_get_*/prompt_list_* events (see ``emitter.py``) that baton-sdk does
-not emit yet — that gap is tracked separately (sdk-hardening thread,
-"resource/prompt capture parity"). ``events.schema.json`` only covers the
-five event types the SDK also emits today, so those are the only ones
-validated here; the others are explicitly excluded below rather than
-silently skipped, so this test doesn't quietly stop covering them once the
-SDK gap closes and they need adding to the schema too.
+"""Every event baton-proxy emits over stdio, against the fixture upstream,
+validates against the shared wire schema in the ``baton-spec`` submodule
+(SPEC §11.4), and the scenario produces every event type that schema declares.
 """
 
 from __future__ import annotations
@@ -30,19 +17,19 @@ import pytest
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter
 from baton_proxy.identity import Principal
+from tests.fixture_responses import BAD_CURSOR
 
 HERE = Path(__file__).parent
 REPO = HERE.parent
 FIXTURE = HERE / "fixture_server.py"
 SCHEMA_PATH = REPO / "baton-spec" / "events.schema.json"
 
-# event_types covered by events.schema.json today — see module docstring.
-SCHEMA_COVERED_EVENT_TYPES = {
-    "tool_call_start",
-    "tool_call_end",
-    "tool_call_error",
-    "annotation",
-    "surface_snapshot",
+# Declared by the schema and never sent by the proxy. ``failure_kind`` names a
+# failure a producer makes above the vendor's handler, and the proxy has no such
+# layer. ``result_capture`` marks withheld results, which the proxy cannot do.
+NEVER_SENT = {
+    "tool_call_end": {"result_capture"},
+    "tool_call_error": {"failure_kind", "result_capture"},
 }
 
 E2E_REQUESTS: list[dict] = [
@@ -116,6 +103,25 @@ E2E_REQUESTS: list[dict] = [
         "method": "tools/call",
         "params": {"name": "argkeys", "arguments": {"text": "y"}},
     },
+    {"jsonrpc": "2.0", "id": 8, "method": "tools/list", "params": {"cursor": BAD_CURSOR}},
+    {"jsonrpc": "2.0", "id": 9, "method": "resources/list", "params": {}},
+    {"jsonrpc": "2.0", "id": 10, "method": "resources/list", "params": {"cursor": BAD_CURSOR}},
+    {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "resources/read",
+        "params": {"uri": "fixture://notes.txt"},
+    },
+    {
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "resources/read",
+        "params": {"uri": "fixture://secret.txt"},
+    },
+    {"jsonrpc": "2.0", "id": 13, "method": "prompts/list", "params": {}},
+    {"jsonrpc": "2.0", "id": 14, "method": "prompts/list", "params": {"cursor": BAD_CURSOR}},
+    {"jsonrpc": "2.0", "id": 15, "method": "prompts/get", "params": {"name": "summarize"}},
+    {"jsonrpc": "2.0", "id": 16, "method": "prompts/get", "params": {"name": "boom_prompt"}},
 ]
 
 
@@ -171,42 +177,30 @@ def event_schema() -> dict:
 
 def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: Path) -> None:
     events = _run_stdio()
-    covered = [e for e in events if e["event_type"] in SCHEMA_COVERED_EVENT_TYPES]
-    assert covered, "scenario produced no schema-covered events — check the fixture/scenario"
-
-    for event in covered:
+    for event in events:
         jsonschema.validate(event, event_schema)
 
-    seen_types = {e["event_type"] for e in covered}
-    assert seen_types == SCHEMA_COVERED_EVENT_TYPES, (
-        f"scenario didn't exercise every schema-covered type, missing: "
-        f"{SCHEMA_COVERED_EVENT_TYPES - seen_types}"
+    declared_types = set(event_schema["discriminator"]["mapping"])
+    seen_types = {e["event_type"] for e in events}
+    assert seen_types == declared_types, (
+        f"the scenario did not produce: {declared_types - seen_types}; "
+        f"the schema does not declare: {seen_types - declared_types}"
     )
 
-    # ⚠ Property coverage, not one hand-picked property — the same idiom
-    # `seen_types` applies one level up, applied one level down. The gap that
-    # prompted this was exactly that shape: `result` on `tool_call_error` was
-    # declared by the schema and produced by nothing, so the pin bump that
-    # legalised it went unexercised and nothing reddened. Enumerating properties
-    # closes the NEXT such gap too; a hand-written assert closes only this one.
-    #
-    # Measured at ZERO allowlist — 31 of 31 declared properties across the five
-    # covered types. If a future property genuinely cannot be driven from here,
-    # add it to an explicit allowlist rather than deleting the loop: an empty
-    # one is what makes this worth having.
+    # A property the schema declares and no event carries is a shape this test
+    # validates without ever producing it.
     unexercised: dict[str, list[str]] = {}
-    for event_type in sorted(SCHEMA_COVERED_EVENT_TYPES):
+    for event_type in sorted(declared_types):
         declared = set(event_schema["$defs"][_payload_def_name(event_type)].get("properties", {}))
         produced: set[str] = set()
-        for event in covered:
+        for event in events:
             if event["event_type"] == event_type:
                 produced |= set(event["payload"])
-        if declared - produced:
-            unexercised[event_type] = sorted(declared - produced)
-    assert not unexercised, (
-        f"schema properties that no emitted payload exercised: {unexercised} — the "
-        "gate validates shapes this scenario never produces"
-    )
+        missing = declared - produced - NEVER_SENT.get(event_type, set())
+        if missing:
+            unexercised[event_type] = sorted(missing)
+        assert not produced & NEVER_SENT.get(event_type, set()), event_type
+    assert not unexercised, f"schema properties no emitted payload carried: {unexercised}"
 
     # The stdio scenario resolves no principal, so ``principal`` never
     # reaches the loop above. Drive the emitter with one, as baton-extmcp
@@ -226,7 +220,7 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
     emitter = Emitter(config)
     emitter.start()
     emitter.enqueue_tool_call_start(
-        tool_name="echo", params={}, principal=Principal(principal_id="u123")
+        tool_name="echo", params={}, principal=Principal(principal_id="u123"), call_id="c1"
     )
     emitter.stop()
     event = json.loads(sink.read_text().splitlines()[-1])

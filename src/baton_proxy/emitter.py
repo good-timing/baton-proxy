@@ -372,7 +372,7 @@ class Emitter:
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
         principal: Principal | None = None,
-        call_id: str | None = None,
+        call_id: str,
     ) -> None:
         # `call_intent` / `call_expected` / `call_workflow` are the values
         # stripped from the injected per-tool params. They ride the payload as
@@ -440,7 +440,7 @@ class Emitter:
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
         principal: Principal | None = None,
-        call_id: str | None = None,
+        call_id: str,
     ) -> None:
         # session_id/principal are additive: the stdio proxy omits them (1-process-
         # per-user → _enqueue falls back to the process session). A hosted adapter
@@ -466,7 +466,7 @@ class Emitter:
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
         principal: Principal | None = None,
-        call_id: str | None = None,
+        call_id: str,
     ) -> None:
         """SPEC §11.4.3. ``result`` carries the full MCP envelope for a failure
         the tool RETURNED, and is None for a protocol fault, where there is no

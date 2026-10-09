@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`call_id` is a required argument** of `Emitter.enqueue_tool_call_start`,
+  `enqueue_tool_call_end` and `enqueue_tool_call_error`. The wire schema
+  requires it on those three events, so the emitter no longer builds one
+  without it. A caller that imports the emitter must pass it.
+
 ## [0.6.15] — 2026-10-09
 
 ### Added

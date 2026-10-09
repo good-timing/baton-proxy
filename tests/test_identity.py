@@ -33,7 +33,7 @@ def _emit_one(tmp_path, *, principal: Principal | None) -> dict:
     p = tmp_path / "events.jsonl"
     e = Emitter(_config(str(p)))
     e.start()
-    e.enqueue_tool_call_start(tool_name="echo", params={"x": 1}, principal=principal)
+    e.enqueue_tool_call_start(tool_name="echo", params={"x": 1}, principal=principal, call_id="c1")
     e.stop()
     lines = [json.loads(ln) for ln in p.read_text().splitlines() if ln.strip()]
     return lines[-1]

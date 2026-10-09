@@ -379,6 +379,7 @@ def test_the_error_emitter_is_callable_without_a_result(tmp_path: Path) -> None:
         error_body="nope",
         duration_ms=3,
         session_id="s",
+        call_id="c1",
     )
     emitter.stop()
 

@@ -88,7 +88,7 @@ def test_emission_disabled_when_config_incomplete() -> None:
     """No event_sink -> emitter is a no-op; start() doesn't spin a thread."""
     e = Emitter(_config_http(None))
     e.start()
-    e.enqueue_tool_call_start(tool_name="echo", params={"text": "x"})
+    e.enqueue_tool_call_start(tool_name="echo", params={"text": "x"}, call_id="c1")
     e.stop()
     # No exception, no thread, no POST attempted. Asserting on internal _thread
     # is the cheapest way to verify start() was a no-op.
@@ -100,10 +100,15 @@ def test_emits_tool_call_start_end_error() -> None:
     try:
         e = Emitter(_config_http(url))
         e.start()
-        e.enqueue_tool_call_start(tool_name="echo", params={"text": "hi"})
-        e.enqueue_tool_call_end(tool_name="echo", result={"ok": True}, duration_ms=42)
+        e.enqueue_tool_call_start(tool_name="echo", params={"text": "hi"}, call_id="c1")
+        e.enqueue_tool_call_end(tool_name="echo", result={"ok": True}, duration_ms=42, call_id="c1")
         e.enqueue_tool_call_error(
-            tool_name="boom", error_type="-32000", error_body="boom", duration_ms=11, result=None
+            tool_name="boom",
+            error_type="-32000",
+            error_body="boom",
+            duration_ms=11,
+            result=None,
+            call_id="c1",
         )
         assert _wait_for(lambda: len(_StubReceiver.received) >= 3)
         e.stop()
@@ -145,11 +150,13 @@ def test_scrubs_pii_before_payload_reaches_sink() -> None:
         e.enqueue_tool_call_start(
             tool_name="search",
             params={"query": "find ujwal@goodtiming.ai please", "api_key": "should-be-redacted"},
+            call_id="c1",
         )
         e.enqueue_tool_call_end(
             tool_name="search",
             result={"matches": [{"email": "x@y.co"}]},
             duration_ms=10,
+            call_id="c1",
         )
         assert _wait_for(lambda: len(_StubReceiver.received) >= 2)
         e.stop()
@@ -226,7 +233,7 @@ def test_tool_call_start_omits_the_goal_keys_it_was_not_given() -> None:
             tool_name="alpha",
             params={"real_arg": "kept"},
             call_workflow="prepare campaign approval",
-            # call_intent and call_expected left as None — must be omitted.
+            call_id="c1",
         )
         assert _wait_for(lambda: len(_StubReceiver.received) >= 1)
         e.stop()
@@ -247,7 +254,7 @@ def test_sequence_numbers_are_monotonic() -> None:
         e = Emitter(_config_http(url))
         e.start()
         for i in range(5):
-            e.enqueue_tool_call_start(tool_name=f"t{i}", params={})
+            e.enqueue_tool_call_start(tool_name=f"t{i}", params={}, call_id="c1")
         assert _wait_for(lambda: len(_StubReceiver.received) >= 5)
         e.stop()
     finally:
@@ -264,7 +271,7 @@ def test_stop_is_clean_when_remote_dead() -> None:
     drains and exits on stop() without blocking proxy shutdown."""
     e = Emitter(_config_http("http://127.0.0.1:1"))  # nothing listening
     e.start()
-    e.enqueue_tool_call_start(tool_name="echo", params={})
+    e.enqueue_tool_call_start(tool_name="echo", params={}, call_id="c1")
     e.stop(timeout=3.0)
     assert e._thread is None  # noqa: SLF001
 
@@ -278,10 +285,15 @@ def test_emits_to_file_sink(tmp_path: Path) -> None:
     sink_path = tmp_path / "events.jsonl"
     e = Emitter(_config_file(str(sink_path)))
     e.start()
-    e.enqueue_tool_call_start(tool_name="echo", params={"text": "hi"})
-    e.enqueue_tool_call_end(tool_name="echo", result={"ok": True}, duration_ms=42)
+    e.enqueue_tool_call_start(tool_name="echo", params={"text": "hi"}, call_id="c1")
+    e.enqueue_tool_call_end(tool_name="echo", result={"ok": True}, duration_ms=42, call_id="c1")
     e.enqueue_tool_call_error(
-        tool_name="boom", error_type="-32000", error_body="boom", duration_ms=11, result=None
+        tool_name="boom",
+        error_type="-32000",
+        error_body="boom",
+        duration_ms=11,
+        result=None,
+        call_id="c1",
     )
     assert _wait_for(lambda: sink_path.exists() and len(sink_path.read_text().splitlines()) >= 3)
     e.stop()
@@ -356,7 +368,7 @@ def test_local_sinks_with_placeholder_vendor_are_fine(tmp_path: Path) -> None:
     )
     e = Emitter(config)
     e.start()  # no raise
-    e.enqueue_tool_call_start(tool_name="echo", params={})
+    e.enqueue_tool_call_start(tool_name="echo", params={}, call_id="c1")
     assert _wait_for(lambda: sink_path.exists() and sink_path.stat().st_size > 0)
     e.stop()
 
@@ -377,7 +389,7 @@ def test_local_sinks_with_placeholder_consent_are_fine(tmp_path: Path) -> None:
     )
     e = Emitter(config)
     e.start()  # no raise
-    e.enqueue_tool_call_start(tool_name="echo", params={})
+    e.enqueue_tool_call_start(tool_name="echo", params={}, call_id="c1")
     assert _wait_for(lambda: sink_path.exists() and sink_path.stat().st_size > 0)
     e.stop()
 
@@ -432,7 +444,7 @@ def test_stop_drains_when_queue_was_full() -> None:
         # during the stop() call (drop-oldest keeps room, but stop racing
         # with drain is what we're after).
         for i in range(50):
-            e.enqueue_tool_call_start(tool_name=f"t{i}", params={})
+            e.enqueue_tool_call_start(tool_name=f"t{i}", params={}, call_id="c1")
         # Don't wait for drain — stop should still terminate cleanly.
         e.stop(timeout=5.0)
         assert e._thread is None  # noqa: SLF001
@@ -545,9 +557,9 @@ def test_per_event_meta_outranks_the_handshake_latch(tmp_path: Path) -> None:
     e.start()
     e.set_agent_runtime("cursor")
     e.enqueue_tool_call_start(
-        tool_name="echo", params={}, runtime_meta={"claudecode/toolUseId": "tu_1"}
+        tool_name="echo", params={}, runtime_meta={"claudecode/toolUseId": "tu_1"}, call_id="c1"
     )
-    e.enqueue_tool_call_start(tool_name="echo", params={})
+    e.enqueue_tool_call_start(tool_name="echo", params={}, call_id="c1")
     e.stop(timeout=5.0)
 
     events = [json.loads(line) for line in sink_path.read_text().splitlines() if line.strip()]
@@ -563,9 +575,9 @@ def test_set_agent_runtime_case_folds_and_ignores_empty(tmp_path: Path) -> None:
     e = Emitter(_config_file(str(sink_path)))
     e.start()
     e.set_agent_runtime("  Claude-Code  ")
-    e.enqueue_tool_call_start(tool_name="echo", params={})
+    e.enqueue_tool_call_start(tool_name="echo", params={}, call_id="c1")
     e.set_agent_runtime("   ")
-    e.enqueue_tool_call_start(tool_name="echo", params={})
+    e.enqueue_tool_call_start(tool_name="echo", params={}, call_id="c1")
     e.stop(timeout=5.0)
 
     events = [json.loads(line) for line in sink_path.read_text().splitlines() if line.strip()]
