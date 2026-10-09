@@ -5,7 +5,8 @@ submodule (SPEC §11.4) — the cross-repo counterpart to baton-sdk's own
 caught the SPEC §13 `name`/`names` divergence between the SDK and
 baton-proxy before it shipped.
 
-Scope note: baton-proxy also emits resource_read_*/resource_list_*/
+Scope note: baton-proxy also emits tool_list_* events, which the pinned
+schema predates, and resource_read_*/resource_list_*/
 prompt_get_*/prompt_list_* events (see ``emitter.py``) that baton-sdk does
 not emit yet — that gap is tracked separately (sdk-hardening thread,
 "resource/prompt capture parity"). ``events.schema.json`` only covers the

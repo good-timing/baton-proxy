@@ -1335,8 +1335,10 @@ def read_events(path: Path) -> list[dict]:
     return events
 
 
-# Everything else the proxy records as a request reaching the upstream server
-# (`emitter.py`). Lists are counts-only traffic, but they are still traffic.
+# The resource and prompt requests the proxy records as reaching the upstream
+# server (`emitter.py`). Their lists are counts-only traffic, but they are
+# still traffic. A tool listing is left out: a client that only lists the
+# tools has not used the server.
 _OTHER_START_KINDS = frozenset(
     {"resource_read_start", "resource_list_start", "prompt_get_start", "prompt_list_start"}
 )

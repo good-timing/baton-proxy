@@ -333,7 +333,7 @@ def test_e2e_snapshot_on_stderr_sink() -> None:
 
 # --------------------------------------------------------------------------- #
 # The handshake names the client, and that is the only signal that exists      #
-# before the snapshot above (sequence 1, no `_meta`) is written.               #
+# before the snapshot above (no `_meta`) is written.                           #
 # --------------------------------------------------------------------------- #
 
 

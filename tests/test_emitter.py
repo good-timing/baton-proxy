@@ -501,8 +501,8 @@ def test_detect_agent_runtime_is_none_without_a_signal() -> None:
 
 
 def test_the_handshake_latch_reaches_the_sessions_first_event(tmp_path: Path) -> None:
-    """The load-bearing case. `surface_snapshot` is sequence 1 and carries no
-    `_meta` at all, and the console consumers that ask a session what it ran in
+    """The load-bearing case. `surface_snapshot` carries no `_meta` at all and
+    can be a session's first event, and the console consumers that ask a session what it ran in
     read its FIRST event — so a per-event heuristic alone can never reach them.
     Only the handshake latch exists before event 1 does."""
     sink_path = tmp_path / "events.jsonl"

@@ -22,7 +22,8 @@ matching end/error, and inject into `initialize` / `tools/list` responses.
 Errors anywhere in the proxy MUST NOT propagate to either pipe. Fail-open
 means: if instrumentation breaks, MCP traffic still flows. For the HTTP bridge
 that extends to the network — a timed-out / dropped / rejected POST yields a
-synthetic error event + a JSON-RPC error to Claude, never a hang.
+synthetic error event + a JSON-RPC error to Claude (a degraded result for
+`initialize` / `tools/list`), never a hang.
 """
 
 from __future__ import annotations
@@ -204,9 +205,9 @@ class _Injection:
 class _PendingCall:
     """Tracking state for an in-flight MCP call (start emitted, awaiting end).
 
-    ``kind`` is the discriminator: "tool" | "resource_read" | "resource_list" |
-    "prompt_get" | "prompt_list". ``subject`` is the uri/name for keyed kinds,
-    empty string for list kinds.
+    ``kind`` is the discriminator: "tool" | "tool_list" | "resource_read" |
+    "resource_list" | "prompt_get" | "prompt_list". ``subject`` is the uri/name
+    for keyed kinds, empty string for list kinds.
     """
 
     __slots__ = ("kind", "subject", "started_ms", "runtime_meta", "call_id")
@@ -245,6 +246,12 @@ def _emit_call_end(
             duration_ms=duration_ms,
             runtime_meta=call.runtime_meta,
             call_id=call.call_id,
+        )
+    elif call.kind == "tool_list":
+        tools = result.get("tools") if isinstance(result, dict) else None
+        count = len(tools) if isinstance(tools, list) else 0
+        emitter.enqueue_tool_list_end(
+            count=count, duration_ms=duration_ms, runtime_meta=call.runtime_meta
         )
     elif call.kind == "resource_read":
         emitter.enqueue_resource_read_end(
@@ -289,6 +296,13 @@ def _emit_call_error(
             result=result,
             runtime_meta=call.runtime_meta,
             call_id=call.call_id,
+        )
+    elif call.kind == "tool_list":
+        emitter.enqueue_tool_list_error(
+            error_type=error_type,
+            error_body=error_body,
+            duration_ms=duration_ms,
+            runtime_meta=call.runtime_meta,
         )
     elif call.kind == "resource_read":
         emitter.enqueue_resource_read_error(
@@ -727,8 +741,8 @@ class MessageProcessor:
 
         if method == "initialize":
             # The handshake is the ONE place the client names itself, and it
-            # precedes every event this process emits — including the
-            # surface_snapshot that is sequence 1 and carries no ``_meta``.
+            # precedes every event this process emits — including a
+            # surface_snapshot, which carries no ``_meta``.
             # Latch it so a session's first event says which app the person was
             # in rather than which transport we are. Forwarded unchanged (we
             # only read it); fail-open on any shape surprise, same as below.
@@ -746,11 +760,12 @@ class MessageProcessor:
             # Remember first-page requests (no cursor) so the server path can
             # tell a snapshot candidate from a pagination fragment. Forwarded
             # unchanged either way; fail-open on any shape surprise.
+            params = req.get("params")
+            if not isinstance(params, dict):
+                params = {}
+            req_id = req.get("id")
             try:
-                params = req.get("params") or {}
-                cursor = params.get("cursor") if isinstance(params, dict) else None
-                req_id = req.get("id")
-                if req_id is not None and not cursor:
+                if req_id is not None and not params.get("cursor"):
                     with self._surface_lock:
                         self._toollist_first_page_ids[req_id] = None
                         while len(self._toollist_first_page_ids) > MAX_PENDING_TOOLLISTS:
@@ -758,6 +773,13 @@ class MessageProcessor:
                             del self._toollist_first_page_ids[oldest]
             except Exception:
                 logger.exception("baton-proxy: tools/list tracking failed")
+            runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            try:
+                self._emitter.enqueue_tool_list_start(runtime_meta=runtime_meta)
+            except Exception:
+                logger.exception("baton-proxy: enqueue tool_list_start failed")
+            else:
+                self._track(req_id, "tool_list", "", runtime_meta)
             return _ClientAction(forward=req)
 
         if method == "tools/call":
@@ -1047,11 +1069,15 @@ class MessageProcessor:
         # Correlate this response to a pending call (by id) and emit the
         # matching end/error event.
         call = self._pop_pending(msg.get("id"))
-        if call is not None:
+        # A listing's count includes the proxy's own tool, so its end waits
+        # for the injection below:
+        # ``test_a_listing_sends_a_start_then_an_end_counting_what_the_client_received``.
+        ends_after_injection = call is not None and call.kind == "tool_list" and "error" not in msg
+        if call is not None and not ends_after_injection:
             try:
                 duration_ms = max(0, utc_now_ms() - call.started_ms)
                 if "error" in msg:
-                    err = msg["error"] or {}
+                    err = msg["error"] if isinstance(msg["error"], dict) else {}
                     _emit_call_error(
                         self._emitter,
                         call,
@@ -1089,7 +1115,18 @@ class MessageProcessor:
         self._capture_surface(msg)
 
         self._inject_intent_params(msg)
-        return _inject_into_response(msg, self._injection)
+        out = _inject_into_response(msg, self._injection)
+        if call is not None and ends_after_injection:
+            try:
+                _emit_call_end(
+                    self._emitter,
+                    call,
+                    out.get("result"),
+                    max(0, utc_now_ms() - call.started_ms),
+                )
+            except Exception:
+                logger.exception("baton-proxy: enqueue tool_list_end failed")
+        return out
 
     def _capture_surface(self, msg: dict[str, Any]) -> None:
         """Snapshot the upstream surface from initialize + tools/list responses.
@@ -1689,17 +1726,19 @@ def run_http_proxy(url: str) -> int:
 def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injection) -> int:
     """Read stdin → POST upstream → write responses to stdout. Fail-open throughout."""
 
-    def _degrade(forward: dict[str, Any]) -> bool:
+    def _degrade(forward: dict[str, Any], error_type: str, error_body: str) -> bool:
         """Serve a synthetic healthy response for a handshake method whose
         upstream failure would wedge the client; return True if handled.
 
-        Bypasses ``handle_server_message`` (no correlation/surface-capture — a
-        degraded reply is not the vendor's real surface) and runs only
+        Bypasses ``handle_server_message`` (no surface-capture — a degraded
+        reply is not the vendor's real surface) and runs only
         ``_inject_into_response`` so the annotate tool + instructions still land.
+        A degraded listing's start is closed with the upstream's failure.
         """
         degraded = _build_degraded_response(forward)
         if degraded is None:
             return False
+        processor.synthesize_pending_error(forward.get("id"), error_type, error_body)
         logger.warning(
             "baton-proxy: upstream unavailable — serving a degraded %s so the "
             "client stays connected (injected tools remain usable)",
@@ -1759,13 +1798,13 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
             # Fail-open: a network timeout / drop / non-2xx must not hang Claude
             # or kill the loop. Handshake methods (initialize/tools/list) degrade
             # to a synthetic healthy response so the session isn't wedged; every
-            # other method emits a synthetic error for the dangling start (if
-            # tracked) and hands Claude a JSON-RPC error rather than waiting.
+            # other method hands Claude a JSON-RPC error rather than waiting.
+            # Either way a tracked start is closed with a synthetic error.
             logger.warning("baton-proxy: upstream POST failed: %s", e)
-            if _degrade(forward):
+            err = str(e)
+            if _degrade(forward, "proxy_upstream_unreachable", err):
                 continue
             if not is_notification:
-                err = str(e)
                 processor.synthesize_pending_error(req_id, "proxy_upstream_unreachable", err)
                 _write_client_error(req_id, -32001, f"baton-proxy: upstream request failed: {err}")
             continue
@@ -1790,10 +1829,9 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
             logger.warning("baton-proxy: upstream returned no response for id=%r", req_id)
             # Same wedge risk as an outright failure: an unanswered initialize/
             # tools/list must degrade to a healthy surface rather than error.
-            if not _degrade(forward):
-                processor.synthesize_pending_error(
-                    req_id, "proxy_no_response", "upstream returned no response for this request"
-                )
+            no_response = "upstream returned no response for this request"
+            if not _degrade(forward, "proxy_no_response", no_response):
+                processor.synthesize_pending_error(req_id, "proxy_no_response", no_response)
                 _write_client_error(
                     req_id, -32001, "baton-proxy: upstream returned no response for this request"
                 )

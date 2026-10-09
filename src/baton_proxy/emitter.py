@@ -273,12 +273,12 @@ class Emitter:
         """Latch the client the MCP handshake named itself.
 
         ``clientInfo.name`` arrives on ``initialize``, which precedes every
-        event this process emits — including ``surface_snapshot``, which is
-        sequence 1 and carries no ``_meta`` at all. That matters because the
+        event this process emits — including ``surface_snapshot``, which
+        carries no ``_meta`` at all. That matters because the
         consumers that ask a session what it ran in read its FIRST event —
-        both the report renderer and the correlator do — so the
-        per-event ``_meta`` heuristic alone can never reach them: by the time
-        any ``_meta`` exists, event 1 is already written.
+        both the report renderer and the correlator do — and a first event
+        need not carry any ``_meta``, so the per-event heuristic alone cannot
+        be relied on to reach them.
 
         Stored as sent, case-folded. Claude Code sends ``claude-code``, which
         is already the token ``detect_agent_runtime`` produces, so the two
@@ -670,6 +670,48 @@ class Emitter:
     ) -> None:
         self._enqueue(
             event_type="prompt_list_error",
+            payload={
+                "error_type": error_type,
+                "error_body": error_body,
+                "duration_ms": duration_ms,
+            },
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_tool_list_start(
+        self,
+        *,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="tool_list_start",
+            payload={},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_tool_list_end(
+        self,
+        *,
+        count: int,
+        duration_ms: int,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="tool_list_end",
+            payload={"count": count, "duration_ms": duration_ms},
+            runtime_meta=dict(runtime_meta) if runtime_meta else None,
+        )
+
+    def enqueue_tool_list_error(
+        self,
+        *,
+        error_type: str,
+        error_body: str,
+        duration_ms: int,
+        runtime_meta: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._enqueue(
+            event_type="tool_list_error",
             payload={
                 "error_type": error_type,
                 "error_body": error_body,

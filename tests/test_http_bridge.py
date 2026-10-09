@@ -242,6 +242,9 @@ def test_http_session_end_to_end(http_server: str) -> None:
     tool_names = {t["name"] for t in tools_list["result"]["tools"]}
     assert "baton_annotate" in tool_names, "annotate tool not injected into tools/list"
     assert "echo" in tool_names, "upstream tools missing from injected list"
+    (listing_end,) = _of(events, "tool_list_end")
+    assert listing_end["payload"]["count"] == len(tools_list["result"]["tools"])
+    assert len(_of(events, "tool_list_start")) == 1
 
     # The injected annotate tool is intercepted by the proxy (never forwarded
     # upstream) and its response synthesised — same over HTTP as over stdio.
@@ -503,6 +506,12 @@ def test_unreachable_upstream_degrades_handshake_keeping_session_alive() -> None
         e["payload"].get("error_type") == "proxy_upstream_unreachable"
         for e in _of(events, "tool_call_error")
     )
+
+    # The degraded listing is recorded as the upstream's failure, not left open.
+    assert len(_of(events, "tool_list_start")) == 1
+    (listing_error,) = _of(events, "tool_list_error")
+    assert listing_error["payload"]["error_type"] == "proxy_upstream_unreachable"
+    assert not _of(events, "tool_list_end")
 
 
 def test_build_degraded_response_shapes() -> None:
