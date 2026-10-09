@@ -7,14 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.15] — 2026-10-09
+
 ### Added
 
 - **Tool list events (SPEC §11.4.5).** Each `tools/list` request the proxy
   forwards produces a `tool_list_start` and then a `tool_list_end` with
   `count`, the number of tools the client received, including the proxy's
   own tool. On a session that starts with a listing, `tool_list_start` is the
-  first event, ahead of `surface_snapshot`. A listing the upstream refuses or never answers produces a
-  `tool_list_error` instead. A client that pages through the list gets a pair
+  first event, ahead of `surface_snapshot`. A listing the upstream refuses or
+  never answers produces a `tool_list_error` instead. A client that pages through the list gets a pair
   for each request. No tool name, description or schema is on these events.
   When an HTTP upstream is unreachable the client still gets the proxy's own
   tool so it stays connected; that listing is recorded as a `tool_list_error`,
