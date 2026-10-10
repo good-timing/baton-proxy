@@ -1013,11 +1013,17 @@ def test_proactive_off_refuses_an_agent_filed_pre_call_annotation() -> None:
     assert action.respond is not None, "a refused proactive must still be answered"
     assert action.forward is None, "the annotation tool is never forwarded upstream"
     text = action.respond["result"]["content"][0]["text"]
-    assert "reactive-only" in text
-    # Both senders are answered: one whose call really went wrong, and one
-    # narrating, who must not repair the call with an invented problem.
-    assert "If a tool call really went wrong" in text
-    assert "If none did, do NOT re-send" in text
+    # The same text as baton-sdk and baton-ts, word for word.
+    assert text == (
+        "baton_annotate is reactive-only on this server. Call it only AFTER a "
+        "tool call returns an unhelpful, empty, failed or contradictory result, "
+        "or when no tool covers what the user asked for. What the user is "
+        "trying to do is already recorded on each tool call, so no pre-call "
+        "annotation is needed — nothing was lost. If a tool call really went "
+        "wrong, or no tool covers the request, call this again and say "
+        "what_happened. If neither is true, do NOT re-send: that would file a "
+        "report for a call that did not go wrong."
+    )
     assert "signal_type" not in text
     # NO annotation event. A refused proactive that still emits is the merge
     # hazard the mode exists to remove: one stray umbrella `overall_task` label

@@ -23,6 +23,10 @@ stores each report but reads it as a note, so no report count includes it.
 - **A reports-only tool refuses a call with no `what_happened`**, where it
   refused a call with no `signal_type`. This is the default mode
   (`proactive_mode="off"`).
+- **The refusal says what to do next.** An agent with a failed call or a
+  missing tool is told to call again and say `what_happened`. Any other
+  agent is told not to re-send. The text is the same in `baton-sdk`,
+  `baton-proxy` and `baton-ts`.
 - **A reports-only tool lists `tool_name` as required** in its schema. A
   report that leaves it out is still taken. `tool_name` is sent as the agent
   wrote it.

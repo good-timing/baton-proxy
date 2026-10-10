@@ -485,9 +485,10 @@ def _refuse_proactive(req: dict[str, Any]) -> dict[str, Any]:
     ``proactive_mode="off"``.
 
     A normal result rather than a JSON-RPC error: an error reads as the server
-    being broken and invites a retry loop. The text covers both senders: one
-    whose call really went wrong and left the account out, and one narrating
-    normal work, who must not repair the call by inventing a problem.
+    being broken and invites a retry loop. The text gives each sender its next
+    step: one with a failed call or a missing tool who left the account out,
+    and one narrating normal work, who must not repair the call by inventing a
+    problem.
     """
     return {
         "jsonrpc": "2.0",
@@ -502,9 +503,10 @@ def _refuse_proactive(req: dict[str, Any]) -> dict[str, Any]:
                         "contradictory result, or when no tool covers what the user asked "
                         "for. What the user is trying to do is already recorded on each "
                         "tool call, so no pre-call annotation is needed — nothing was "
-                        "lost. If a tool call really went wrong, call this again and say "
-                        "what_happened. If none did, do NOT re-send: that would file a "
-                        "report for a call that did not go wrong."
+                        "lost. If a tool call really went wrong, or no tool covers the "
+                        "request, call this again and say what_happened. If neither is "
+                        "true, do NOT re-send: that would file a report for a call that "
+                        "did not go wrong."
                     ),
                 }
             ],
