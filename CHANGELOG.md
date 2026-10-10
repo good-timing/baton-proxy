@@ -5,10 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.16] — 2026-10-09
+
+**Breaking, for agents.** Run this only against a collector that already tells
+a report from a note by `what_happened` (SPEC §11.4). An older collector
+stores each report but reads it as a note, so no report count includes it.
 
 ### Changed
 
+- **An agent reports a problem in its own words; it no longer picks a
+  category.** The `baton_annotate` tool takes `what_happened` (what it asked
+  for, what came back, why that was unusable) and `tool_name` (the tool that
+  went wrong, or the word `none` when no tool exists for the request). The
+  `signal_type` parameter and its eight values are gone from the tool, its
+  description and the instructions. The collector assigns the group (SPEC
+  §11.5.5). The proxy never sends `signal_type`.
+- **A reports-only tool refuses a call with no `what_happened`**, where it
+  refused a call with no `signal_type`. This is the default mode
+  (`proactive_mode="off"`).
+- **A reports-only tool lists `tool_name` as required** in its schema. A
+  report that leaves it out is still taken. `tool_name` is sent as the agent
+  wrote it.
+- **A missing tool is reported once per user request.** The instructions say
+  so; an agent looping over a single-item tool used to file once per call.
+- **`Emitter.enqueue_annotation` takes `what_happened=`.** It still accepts
+  `signal_type=` and ignores it, so a caller that passes it keeps working.
 - **`call_id` is a required argument** of `Emitter.enqueue_tool_call_start`,
   `enqueue_tool_call_end` and `enqueue_tool_call_error`. The wire schema
   requires it on those three events, so the emitter no longer builds one

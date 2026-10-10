@@ -111,7 +111,7 @@ def test_baton_own_refusal_is_never_filed_as_a_vendor_failure() -> None:
             "method": "tools/call",
             "params": {
                 "name": ANNOTATE_TOOL_NAME,
-                "arguments": {"signal_type": "not-a-real-signal", "context": "x"},
+                "arguments": {"user_goal": "about to look", "context": "x"},
             },
         }
     )

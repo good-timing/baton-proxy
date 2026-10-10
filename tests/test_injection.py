@@ -41,7 +41,7 @@ REQUESTS = [
         "params": {
             "name": "baton_annotate",
             "arguments": {
-                "signal_type": "failure",
+                "what_happened": "the call came back unusable",
                 "user_goal": "test",
                 "suggested_improvement": "none",
             },
@@ -312,53 +312,45 @@ def test_vendor_id_does_not_affect_tool_name() -> None:
     assert "acme_annotate" not in names
 
 
-def test_annotation_schema_requires_only_the_goal() -> None:
-    """Proactive annotations carry the goal alone; signal_type +
-    suggested_improvement are reactive-only. The schema must reflect
-    that — forcing signal_type as required pushes the agent to invent
-    `signal_type='other'` for proactives, polluting friction counts.
-
-    Regression guard for the 2026-06-16 schema loosening (proxy.py
-    inputSchema.required changed from [signal_type, intent,
-    suggested_improvement] to one field; that field is now named
-    ``user_goal`` agent-side and still stored as ``intent``).
-    """
+def test_a_reports_only_tool_lists_tool_name_as_required() -> None:
+    """``what_happened`` is never listed: an agent forced to fill it invents a
+    problem, so the handler refuses the call instead. ``tool_name`` is listed
+    so an agent with no tool to name says so."""
     from baton_proxy.proxy import _build_injected_tool
 
-    tool = _build_injected_tool("baton_annotate")
-    schema = tool["inputSchema"]
+    schema = _build_injected_tool("baton_annotate")["inputSchema"]
+
+    assert schema["required"] == ["user_goal", "tool_name"]
+    assert {"what_happened", "tool_name", "suggested_improvement"} <= set(schema["properties"])
+    assert "signal_type" not in schema["properties"]
+
+
+def test_a_tool_that_also_takes_notes_requires_only_the_goal() -> None:
+    from baton_proxy.proxy import _build_injected_tool
+
+    schema = _build_injected_tool("baton_annotate", proactive_mode="on")["inputSchema"]
+
     assert schema["required"] == ["user_goal"]
-    # signal_type stays a valid PROPERTY — reactives still set it.
-    assert "signal_type" in schema["properties"]
-    assert "suggested_improvement" in schema["properties"]
 
 
-def test_proactive_annotation_handled_without_signal_type() -> None:
-    """A proactive annotation arrives with only ``user_goal`` (and maybe
-    expected_result / overall_task / context). The proxy must accept it,
-    emit the event, and not invent a signal_type='unknown' for the
-    user-visible confirmation — the absence of signal_type is the
-    semantic marker that this was proactive."""
+def test_the_confirmation_says_which_kind_of_annotation_was_recorded() -> None:
     from baton_proxy.proxy import _handle_injected_call
 
-    resp = _handle_injected_call(
-        {
-            "jsonrpc": "2.0",
-            "id": 99,
-            "method": "tools/call",
-            "params": {
-                "name": "baton_annotate",
-                "arguments": {
-                    "user_goal": "user wants the 3 most recent issues",
-                    "expected_result": "a list of 3 issues, newest first",
-                },
+    def confirm(arguments: dict[str, str]) -> str:
+        resp = _handle_injected_call(
+            {
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "tools/call",
+                "params": {"name": "baton_annotate", "arguments": arguments},
             },
-        },
-    )
-    assert resp["id"] == 99
-    # The handler should not fabricate signal_type='unknown' for proactives.
-    text = resp["result"]["content"][0]["text"]
-    assert "signal_type=unknown" not in text
+        )
+        assert resp["id"] == 99
+        return resp["result"]["content"][0]["text"]
+
+    assert "proactive intent" in confirm({"user_goal": "the 3 most recent issues"})
+    assert "report" in confirm({"user_goal": "g", "what_happened": "it returned nothing"})
+    assert "proactive intent" in confirm({"user_goal": "g", "what_happened": "   "})
 
 
 def test_handle_injected_call_null_params_does_not_crash() -> None:
@@ -375,9 +367,6 @@ def test_handle_injected_call_null_params_does_not_crash() -> None:
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call"},
     )
     assert resp["id"] == 1
-    # No params at all → no signal_type → confirmation surfaces it as a
-    # proactive (preferred to the prior "unknown" sentinel — see the
-    # schema-loosening note on the handler).
     assert "proactive intent" in resp["result"]["content"][0]["text"]
 
     resp = _handle_injected_call(
@@ -466,7 +455,7 @@ def test_baton_annotate_emits_annotation_event_end_to_end() -> None:
     assert len(annotations) == 1, f"expected 1 annotation, got {len(annotations)}"
     ann = annotations[0]
     assert ann["payload"] == {
-        "signal_type": "failure",
+        "what_happened": "the call came back unusable",
         "intent": "test",
         "suggested_improvement": "none",
     }

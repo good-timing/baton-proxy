@@ -61,13 +61,13 @@ REQUESTS: list[dict[str, Any]] = [
         "params": {
             "name": "baton_annotate",
             "arguments": {
-                # `signal_type` present on purpose: this request exists to prove
+                # `what_happened` present on purpose: this request exists to prove
                 # the BRIDGE answers a proxy-owned tool without forwarding it,
                 # and under the 2026-09-01 default (`proactive_mode="off"`) a
                 # pre-call annotation is refused by the handler. A refusal is
                 # still a well-formed response, so the transport check would
                 # pass either way — but it would stop testing what it names.
-                "signal_type": "failure",
+                "what_happened": "the call came back unusable",
                 "intent": "Read a resource to verify the HTTP bridge captures resource lifecycle events",
                 "expected_outcome": "Resource content returned; proxy emits resource_read_start + resource_read_end",
                 "workflow": "HTTP bridge A1 validation",
@@ -96,7 +96,7 @@ REQUESTS: list[dict[str, Any]] = [
         "params": {
             "name": "baton_annotate",
             "arguments": {
-                "signal_type": "failure",
+                "what_happened": "the call came back unusable",
                 "intent": "Read a resource to verify the HTTP bridge captures resource lifecycle events",
                 "suggested_improvement": "Reading a nonexistent URI returns -32002 with no enumeration hint.",
             },
@@ -284,7 +284,7 @@ def test_http_session_end_to_end(http_server: str) -> None:
     # --- annotations emitted -----------------------------------------------
     annotations = _of(events, "annotation")
     assert len(annotations) >= 2
-    assert any(a["payload"].get("signal_type") == "failure" for a in annotations)
+    assert any(a["payload"].get("what_happened") for a in annotations)
 
     # --- every event shares one session id + the vendor label --------------
     a1_types = {

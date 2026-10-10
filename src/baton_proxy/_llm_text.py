@@ -11,7 +11,7 @@ cap on ``InitializeResult.instructions``):
 
 - *Server instructions* (this module's ``build_instructions_suffix``)
   carry the MUST/REQUIRED behavioral framing — the AFTER/IF triggers,
-  the signal_type enum, and the "annotation doesn't replace answering"
+  the report fields, and the "annotation doesn't replace answering"
   guardrail. Loaded once at session init.
 
   **There is no BEFORE trigger any more** (D7, 2026-09-01). It asked for
@@ -120,17 +120,17 @@ _REACTIVE_CLAUSES = (
     "AFTER any tool on this server errors, times out, returns an "
     "unhelpful or contradictory result, or the user shows signs of "
     "giving up, you MUST call `{annotation_tool_name}` {again}with "
-    "signal_type (REQUIRED) — one of failure, retry_loop, dead_end, "
-    "parameter_confusion, slow_performance, abandonment, feature_gap, "
-    "other — and suggested_improvement (REQUIRED whenever you can "
+    "what_happened (REQUIRED, your own words, NOT a category), tool_name "
+    "(REQUIRED) and suggested_improvement (REQUIRED whenever you can "
     "articulate one).\n\n"
     "IF a tool response lacks a structured field for what the user "
     "asked about, OR you satisfied the user's intent via a workaround "
     "because no tool matched what they asked for, OR the user asked "
     "for something this server can't do — you MUST call "
-    "`{annotation_tool_name}` with signal_type='feature_gap' AND still "
-    "answer the user with your best inference. Filing the annotation "
-    "does NOT replace answering."
+    "`{annotation_tool_name}` once per user request, not per call, with "
+    "what_happened and tool_name (none if no tool) AND still answer the "
+    "user with your best inference. Filing the annotation does NOT replace "
+    "answering."
 )
 
 
@@ -150,8 +150,8 @@ _ANNOTATION_LEAD_PROACTIVE = (
     "Record structured signal about a tool call on this server — what "
     "the user is trying to do, and how it went. Populate proactively "
     "before the call (user_goal + expected_result + overall_task) and "
-    "reactively after if the result was unhelpful (signal_type + "
-    "suggested_improvement).\n"
+    "reactively after if the result was unhelpful (what_happened + "
+    "tool_name + suggested_improvement).\n"
 )
 
 _ANNOTATION_LEAD_REACTIVE_ONLY = (
@@ -176,16 +176,18 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "every call serving the same task; change it only when the user "
     "starts a different task. Skip when the call doesn't fit a "
     "recognizable broader task.\n"
-    "  - signal_type: reactive-only — omit on a proactive annotation. "
-    "Set only once a tool call has returned an unhelpful result. One "
-    "of failure, retry_loop, dead_end, parameter_confusion, "
-    "slow_performance, abandonment, feature_gap, other.\n"
+    "  - what_happened: REQUIRED on a report — omit on a proactive "
+    "annotation. 1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
+    "what came back, and why it was unusable. Do NOT pick a category or "
+    "invent a label — describe it.\n"
+    "  - tool_name: REQUIRED on a report. The tool on this server that went "
+    "wrong. Write none if no tool exists for the request.\n"
     "  - suggested_improvement: reactive-only — omit on a proactive. "
     "A concrete sentence about what product change would have helped.\n"
     "  - context: supplementary info not covered above. Common keys: "
     "plan, alternatives_considered, likely_cause, user_impact, "
-    "error_class, downstream_blocked, confidence_in_intent. For "
-    "signal_type='feature_gap' also missing_capability_field and "
+    "error_class, downstream_blocked, confidence_in_intent. When no tool "
+    "covers the request also missing_capability_field and "
     "requested_capability."
 )
 
@@ -196,23 +198,6 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
 # own pre-existing instructions string that the suffix is appended to.
 _CLAUDE_CODE_TRUNCATION_CAP = 2087
 _INSTRUCTIONS_LENGTH_CAP = 1500
-
-
-# Canonical signal_type values per SPEC §3.1. Stable and additive-only
-# until v1.0 (SPEC §13). The annotation tool's inputSchema enum and the
-# instructions text must reference the same eight values; downstream
-# escalation taxonomies (the Console's friction rollup) key off these
-# strings.
-SIGNAL_TYPES: tuple[str, ...] = (
-    "failure",
-    "retry_loop",
-    "dead_end",
-    "parameter_confusion",
-    "slow_performance",
-    "abandonment",
-    "feature_gap",
-    "other",
-)
 
 
 # The line that tells the agent where the session's own events are, rendered

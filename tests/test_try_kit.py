@@ -740,7 +740,7 @@ def test_a_synthesised_annotation_is_not_counted_as_one_the_agent_filed():
         _ev(
             session_id="s1",
             event_type="annotation",
-            payload={"intent": "find the doc", "signal_type": "failure"},
+            payload={"intent": "find the doc", "what_happened": "it returned nothing"},
         ),
     ]
     s = kit.summarize(events, 1234)

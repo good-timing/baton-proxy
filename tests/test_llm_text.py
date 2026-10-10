@@ -17,9 +17,8 @@ so the two modules stay coherent. Load-bearing properties:
   (D7) and its absence is now itself pinned, below: intent rides the
   injected params, and the suffix asking for it again taught the agent
   otherwise.
-- All 8 canonical signal_type enum values must appear in the rendered
-  text; downstream taxonomies (the Console channel adapter and its
-  friction rollup) key off these strings.
+- The agent describes the problem and the collector groups it (SPEC
+  §11.5.5): no text offers ``signal_type`` or a category to pick.
 - The "annotation doesn't replace answering" guardrail is load-bearing —
   without it the agent treats the annotation as proxy-satisfaction and
   stops answering the user.
@@ -38,7 +37,6 @@ from baton_proxy._llm_text import (
     _CLAUDE_CODE_TRUNCATION_CAP,
     _EVENT_FILE_LINE,
     _INSTRUCTIONS_LENGTH_CAP,
-    SIGNAL_TYPES,
     build_annotation_tool_description,
     build_instructions_suffix,
     build_overall_task_param_description,
@@ -97,9 +95,8 @@ def test_the_pre_call_request_is_gated_on_proactive_mode() -> None:
 
     Why the paragraph is worth turning off: it names the same three fields the
     injected params carry on every call, so it teaches the agent that intent is
-    the annotation tool's job. Measured 2026-09-01 — three real sessions, four
-    annotations, every one pre-call with no signal_type, and zero friction
-    signals filed. Why it is not deleted: agent-authored proactives supply
+    the annotation tool's job: sessions that had it filed pre-call annotations
+    and no reports. Why it is not deleted: agent-authored proactives supply
     ~54% of turn boundaries, and the proxy fronts servers its operator does not
     own."""
     on = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
@@ -175,14 +172,43 @@ def test_the_default_renders_no_pre_call_request() -> None:
     )
 
 
-def test_instructions_carry_full_signal_type_enum() -> None:
-    """All 8 canonical signal_type values must appear in the rendered
-    text. Downstream priority mapping (the Console channel adapter and its
-    friction rollup) keys off these strings; a missing value would
-    silently break escalation routing."""
-    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate")
-    for value in SIGNAL_TYPES:
-        assert value in rendered, f"signal_type value {value!r} missing"
+# ``failure`` is left out: the text uses it as an ordinary word.
+_OLD_KINDS = (
+    "retry_loop",
+    "dead_end",
+    "parameter_confusion",
+    "slow_performance",
+    "abandonment",
+    "feature_gap",
+)
+
+
+@pytest.mark.parametrize("proactive_mode", ["off", "on"])
+def test_no_agent_facing_text_offers_a_category_to_pick(proactive_mode: str) -> None:
+    for text in (
+        build_instructions_suffix("baton_annotate", proactive_mode),
+        build_annotation_tool_description(proactive_mode),
+    ):
+        assert "signal_type" not in text
+        for kind in _OLD_KINDS:
+            assert kind not in text
+
+
+@pytest.mark.parametrize("proactive_mode", ["off", "on"])
+def test_no_tool_is_asked_for_as_the_word_none(proactive_mode: str) -> None:
+    """Shown ``""`` or told "empty string", agents send the quote characters."""
+    instructions = build_instructions_suffix("baton_annotate", proactive_mode)
+    description = build_annotation_tool_description(proactive_mode)
+
+    assert "tool_name (none if no tool)" in instructions
+    assert "Write none if no tool exists" in description
+    for text in (instructions, description):
+        assert '""' not in text
+        assert "mpty string" not in text
+
+
+def test_a_missing_tool_is_reported_once_per_request() -> None:
+    assert "once per user request, not per call" in build_instructions_suffix("baton_annotate")
 
 
 def test_instructions_carry_dont_replace_answering_guardrail() -> None:
@@ -220,22 +246,11 @@ def test_instructions_carry_feature_gap_mechanical_triggers() -> None:
     assert "lacks a structured field" in rendered
     assert "workaround" in rendered
     assert "asked for something this server can't do" in rendered
-    # All three roll up to signal_type='feature_gap'.
-    assert "signal_type='feature_gap'" in rendered
 
 
 # =============================================================================
 # Annotation tool description (the field reference)
 # =============================================================================
-
-
-def test_description_carries_all_8_signal_types() -> None:
-    """The annotation tool's inputSchema enum and its description must
-    reference the same 8-value enum. A drift between them would let
-    Claude pass a value the schema rejects (or vice versa)."""
-    description = build_annotation_tool_description()
-    for value in SIGNAL_TYPES:
-        assert value in description, f"signal_type value {value!r} missing"
 
 
 def test_description_carries_field_reference() -> None:
@@ -247,7 +262,8 @@ def test_description_carries_field_reference() -> None:
         "user_goal:",
         "expected_result:",
         "overall_task:",
-        "signal_type:",
+        "what_happened:",
+        "tool_name:",
         "suggested_improvement:",
         "context:",
     ):

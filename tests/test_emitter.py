@@ -188,12 +188,36 @@ def test_scrubs_pii_before_payload_reaches_sink() -> None:
     assert counts["field:email"] == 1
 
 
+def test_a_report_is_scrubbed_before_it_reaches_the_sink() -> None:
+    server, url = _start_stub()
+    try:
+        e = Emitter(_config_http(url))
+        e.start()
+        e.enqueue_annotation(
+            what_happened="asked for jane@example.com; got a 500",
+            tool_name="lookup jane@example.com",
+            intent="find a contact",
+            suggested_improvement=None,
+        )
+        assert _wait_for(lambda: len(_StubReceiver.received) >= 1)
+        e.stop()
+    finally:
+        server.shutdown()
+
+    payload = _StubReceiver.received[0]["payload"]
+    assert payload["what_happened"] == "asked for [REDACTED:email]; got a 500"
+    assert payload["tool_name"] == "lookup [REDACTED:email]"
+
+
 def test_emits_annotation() -> None:
     server, url = _start_stub()
     try:
         e = Emitter(_config_http(url))
         e.start()
         e.enqueue_annotation(
+            what_happened="asked for X; got a transport error with no reason",
+            tool_name="",
+            # Still accepted for baton-extmcp, and never sent.
             signal_type="failure",
             intent="search for X",
             suggested_improvement="distinguish 404 from transport error",
@@ -207,7 +231,8 @@ def test_emits_annotation() -> None:
     ann = _StubReceiver.received[0]
     assert ann["event_type"] == "annotation"
     assert ann["payload"] == {
-        "signal_type": "failure",
+        "what_happened": "asked for X; got a transport error with no reason",
+        "tool_name": "",
         "intent": "search for X",
         "suggested_improvement": "distinguish 404 from transport error",
     }

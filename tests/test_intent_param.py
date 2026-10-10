@@ -330,7 +330,7 @@ def test_strip_and_capture_with_annotation_first() -> None:
     ann = emitter.calls[0][1]
     assert ann["intent"] == INTENT_TEXT
     assert ann["expected_outcome"] == EXPECTED_TEXT
-    assert ann["signal_type"] is None
+    assert ann.get("what_happened") is None
     assert ann["intent_source"] == INTENT_SOURCE_PARAM
     assert ann["tool_name"] == "alpha"
     start = emitter.calls[1][1]
@@ -377,14 +377,18 @@ def test_reactive_annotate_does_not_claim_the_proactive_slot() -> None:
     proc.handle_client_message(
         _call(
             "baton_annotate",
-            {"user_goal": "goal", "signal_type": "failure", "suggested_improvement": "s"},
+            {
+                "user_goal": "goal",
+                "what_happened": "the call came back unusable",
+                "suggested_improvement": "s",
+            },
             msg_id=9,
         )
     )
     proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}, msg_id=10))
 
     annotations = [c for c in emitter.calls if c[0] == "annotation"]
-    # Reactive + the synthesised proactive: the reactive carried signal_type,
+    # The report + the synthesised proactive: a report claims no slot,
     # so the param intent still opens the session's proactive slot.
     assert len(annotations) == 2
     assert annotations[1][1]["intent"] == INTENT_TEXT
@@ -638,7 +642,7 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     # which asserts that structurally. What is still checkable here is that
     # its own contract was not rewritten by injection's "required" pass.
     annotate_schema = tools["baton_annotate"]["inputSchema"]
-    assert annotate_schema["required"] == ["user_goal"]
+    assert annotate_schema["required"] == ["user_goal", "tool_name"]
 
     # Strip exactness: the upstream reports exactly which keys it received.
     assert by_id[3]["result"]["content"][0]["text"] == "keys: text"
@@ -659,7 +663,7 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     assert ann["expected_outcome"] == EXPECTED_TEXT
     assert ann["intent_source"] == INTENT_SOURCE_PARAM
     assert ann["tool_name"] == "argkeys"
-    assert "signal_type" not in ann  # proactive
+    assert "what_happened" not in ann  # a note, not a report
 
     starts = [e for e in events if e["event_type"] == "tool_call_start"]
     # Three calls now: the third omits `user_goal` under a `required` default
@@ -709,7 +713,7 @@ def test_intent_param_e2e_required_mode() -> None:
     # expected_result stays optional even in required mode.
     assert EXPECTED_RESULT_PARAM_NAME not in tools["echo"]["inputSchema"]["required"]
     # The annotate tool's required list is its own contract — untouched.
-    assert tools["baton_annotate"]["inputSchema"]["required"] == ["user_goal"]
+    assert tools["baton_annotate"]["inputSchema"]["required"] == ["user_goal", "tool_name"]
 
 
 def test_intent_param_off_is_retired_and_cannot_stop_the_injection(
@@ -1002,10 +1006,7 @@ def _annotate(arguments: dict[str, Any], msg_id: int = 20) -> dict[str, Any]:
 
 def test_proactive_off_refuses_an_agent_filed_pre_call_annotation() -> None:
     """The SDK refuses at the handler rather than by instruction text alone,
-    because text is only a request. Ported with its reason: refusing here
-    instead of making signal_type schema-required keeps the agent from
-    inventing `other` to get the call through, which would corrupt the
-    friction counts — the one signal worth protecting."""
+    because text is only a request."""
     proc, emitter = _proactive_processor("off")
     action = proc.handle_client_message(_annotate({"user_goal": INTENT_TEXT}))
 
@@ -1013,68 +1014,95 @@ def test_proactive_off_refuses_an_agent_filed_pre_call_annotation() -> None:
     assert action.forward is None, "the annotation tool is never forwarded upstream"
     text = action.respond["result"]["content"][0]["text"]
     assert "reactive-only" in text
-    # And it must NOT read as a repair instruction. Until 2026-09-01 it ended
-    # "— and set signal_type", so an agent whose narration was refused could
-    # satisfy it by re-sending with `other`: the invented signal this gate
-    # exists to prevent, one call later. The refusal now names re-sending as
-    # the wrong move.
-    assert "and set signal_type" not in text
-    assert "Do NOT re-send" in text
+    # Both senders are answered: one whose call really went wrong, and one
+    # narrating, who must not repair the call with an invented problem.
+    assert "If a tool call really went wrong" in text
+    assert "If none did, do NOT re-send" in text
+    assert "signal_type" not in text
     # NO annotation event. A refused proactive that still emits is the merge
     # hazard the mode exists to remove: one stray umbrella `overall_task` label
     # is enough to fuse two distinct tasks in a consumer that groups on it.
     assert emitter.calls == []
 
 
-def test_proactive_off_refuses_an_empty_signal_type_rather_than_recording_it() -> None:
-    """The gate keyed on `is None` until 2026-09-01, so `signal_type: ""` walked
-    through it — and `_handle_injected_call` then used a FALSY check, so the
-    event was confirmed and counted as a proactive. The mode was bypassable by
-    one empty string, in the one direction it exists to block."""
+@pytest.mark.parametrize("account", ["", "   ", None, 7])
+def test_proactive_off_refuses_a_blank_account_rather_than_recording_it(account: Any) -> None:
     proc, emitter = _proactive_processor("off")
-    action = proc.handle_client_message(_annotate({"user_goal": INTENT_TEXT, "signal_type": ""}))
+    action = proc.handle_client_message(
+        _annotate({"user_goal": INTENT_TEXT, "what_happened": account})
+    )
 
     assert action.respond is not None
     assert action.forward is None
-    assert emitter.calls == [], "an empty signal_type must not become an annotation"
+    assert "reactive-only" in action.respond["result"]["content"][0]["text"]
+    assert emitter.calls == [], "a blank what_happened must not become an annotation"
 
 
-def test_an_unknown_signal_type_is_refused_in_both_modes() -> None:
-    """`signal_type` IS the friction count. Nothing downstream validates it —
-    `Emitter.enqueue_annotation` takes the string as given, and a consumer
-    counting signals by type counts an unrecognised value as a real one — so one
-    invented word becomes a number someone acts on.
+def test_a_category_word_alone_is_not_a_report() -> None:
+    """An agent holding an older tool listing may still send ``signal_type``.
+    It is not what makes a report, and it is never passed on."""
+    proc, emitter = _proactive_processor("off")
+    refused = proc.handle_client_message(
+        _annotate({"user_goal": INTENT_TEXT, "signal_type": "failure"})
+    )
+    assert refused.respond is not None
+    assert "reactive-only" in refused.respond["result"]["content"][0]["text"]
+    assert emitter.calls == []
 
-    Refused in BOTH modes: this is our own injected tool, not the vendor's, so
-    no wrapped call can fail because of it and the fail-open rule is not in
-    play. The refusal lists the enum without proposing a substitute, since
-    proposing one is how a made-up signal gets filed."""
-    for mode in ("off", "on"):
-        proc, emitter = _proactive_processor(mode)
-        action = proc.handle_client_message(
-            _annotate({"user_goal": INTENT_TEXT, "signal_type": "urgent"})
-        )
-        assert action.respond is not None, mode
-        assert action.forward is None, mode
-        text = action.respond["result"]["content"][0]["text"]
-        assert "not one of" in text, mode
-        assert "feature_gap" in text, "the enum has to be named, or the agent guesses again"
-        assert emitter.calls == [], f"{mode}: an invented signal_type must not be recorded"
+    proc.handle_client_message(
+        _annotate({"user_goal": INTENT_TEXT, "signal_type": "failure", "what_happened": "it 500d"})
+    )
+    assert "signal_type" not in emitter.calls[0][1]
 
 
-def test_proactive_off_still_takes_the_friction_report() -> None:
-    """The control, and the whole point of refusing at the handler rather than
-    suppressing the tool: `off` costs the agent's pre-call narration and
-    nothing else. Reactive annotation is the product signal."""
+def test_proactive_off_still_takes_the_report() -> None:
+    """`off` costs the agent's pre-call narration and nothing else."""
     proc, emitter = _proactive_processor("off")
     action = proc.handle_client_message(
-        _annotate({"user_goal": INTENT_TEXT, "signal_type": "feature_gap"})
+        _annotate(
+            {
+                "user_goal": INTENT_TEXT,
+                "what_happened": "nothing removes an item",
+                "tool_name": "none",
+            }
+        )
     )
 
     assert action.respond is not None
     assert "reactive-only" not in action.respond["result"]["content"][0]["text"]
     assert [kind for kind, _ in emitter.calls] == ["annotation"]
-    assert emitter.calls[0][1]["signal_type"] == "feature_gap"
+    assert emitter.calls[0][1]["what_happened"] == "nothing removes an item"
+    assert emitter.calls[0][1]["tool_name"] == "none"
+
+
+@pytest.mark.parametrize(
+    ("sent", "recorded"),
+    [
+        ({"tool_name": "search"}, "search"),
+        ({"tool_name": ""}, ""),
+        ({}, None),
+        ({"tool_name": 7}, None),
+    ],
+)
+def test_the_reported_tool_is_recorded_as_given(sent: dict[str, Any], recorded: Any) -> None:
+    """``""`` says "no tool exists" and must not turn into "not stated"."""
+    proc, emitter = _proactive_processor("off")
+    proc.handle_client_message(
+        _annotate({"user_goal": INTENT_TEXT, "what_happened": "it failed", **sent})
+    )
+
+    assert emitter.calls[0][1]["tool_name"] == recorded
+
+
+def test_a_report_does_not_claim_the_proactive_slot_but_a_note_does() -> None:
+    for arguments, synthesised in (({"what_happened": "it failed"}, 1), ({}, 0)):
+        proc, emitter = _proactive_processor("on")
+        proc.handle_server_message(_tools_list_response([_tool("alpha")]))
+        proc.handle_client_message(_annotate({"user_goal": "g", **arguments}))
+        proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}))
+
+        notes = [c for kind, c in emitter.calls if kind == "annotation" and c.get("intent_source")]
+        assert len(notes) == synthesised, arguments
 
 
 def test_proactive_on_accepts_the_agents_pre_call_annotation() -> None:
@@ -1105,7 +1133,7 @@ def test_the_knob_never_touches_the_proxys_own_synthesised_proactive() -> None:
     kinds = [kind for kind, _ in emitter.calls]
     assert kinds == ["annotation", "tool_call_start"], kinds
     assert emitter.calls[0][1]["intent"] == INTENT_TEXT
-    assert emitter.calls[0][1]["signal_type"] is None
+    assert emitter.calls[0][1].get("what_happened") is None
 
 
 def test_the_tool_description_changes_with_the_mode_but_the_fields_do_not() -> None:
@@ -1120,11 +1148,11 @@ def test_the_tool_description_changes_with_the_mode_but_the_fields_do_not() -> N
     assert "Populate proactively" in on
     assert "Do NOT call it before a tool call" in off
     assert "Populate proactively" not in off
-    for field in ("user_goal", "expected_result", "overall_task", "signal_type"):
+    for field in ("user_goal", "expected_result", "overall_task", "what_happened", "tool_name"):
         assert field in on and field in off
     # `user_goal` stays required in BOTH: a friction report still has to say
     # what was being attempted.
-    assert _build_injected_tool("baton_annotate", "off")["inputSchema"]["required"] == ["user_goal"]
+    assert "user_goal" in _build_injected_tool("baton_annotate", "off")["inputSchema"]["required"]
 
 
 def test_the_injection_carries_the_mode_into_the_rendered_suffix() -> None:

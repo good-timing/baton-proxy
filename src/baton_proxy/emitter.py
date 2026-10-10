@@ -723,9 +723,9 @@ class Emitter:
     def enqueue_annotation(
         self,
         *,
-        signal_type: str | None,
         intent: str | None,
         suggested_improvement: str | None,
+        what_happened: str | None = None,
         expected_outcome: str | None = None,
         workflow: str | None = None,
         context: Mapping[str, Any] | None = None,
@@ -734,15 +734,20 @@ class Emitter:
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
         principal: Principal | None = None,
+        signal_type: str | None = None,
     ) -> None:
         """Annotation event per SPEC §11.4; nullable keys omitted when None.
 
-        ``intent_source``/``tool_name`` mark annotations synthesised from the
-        injected per-tool intent param (vs a real annotate-tool call). Extra
-        payload keys are safe — the console's annotation payload is opaque.
+        ``signal_type`` is accepted and never sent: baton-extmcp depends on
+        this package by floor and passes ``signal_type=None``, so removing the
+        argument would break it on its next install.
+
+        ``intent_source`` marks an annotation synthesised from the injected
+        per-tool intent param, and ``tool_name`` is then the tool whose call
+        carried it. On a report, ``tool_name`` is the tool the agent named.
         """
         candidates: dict[str, Any] = {
-            "signal_type": signal_type,
+            "what_happened": what_happened,
             "intent": intent,
             "suggested_improvement": suggested_improvement,
             "expected_outcome": expected_outcome,

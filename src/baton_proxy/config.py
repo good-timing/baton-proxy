@@ -92,19 +92,19 @@ _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required"})
 #
 #   on  — the instructions ask for a pre-call annotation, the tool is described
 #       as proactive-and-reactive, and the handler accepts an annotation with
-#       no signal_type.
+#       no what_happened.
 #   off (default since 2026-09-01) — no pre-call request, the tool is described
 #       as reactive-only, and the handler REFUSES an annotation with no
-#       signal_type, the way the SDK does. Refusing there rather than requiring
-#       signal_type in the schema keeps the agent from fabricating a `failure`
-#       to get the call through, which would corrupt the one signal worth
-#       protecting.
+#       what_happened, the way the SDK does. Refusing there rather than
+#       requiring what_happened in the schema keeps the agent from inventing a
+#       problem to get the call through, which would corrupt the one signal
+#       worth protecting.
 #
 # REACTIVE IS UNCONDITIONAL. The AFTER/IF clauses are byte-identical in both
-# modes, the tool is always registered, and an annotation carrying a
-# signal_type is always accepted. `off` costs the agent's pre-call narration
-# and nothing else — suppressing the tool itself also lost the reactive
-# `feature_gap`, which is the product.
+# modes, the tool is always registered, and a report (an annotation with
+# what_happened filled) is always accepted. `off` costs the agent's pre-call narration
+# and nothing else — suppressing the tool itself would also lose the reports,
+# which are the product.
 #
 # What the knob never touches: the tool itself, and the proxy's OWN synthesised
 # proactive built from the first call's injected params — that one is ours, not

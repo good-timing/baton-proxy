@@ -27,7 +27,9 @@ SCHEMA_PATH = REPO / "baton-spec" / "events.schema.json"
 # Declared by the schema and never sent by the proxy. ``failure_kind`` names a
 # failure a producer makes above the vendor's handler, and the proxy has no such
 # layer. ``result_capture`` marks withheld results, which the proxy cannot do.
+# ``signal_type`` is in the schema for older producers only (SPEC §11.4).
 NEVER_SENT = {
+    "annotation": {"signal_type"},
     "tool_call_end": {"result_capture"},
     "tool_call_error": {"failure_kind", "result_capture"},
 }
@@ -86,7 +88,7 @@ E2E_REQUESTS: list[dict] = [
         "params": {
             "name": "baton_annotate",
             "arguments": {
-                "signal_type": "failure",
+                "what_happened": "the call came back unusable",
                 "user_goal": "exercise every declared annotation member",
                 "expected_result": "all declared properties present",
                 "suggested_improvement": "return a structured empty result",

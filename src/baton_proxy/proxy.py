@@ -46,7 +46,6 @@ from typing import Any
 
 from baton_proxy import __version__
 from baton_proxy._llm_text import (
-    SIGNAL_TYPES,
     build_annotation_tool_description,
     build_expected_result_param_description,
     build_instructions_suffix,
@@ -105,38 +104,32 @@ def _surface_hash(surface: Mapping[str, Any]) -> str:
 
 
 def _build_injected_tool(tool_name: str, proactive_mode: str = "off") -> dict[str, Any]:
+    # `what_happened` is never listed (see `proactive_mode` in config.py).
+    # `tool_name` is listed when the tool only takes reports, so an agent with
+    # no tool to name says so; a report that omits it is still taken.
+    required = ["user_goal"] if proactive_mode == "on" else ["user_goal", "tool_name"]
     return {
         "name": tool_name,
         "description": build_annotation_tool_description(proactive_mode),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "signal_type": {
-                    "type": "string",
-                    "enum": list(SIGNAL_TYPES),
-                },
                 "user_goal": {"type": "string"},
                 "expected_result": {"type": "string"},
+                "what_happened": {"type": "string"},
+                "tool_name": {"type": "string"},
                 "overall_task": {"type": "string"},
                 "suggested_improvement": {"type": "string"},
                 "context": {"type": "object"},
             },
-            # user_goal is the only required field — proactive annotations
-            # (filed BEFORE a tool call to capture the user's goal) carry it
-            # alone. signal_type + suggested_improvement are reactive-only,
-            # set AFTER a tool call returned an unhelpful result. Treating
-            # signal_type as required forces agents to invent a
-            # signal_type='other' for proactives, polluting friction counts
-            # downstream.
-            #
-            # These names now match the INJECTED params exactly, which is the
-            # point (one concept, one name) but means the two mechanisms can no
-            # longer be told apart by param name. They stay separate
+            # `user_goal`, `expected_result` and `overall_task` share their
+            # names with the INJECTED params (one concept, one name), so the two
+            # mechanisms cannot be told apart by param name. They stay separate
             # structurally: injection runs only over upstream tools, before
             # this one is appended, so it never enters the param registry — and
             # a call to this tool is answered here rather than forwarded, so it
             # never reaches the strip.
-            "required": ["user_goal"],
+            "required": required,
         },
     }
 
@@ -482,50 +475,19 @@ def _build_degraded_response(req: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _refuse_unknown_signal(req: dict[str, Any], value: Any) -> dict[str, Any]:
-    """The response to an annotation whose ``signal_type`` is outside the enum.
-
-    Refused in both modes and never enqueued: nothing downstream validates this
-    field, and a consumer counting signals by type counts an unrecognised value
-    as a real one, so one invented word becomes a count someone acts on. The
-    message
-    lists the enum rather than suggesting a substitute, because suggesting one
-    is how a made-up signal gets filed.
-    """
-    return {
-        "jsonrpc": "2.0",
-        "id": req.get("id"),
-        "result": {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        f"signal_type={value!r} is not one of "
-                        f"{', '.join(SIGNAL_TYPES)}. Nothing was recorded. If the call "
-                        "genuinely went wrong, re-send with the closest of those values; "
-                        "if it did not, do not re-send at all."
-                    ),
-                }
-            ],
-            "isError": True,
-        },
-    }
+def _is_report(what_happened: Any) -> bool:
+    """SPEC §11.4: an annotation is a report when its account is filled."""
+    return isinstance(what_happened, str) and bool(what_happened.strip())
 
 
 def _refuse_proactive(req: dict[str, Any]) -> dict[str, Any]:
-    """The response to an agent-filed pre-call annotation under
+    """The response to an agent-filed annotation that is not a report, under
     ``proactive_mode="off"``.
 
-    Wording ported from baton-sdk so an agent that meets both producers reads
-    one rule. It is a normal result rather than a JSON-RPC error: an error
-    reads as the server being broken and invites a retry loop, while this tells
-    the model what to do instead and why it is not needed.
-
-    It used to end "— and set signal_type", which read as a repair instruction:
-    an agent whose narration was refused could satisfy it by re-sending with
-    `other`. That is the exact fabrication the gate exists to prevent, moved one
-    call later rather than removed (found in review, 2026-09-01). It now says
-    the annotation was not needed and names re-sending as the wrong move.
+    A normal result rather than a JSON-RPC error: an error reads as the server
+    being broken and invites a retry loop. The text covers both senders: one
+    whose call really went wrong and left the account out, and one narrating
+    normal work, who must not repair the call by inventing a problem.
     """
     return {
         "jsonrpc": "2.0",
@@ -540,8 +502,9 @@ def _refuse_proactive(req: dict[str, Any]) -> dict[str, Any]:
                         "contradictory result, or when no tool covers what the user asked "
                         "for. What the user is trying to do is already recorded on each "
                         "tool call, so no pre-call annotation is needed — nothing was "
-                        "lost. Do NOT re-send this call with a signal_type added: that "
-                        "would file a friction report for a call that did not go wrong."
+                        "lost. If a tool call really went wrong, call this again and say "
+                        "what_happened. If none did, do NOT re-send: that would file a "
+                        "report for a call that did not go wrong."
                     ),
                 }
             ],
@@ -562,13 +525,8 @@ def _handle_injected_call(req: dict[str, Any]) -> dict[str, Any]:
     params = req.get("params") or {}
     args = params.get("arguments") if isinstance(params, dict) else None
     args = args or {}
-    signal = args.get("signal_type")
-    # Proactives carry intent alone — absence of signal_type is the
-    # semantic marker, not "unknown". Make the confirmation reflect that
-    # so downstream telemetry (Console event payloads, log lines) doesn't
-    # have to second-guess what mode the annotation was filed in.
-    if signal:
-        confirmation = f"baton_annotate recorded signal_type={signal}"
+    if _is_report(args.get("what_happened")):
+        confirmation = "baton_annotate recorded your report"
     else:
         confirmation = "baton_annotate recorded proactive intent"
     return {
@@ -646,7 +604,7 @@ class MessageProcessor:
     exposes two pure-ish handlers that never touch a pipe. Both the stdio and
     HTTP transports feed it parsed JSON-RPC messages, so the logic that decides
     what to intercept, what to emit, and how to pair responses lives in exactly
-    ONE place regardless of how bytes reach it. Add a signal_type or change an
+    ONE place regardless of how bytes reach it. Add a report field or change an
     injection rule here and both transports move together.
 
     The handlers own the same fail-open contract as the old pumps: any
@@ -793,48 +751,29 @@ class MessageProcessor:
                     args = params.get("arguments", {}) or {}
                     # proactive_mode="off": refuse the agent's OWN pre-call
                     # annotation structurally, not by instruction text alone.
-                    # Ported from baton-sdk (`integrations/mcp/annotation.py`),
-                    # including the reason it refuses HERE rather than making
-                    # signal_type schema-required: a required signal_type makes
-                    # the agent invent `other` to get the call through, and
-                    # that corrupts the friction counts, which are the one
-                    # thing worth protecting.
-                    #
-                    # Before the enqueue on purpose. A refused proactive must
-                    # leave NO annotation event — one stray umbrella
+                    # Before the enqueue on purpose: a refused annotation must
+                    # leave NO event, because one stray umbrella
                     # `overall_task` from it is enough to merge two distinct
                     # tasks in a consumer that groups on the annotation label.
                     #
                     # The proxy's own synthesised proactive is untouched by
                     # this: it is built below from the first call's injected
-                    # params, it is ours rather than the agent's, and it keeps
-                    # one turn-opener per session in both modes.
-                    signal_type = args.get("signal_type")
-                    # A value outside the advertised enum is refused in BOTH
-                    # modes. It is not pedantry: `signal_type` IS the friction
-                    # count and nothing downstream validates it
-                    # (`Emitter.enqueue_annotation` records what it is handed),
-                    # so an unknown value is counted as a real signal by every
-                    # consumer. An agent that invents one to satisfy a MUST
-                    # corrupts the only number here worth protecting. Refusing
-                    # our OWN injected tool is not the fail-open question — no
-                    # vendor call is affected.
-                    if signal_type is not None and signal_type not in SIGNAL_TYPES:
-                        return _ClientAction(respond=_refuse_unknown_signal(req, signal_type))
-                    # `is None` was `not signal_type`'s job until 2026-09-01:
-                    # keyed on None alone, `signal_type: ""` walked through this
-                    # gate and was then recorded as a proactive by the falsy
-                    # check in `_handle_injected_call`. The enum check above now
-                    # takes "" first, so by here the value is None or valid.
-                    if self._injection.proactive_mode == "off" and signal_type is None:
+                    # params and keeps one turn-opener per session in both modes.
+                    what_happened = args.get("what_happened")
+                    reporting = _is_report(what_happened)
+                    if self._injection.proactive_mode == "off" and not reporting:
                         return _ClientAction(respond=_refuse_proactive(req))
+                    reported_tool = args.get("tool_name")
                     ann_meta = (
                         params.get("_meta") if isinstance(params.get("_meta"), dict) else None
                     )
                     ctx = args.get("context") if isinstance(args.get("context"), dict) else None
                     try:
                         self._emitter.enqueue_annotation(
-                            signal_type=args.get("signal_type"),
+                            what_happened=what_happened if reporting else None,
+                            # A string is sent as given: "" and the word none
+                            # both say "no tool exists" and must not become null.
+                            tool_name=reported_tool if isinstance(reported_tool, str) else None,
                             # Agent-facing names -> wire keys, as with
                             # overall_task below: `user_goal` is stored as
                             # `intent`, `expected_result` as
@@ -854,10 +793,10 @@ class MessageProcessor:
                     except Exception:
                         logger.exception("baton-proxy: enqueue annotation failed")
                     else:
-                        # A real proactive (intent, no signal_type) claims the
+                        # A real proactive (intent, not a report) claims the
                         # session's turn-opener slot — the param->annotation
                         # synthesis below must not double-open it.
-                        if args.get("user_goal") and not args.get("signal_type"):
+                        if args.get("user_goal") and not reporting:
                             self._proactive_emitted = True
                 try:
                     response = _handle_injected_call(req)
@@ -905,7 +844,6 @@ class MessageProcessor:
             if call_intent is not None and not self._proactive_emitted:
                 try:
                     self._emitter.enqueue_annotation(
-                        signal_type=None,
                         intent=call_intent,
                         expected_outcome=call_expected,
                         # Mirrors baton-sdk's ``emit_proactive``: the injected

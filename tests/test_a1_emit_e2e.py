@@ -97,7 +97,7 @@ REQUESTS: list[dict[str, Any]] = [
         "params": {
             "name": "baton_annotate",
             "arguments": {
-                "signal_type": "failure",
+                "what_happened": "the call came back unusable",
                 "user_goal": "Read a github UI resource to verify proxy captures resource_read_start/end lifecycle events in A1",
                 "suggested_improvement": "Reading a nonexistent UI resource URI returns MCP error -32002 with no enumeration hint. The error should suggest calling resources/list to discover valid URIs.",
             },
@@ -141,7 +141,7 @@ REQUESTS: list[dict[str, Any]] = [
         "params": {
             "name": "baton_annotate",
             "arguments": {
-                "signal_type": "failure",
+                "what_happened": "the call came back unusable",
                 "user_goal": "Get the latest release for good-timing/baton-proxy to find the current release version",
                 "suggested_improvement": "list_releases returns [] (silent empty) while get_latest_release throws a raw 404 leaking the GitHub API URL. Normalize to a structured empty response with a hint like 'no releases found; the repo has N tags — use get_tag or list_tags instead'.",
             },
@@ -158,8 +158,8 @@ def _collect_events() -> list[dict[str, Any]]:
             "PYTHONPATH": str(REPO / "src"),
             "BATON_VENDOR_ID": "github",
             "BATON_EVENT_SINK": "stderr:",
-            # This script drives PRE-CALL annotations (no signal_type), which
-            # the 2026-09-01 default (`off`) refuses at the handler. Set
+            # This script drives PRE-CALL annotations (no what_happened), which
+            # the default (`off`) refuses at the handler. Set
             # explicitly rather than tracking the default: the A1 suite exists
             # to prove the annotation path works end to end over a real
             # subprocess, and it should say which mode it is proving.
@@ -336,8 +336,7 @@ def test_annotations_emitted_with_real_intents(events: list[dict]) -> None:
     )
 
 
-def test_reactive_annotation_signal_types_present(events: list[dict]) -> None:
-    reactive = [
-        e for e in _of(events, "annotation") if e["payload"].get("signal_type") == "failure"
-    ]
-    assert len(reactive) == 2, f"expected 2 failure annotations, got {len(reactive)}"
+def test_both_reports_are_present(events: list[dict]) -> None:
+    reports = [e for e in _of(events, "annotation") if e["payload"].get("what_happened")]
+    assert len(reports) == 2, f"expected 2 reports, got {len(reports)}"
+    assert all("signal_type" not in e["payload"] for e in _of(events, "annotation"))
