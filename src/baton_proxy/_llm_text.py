@@ -27,8 +27,8 @@ cap on ``InitializeResult.instructions``):
   reference — what belongs in user_goal / expected_result / overall_task /
   suggested_improvement / context. Loaded by Claude on every call to
   the annotation tool itself, so this is the right place for the
-  just-in-time field dictionary. Its LEAD varies with ``proactive_mode``;
-  the field reference below it does not.
+  just-in-time field dictionary. Its LEAD varies with ``proactive_mode``,
+  and the field reference describes a note only in the mode that takes one.
 
 **Why not put both in instructions:** empirically the truncation cap
 drops the tail silently, and the proxy APPENDS — on a large enterprise
@@ -176,13 +176,13 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "every call serving the same task; change it only when the user "
     "starts a different task. Skip when the call doesn't fit a "
     "recognizable broader task.\n"
-    "  - what_happened: REQUIRED on a report — omit on a proactive "
-    "annotation. 1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
+    "  - what_happened: REQUIRED on a report{omit_on_a_note}. "
+    "1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
     "what came back, and why it was unusable. Do NOT pick a category or "
     "invent a label — describe it.\n"
     "  - tool_name: REQUIRED on a report. The tool on this server that went "
     "wrong. Write none if no tool exists for the request.\n"
-    "  - suggested_improvement: reactive-only — omit on a proactive. "
+    "  - suggested_improvement: {report_only}"
     "A concrete sentence about what product change would have helped.\n"
     "  - context: supplementary info not covered above. Common keys: "
     "plan, alternatives_considered, likely_cause, user_impact, "
@@ -335,15 +335,19 @@ def build_instructions_suffix(
 def build_annotation_tool_description(proactive_mode: str = "off") -> str:
     """Build the annotation tool's ``description`` field.
 
-    ``proactive_mode="off"`` swaps the lead for the reactive-only one; the
-    field reference below it is identical in both modes, because the fields
-    themselves do not change — only whether the agent may open with them.
+    ``proactive_mode="off"`` swaps the lead for the reactive-only one and
+    drops every mention of a note from the field reference: a reports-only
+    tool refuses a note, so its fields must not describe one.
 
     No vendor placeholder — the proxy is opaque to the wrapped server's
     identity, so the field reference uses neutral "this server" phrasing.
     """
-    lead = _ANNOTATION_LEAD_PROACTIVE if proactive_mode == "on" else _ANNOTATION_LEAD_REACTIVE_ONLY
-    return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(lead=lead)
+    takes_notes = proactive_mode == "on"
+    return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
+        lead=_ANNOTATION_LEAD_PROACTIVE if takes_notes else _ANNOTATION_LEAD_REACTIVE_ONLY,
+        omit_on_a_note=" — omit on a proactive annotation" if takes_notes else "",
+        report_only="reactive-only — omit on a proactive. " if takes_notes else "",
+    )
 
 
 # Per-tool injected params (`user_goal` / `expected_result`). Unlike

@@ -288,6 +288,22 @@ def test_description_does_not_duplicate_triggers() -> None:
     assert "MUST call" not in description
 
 
+def test_a_tool_that_takes_notes_marks_the_report_fields_report_only() -> None:
+    description = build_annotation_tool_description("on")
+    assert (
+        "what_happened: REQUIRED on a report — omit on a proactive annotation. 1-2" in description
+    )
+    assert "suggested_improvement: reactive-only — omit on a proactive. A concrete" in description
+
+
+def test_a_reports_only_tool_does_not_describe_a_note() -> None:
+    """It refuses a note, and a field that says how to send one invites it."""
+    description = build_annotation_tool_description()
+    assert "proactive" not in description
+    assert "what_happened: REQUIRED on a report. 1-2 plain sentences" in description
+    assert "suggested_improvement: A concrete sentence" in description
+
+
 # ---------------------------------------------------------------------------
 # The task label's wording is a result, not a style choice.
 #

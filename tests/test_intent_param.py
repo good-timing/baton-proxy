@@ -1143,9 +1143,9 @@ def test_the_knob_never_touches_the_proxys_own_synthesised_proactive() -> None:
 
 
 def test_the_tool_description_changes_with_the_mode_but_the_fields_do_not() -> None:
-    """The other leg. `off` reframes the tool as reactive-only; the field
-    reference under the lead is identical in both, because the fields
-    themselves do not change — only whether the agent may open with them."""
+    """The other leg. `off` reframes the tool as reactive-only; both modes
+    list the same fields, because the fields themselves do not change — only
+    whether the agent may open with them."""
     from baton_proxy.proxy import _build_injected_tool
 
     on = _build_injected_tool("baton_annotate", "on")["description"]
