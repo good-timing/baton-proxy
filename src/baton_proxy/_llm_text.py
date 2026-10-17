@@ -14,14 +14,11 @@ cap on ``InitializeResult.instructions``):
   the report fields, and the "annotation doesn't replace answering"
   guardrail. Loaded once at session init.
 
-  **There is no BEFORE trigger any more** (D7, 2026-09-01). It asked for
-  the same three fields the injected params carry on every call, so it
-  taught the agent that intent is the annotation tool's job; the params
-  carry INTENT and this tool carries FRICTION. The suffix is therefore
-  no longer the thing that drives the session's first proactive
-  annotation — the proxy synthesises that itself from the first call's
-  params (``proxy.py``, ``_proactive_emitted``), which is why dropping
-  the paragraph costs a turn rather than a record.
+  The BEFORE clause renders only under ``proactive_mode="on"``
+  (``_PROACTIVE_CLAUSE`` below). The injected params carry INTENT on every
+  call and this tool carries FRICTION, so under ``off`` the session loses
+  the agent's turn-opener, not the intent: every tool_call_start carries
+  its call's intent.
 - *Annotation tool description* (this module's
   ``build_annotation_tool_description``) carries the field-level
   reference — what belongs in user_goal / expected_result / overall_task /

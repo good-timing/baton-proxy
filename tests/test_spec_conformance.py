@@ -76,11 +76,11 @@ E2E_REQUESTS: list[dict] = [
         "method": "tools/call",
         "params": {"name": "softfail", "arguments": {}},
     },
-    # A reactive annotation, for the four `AnnotationPayload` members no other
-    # request reaches. `baton_annotate` is proxy-owned and never forwarded
-    # upstream (`proxy.py:74`), so this touches no fixture. ⚠ `context` must be
-    # an OBJECT — `proxy.py:821` drops a non-dict, and a string here silently
-    # leaves the member unexercised.
+    # A reactive annotation: the only request that reaches the `AnnotationPayload`
+    # members. `baton_annotate` is proxy-owned and never forwarded upstream, so
+    # this touches no fixture. ⚠ `context` must be an OBJECT — the annotate
+    # handler drops a non-dict, and a string here silently leaves the member
+    # unexercised.
     {
         "jsonrpc": "2.0",
         "id": 6,
@@ -92,7 +92,8 @@ E2E_REQUESTS: list[dict] = [
                 "user_goal": "exercise every declared annotation member",
                 "expected_result": "all declared properties present",
                 "suggested_improvement": "return a structured empty result",
-                "workflow": "conformance coverage",
+                "overall_task": "conformance coverage",
+                "tool_name": "softfail",
                 "context": {"tool": "softfail", "outcome": "isError"},
             },
         },

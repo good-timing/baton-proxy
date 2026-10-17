@@ -81,9 +81,6 @@ USER_GOAL_PARAM_NAME = "user_goal"
 EXPECTED_RESULT_PARAM_NAME = "expected_result"
 OVERALL_TASK_PARAM_NAME = "overall_task"
 
-# Provenance value for intent captured via the injected param (vs a real
-# annotate-tool call). Recorded on both the tool_call_start payload and the
-# synthesised proactive annotation.
 INTENT_SOURCE_PARAM = "injected_param"
 
 # Cap the tools/list request-id correlation dict (see MessageProcessor).
@@ -157,11 +154,9 @@ class _Injection:
     # Intent-param injection mode: "optional" | "required" | "off". Defaulted
     # so tests that build _Injection directly keep their existing shape.
     intent_param_mode: str = "optional"
-    # Whether the agent may file its OWN pre-call annotation: "on" | "off".
-    # Defaulted to today's behaviour, like the field above, so tests that build
-    # _Injection directly keep their existing shape. Never governs the proxy's
-    # synthesised param proactive — that one is ours, and it fires in both
-    # modes.
+    # Whether the agent may file a pre-call annotation: "on" | "off".
+    # Defaulted, like the field above, so tests that build _Injection directly
+    # keep their existing shape.
     proactive_mode: str = "off"
 
     @property
@@ -631,14 +626,6 @@ class MessageProcessor:
         # different pump threads on the stdio transport, hence the lock.
         self._param_registry: dict[str, dict[str, str]] = {}
         self._registry_lock = threading.Lock()
-        # True once ANY proactive annotation has been emitted this session —
-        # from a real annotate-tool call or synthesised from the first param
-        # intent. Gates the param->annotation synthesis so a session gets at
-        # most one param-sourced proactive (each proactive opens a new turn in
-        # the console; one per tool call would splinter the session view).
-        # Only touched on the client-message path, which is single-threaded
-        # on both transports — no lock needed.
-        self._proactive_emitted = False
         # --- Surface-snapshot state (design-note: server_surface_and_change_spec) ---
         # initialize result captured PRE-suffix — the vendor-true instructions,
         # serverInfo and capabilities that belong in the snapshot. Written on
@@ -757,10 +744,6 @@ class MessageProcessor:
                     # leave NO event, because one stray umbrella
                     # `overall_task` from it is enough to merge two distinct
                     # tasks in a consumer that groups on the annotation label.
-                    #
-                    # The proxy's own synthesised proactive is untouched by
-                    # this: it is built below from the first call's injected
-                    # params and keeps one turn-opener per session in both modes.
                     what_happened = args.get("what_happened")
                     reporting = _is_report(what_happened)
                     if self._injection.proactive_mode == "off" and not reporting:
@@ -794,12 +777,6 @@ class MessageProcessor:
                         )
                     except Exception:
                         logger.exception("baton-proxy: enqueue annotation failed")
-                    else:
-                        # A real proactive (intent, not a report) claims the
-                        # session's turn-opener slot — the param->annotation
-                        # synthesis below must not double-open it.
-                        if args.get("user_goal") and not reporting:
-                            self._proactive_emitted = True
                 try:
                     response = _handle_injected_call(req)
                 except Exception:
@@ -833,34 +810,6 @@ class MessageProcessor:
             call_intent, call_expected, call_workflow = self._extract_goal_params(
                 safe_tool_name, params
             )
-
-            # The session's FIRST param intent also becomes a proactive
-            # annotation (carrying expected_result too, if present) —
-            # enqueued BEFORE the tool_call_start so sequence-order
-            # correlation holds downstream ("proactive before the tool calls
-            # it covers"). Later param intents ride only the start events;
-            # per-call proactives would open one console turn per tool call.
-            # That gate is about ANNOTATIONS, not about the values: both params
-            # ride every start event below, so a consumer sees each call's own
-            # goal and expectation regardless of which one opened the session.
-            if call_intent is not None and not self._proactive_emitted:
-                try:
-                    self._emitter.enqueue_annotation(
-                        intent=call_intent,
-                        expected_outcome=call_expected,
-                        # Mirrors baton-sdk's ``emit_proactive``: the injected
-                        # ``overall_task`` lands on the annotation's
-                        # ``workflow`` key, which is where the consumer's rung
-                        # 3b looks first.
-                        workflow=call_workflow,
-                        suggested_improvement=None,
-                        intent_source=INTENT_SOURCE_PARAM,
-                        tool_name=safe_tool_name,
-                    )
-                except Exception:
-                    logger.exception("baton-proxy: enqueue param-intent annotation failed")
-                else:
-                    self._proactive_emitted = True
 
             call_id = str(uuid.uuid4())
             try:

@@ -209,6 +209,31 @@ def test_a_report_is_scrubbed_before_it_reaches_the_sink() -> None:
     assert payload["tool_name"] == "lookup [REDACTED:email]"
 
 
+def test_a_copied_note_from_extmcp_is_not_sent() -> None:
+    """baton-extmcp passes ``intent_source`` on the note it copies from a
+    call's intent. Sent without that marker it would read as the agent's own
+    note, so it is not sent at all."""
+    server, url = _start_stub()
+    try:
+        e = Emitter(_config_http(url))
+        e.start()
+        e.enqueue_annotation(
+            signal_type=None,
+            intent="update the task",
+            suggested_improvement=None,
+            expected_outcome="task updated",
+            intent_source="injected_param",
+            tool_name="alpha",
+        )
+        e.enqueue_annotation(intent=None, suggested_improvement=None, what_happened="marker")
+        assert _wait_for(lambda: len(_StubReceiver.received) >= 1)
+        e.stop()
+    finally:
+        server.shutdown()
+
+    assert [ev["payload"].get("what_happened") for ev in _StubReceiver.received] == ["marker"]
+
+
 def test_emits_annotation() -> None:
     server, url = _start_stub()
     try:

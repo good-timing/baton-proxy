@@ -5,16 +5,13 @@ Covers the design contract:
 schema injection at tools/list (skip-if-exists per param independently, never
 on the proxy's own tools, required-mode appends only user_goal), the upserted
 per-param registry (pagination / re-list safe), strip-before-forward
-exactness at tools/call (upstream sees only vendor args), the once-per-session
-proactive annotation synthesised from the FIRST param intent (carrying
-expected_result too, if present; enqueued before its tool_call_start;
-suppressed after a real annotate proactive), cold-registry strip-by-reserved-
-name, and the BATON_INTENT_PARAM knob.
+exactness at tools/call (upstream sees only vendor args), no annotation built
+from an injected intent (SPEC §11.4: the intent rides only its
+tool_call_start), cold-registry strip-by-reserved-name, and the
+BATON_INTENT_PARAM knob.
 
 Param names + mechanics match baton-sdk's ``baton.integrations._llm_text`` /
-``_tool_wrap.py`` (ported 2026-08-08 — this file used to test a single
-namespaced `baton_intent` param, the SPEC §13 divergence closed alongside
-wiring the ``baton-spec`` conformance submodule).
+``_tool_wrap.py``.
 """
 
 from __future__ import annotations
@@ -189,7 +186,7 @@ def test_inject_rejects_non_tool_objects() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Unit — MessageProcessor registry + strip + annotation synthesis              #
+# Unit — MessageProcessor registry + strip + annotate tool                    #
 # --------------------------------------------------------------------------- #
 
 
@@ -307,7 +304,7 @@ def test_off_mode_injects_and_strips_nothing() -> None:
     assert starts[0][1]["call_intent"] is None
 
 
-def test_strip_and_capture_with_annotation_first() -> None:
+def test_strip_and_capture_sends_no_annotation() -> None:
     proc, emitter = _processor()
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
 
@@ -325,73 +322,52 @@ def test_strip_and_capture_with_annotation_first() -> None:
     # Upstream-bound arguments: both params gone, vendor args intact.
     assert action.forward["params"]["arguments"] == {"x": "1"}
 
-    kinds = [k for k, _ in emitter.calls]
-    assert kinds == ["annotation", "tool_call_start"], "annotation must precede the start"
-    ann = emitter.calls[0][1]
-    assert ann["intent"] == INTENT_TEXT
-    assert ann["expected_outcome"] == EXPECTED_TEXT
-    assert ann.get("what_happened") is None
-    assert ann["intent_source"] == INTENT_SOURCE_PARAM
-    assert ann["tool_name"] == "alpha"
-    start = emitter.calls[1][1]
+    assert [k for k, _ in emitter.calls] == ["tool_call_start"]
+    start = emitter.calls[0][1]
     assert start["call_intent"] == INTENT_TEXT
+    assert start["call_expected"] == EXPECTED_TEXT
     assert start["intent_source"] == INTENT_SOURCE_PARAM
     assert USER_GOAL_PARAM_NAME not in start["params"]
     assert EXPECTED_RESULT_PARAM_NAME not in start["params"]
 
 
-def test_only_first_param_intent_becomes_annotation() -> None:
-    proc, emitter = _processor()
+@pytest.mark.parametrize("proactive", ["on", "off"])
+def test_an_injected_intent_sends_no_annotation(proactive: str) -> None:
+    proc, emitter = _processor(proactive=proactive)
     proc.handle_server_message(_tools_list_response([_tool("alpha"), _tool("beta")]))
 
-    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: "first goal"}, msg_id=10))
-    proc.handle_client_message(_call("beta", {USER_GOAL_PARAM_NAME: "second goal"}, msg_id=11))
+    for msg_id, tool, goal in ((10, "alpha", "first goal"), (11, "beta", "second goal")):
+        proc.handle_client_message(
+            _call(
+                tool,
+                {
+                    USER_GOAL_PARAM_NAME: goal,
+                    EXPECTED_RESULT_PARAM_NAME: EXPECTED_TEXT,
+                    OVERALL_TASK_PARAM_NAME: "one task",
+                },
+                msg_id=msg_id,
+            )
+        )
 
-    annotations = [c for c in emitter.calls if c[0] == "annotation"]
-    assert len(annotations) == 1
-    assert annotations[0][1]["intent"] == "first goal"
-    starts = [c for c in emitter.calls if c[0] == "tool_call_start"]
-    assert [s[1]["call_intent"] for s in starts] == ["first goal", "second goal"]
+    assert [k for k, _ in emitter.calls] == ["tool_call_start", "tool_call_start"]
+    starts = [c[1] for c in emitter.calls]
+    assert [s["call_intent"] for s in starts] == ["first goal", "second goal"]
+    assert all(s["intent_source"] == INTENT_SOURCE_PARAM for s in starts)
 
 
-def test_real_annotate_proactive_suppresses_param_annotation() -> None:
+def test_an_agent_note_is_the_only_annotation_in_the_session() -> None:
     proc, emitter = _processor(proactive="on")
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
 
-    # A real proactive via the injected annotate tool claims the slot...
-    proc.handle_client_message(_call("baton_annotate", {"user_goal": "the user's goal"}, msg_id=9))
-    # ...so the param intent must NOT synthesise a second proactive.
-    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}, msg_id=10))
+    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}, msg_id=9))
+    proc.handle_client_message(_call("baton_annotate", {"user_goal": "the user's goal"}, msg_id=10))
 
-    annotations = [c for c in emitter.calls if c[0] == "annotation"]
+    annotations = [c[1] for c in emitter.calls if c[0] == "annotation"]
     assert len(annotations) == 1
-    assert annotations[0][1]["intent"] == "the user's goal"
+    assert annotations[0]["intent"] == "the user's goal"
+    assert "intent_source" not in annotations[0]
     starts = [c for c in emitter.calls if c[0] == "tool_call_start"]
-    assert starts[0][1]["call_intent"] == INTENT_TEXT  # per-call capture continues
-
-
-def test_reactive_annotate_does_not_claim_the_proactive_slot() -> None:
-    proc, emitter = _processor()
-    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
-
-    proc.handle_client_message(
-        _call(
-            "baton_annotate",
-            {
-                "user_goal": "goal",
-                "what_happened": "the call came back unusable",
-                "suggested_improvement": "s",
-            },
-            msg_id=9,
-        )
-    )
-    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}, msg_id=10))
-
-    annotations = [c for c in emitter.calls if c[0] == "annotation"]
-    # The report + the synthesised proactive: a report claims no slot,
-    # so the param intent still opens the session's proactive slot.
-    assert len(annotations) == 2
-    assert annotations[1][1]["intent"] == INTENT_TEXT
+    assert starts[0][1]["call_intent"] == INTENT_TEXT
 
 
 def test_native_param_forwards_untouched_and_captures_nothing() -> None:
@@ -416,8 +392,8 @@ def test_cold_registry_strips_by_reserved_name() -> None:
     proc, emitter = _processor()
     action = proc.handle_client_message(_call("never_listed", {USER_GOAL_PARAM_NAME: INTENT_TEXT}))
     assert USER_GOAL_PARAM_NAME not in action.forward["params"]["arguments"]
-    ann = [c for c in emitter.calls if c[0] == "annotation"]
-    assert len(ann) == 1 and ann[0][1]["intent"] == INTENT_TEXT
+    assert [k for k, _ in emitter.calls] == ["tool_call_start"]
+    assert emitter.calls[0][1]["call_intent"] == INTENT_TEXT
 
 
 def test_blank_param_value_strips_but_captures_nothing() -> None:
@@ -654,16 +630,7 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     assert by_id[5]["result"]["content"][0]["text"] == "keys: text"
     assert "Echo: hi" in by_id[4]["result"]["content"][0]["text"]
 
-    # Events: one synthesised proactive (first call only), before its start,
-    # carrying both intent and expected_outcome.
-    annotations = [e for e in events if e["event_type"] == "annotation"]
-    assert len(annotations) == 1
-    ann = annotations[0]["payload"]
-    assert ann["intent"] == INTENT_TEXT
-    assert ann["expected_outcome"] == EXPECTED_TEXT
-    assert ann["intent_source"] == INTENT_SOURCE_PARAM
-    assert ann["tool_name"] == "argkeys"
-    assert "what_happened" not in ann  # a note, not a report
+    assert [e for e in events if e["event_type"] == "annotation"] == []
 
     starts = [e for e in events if e["event_type"] == "tool_call_start"]
     # Three calls now: the third omits `user_goal` under a `required` default
@@ -684,8 +651,6 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     for s in starts:
         assert USER_GOAL_PARAM_NAME not in s["payload"]["params"]
         assert EXPECTED_RESULT_PARAM_NAME not in s["payload"]["params"]
-    ann_seq = annotations[0]["sequence_number"]
-    assert ann_seq < starts[0]["sequence_number"]
 
 
 def test_intent_param_e2e_stdio() -> None:
@@ -743,16 +708,8 @@ def test_intent_param_off_is_retired_and_cannot_stop_the_injection(
 
 
 def test_expectation_rides_every_start_not_just_the_first() -> None:
-    """``expected_result`` is injected on EVERY tool, so its value must reach a
-    consumer on every call — not only the one that opened the session.
-
-    The once-per-session gate governs proactive ANNOTATIONS (a per-call
-    proactive would open one downstream turn per tool call). It must not
-    govern the values: the second call's expectation belongs to the second
-    call, and the session's opening call is frequently a read that states no
-    expectation at all, so lifting its value would attach the wrong one — or
-    none — to everything that followed.
-    """
+    """``expected_result`` is injected on every tool, so each call's start
+    event carries that call's own value."""
     proc, emitter = _processor()
     proc.handle_server_message(_tools_list_response([_tool("alpha"), _tool("beta")]))
 
@@ -771,8 +728,6 @@ def test_expectation_rides_every_start_not_just_the_first() -> None:
         )
     )
 
-    # One annotation, as before — this change does not touch that gate.
-    assert len([c for c in emitter.calls if c[0] == "annotation"]) == 1
     starts = [c[1] for c in emitter.calls if c[0] == "tool_call_start"]
     assert [s["call_expected"] for s in starts] == ["first expectation", "second expectation"]
     # And the params still reach the vendor clean.
@@ -794,8 +749,6 @@ def test_expectation_alone_still_records_its_provenance() -> None:
     assert start["call_expected"] == "just the expectation"
     assert start["call_intent"] is None
     assert start["intent_source"] == INTENT_SOURCE_PARAM
-    # No goal means no proactive annotation — that gate is intent-keyed.
-    assert [c for c in emitter.calls if c[0] == "annotation"] == []
 
 
 def test_the_agent_facing_task_label_lands_on_the_wire_key() -> None:
@@ -886,15 +839,9 @@ def test_the_injected_task_label_rides_every_start_event() -> None:
     assert call["params"]["arguments"] == {"real_arg": "kept"}
 
 
-def test_the_label_repeats_across_calls_without_reopening_a_proactive() -> None:
-    """Every call carries its own label; only the first opens a proactive.
-
-    The label is only useful if it is the SAME string on each call of a task —
-    that exact-string continuity is what the consumer groups on. So the value
-    has to ride every start event, while the once-per-session proactive gate
-    (which exists so one console turn is not opened per tool call) must not
-    also suppress the second call's label.
-    """
+def test_the_label_repeats_across_calls() -> None:
+    """The label is only useful if it is the SAME string on each call of a
+    task — that exact-string continuity is what the consumer groups on."""
     proc, emitter = _processor()
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
 
@@ -909,12 +856,6 @@ def test_the_label_repeats_across_calls_without_reopening_a_proactive() -> None:
 
     starts = [c for c in emitter.calls if c[0] == "tool_call_start"]
     assert [s[1]["call_workflow"] for s in starts] == ["one task", "one task"]
-
-    # The synthesised proactive carries the label on the annotation's own key,
-    # mirroring baton-sdk — that is where the consumer's rung 3b looks first.
-    annotations = [c for c in emitter.calls if c[0] == "annotation"]
-    assert len(annotations) == 1
-    assert annotations[0][1]["workflow"] == "one task"
 
 
 def test_a_call_without_the_label_passes_none_to_the_emitter() -> None:
@@ -960,31 +901,9 @@ def test_the_annotation_goal_and_expectation_land_on_their_wire_keys() -> None:
     assert payload["expected_outcome"] == "one PDF"
 
 
-def test_a_real_proactive_still_claims_the_sessions_turn_opener() -> None:
-    """The gate that stops the proxy opening two turns for one session reads
-    the agent-facing name, so it has to be renamed with the params.
-
-    Missing it is invisible in the obvious place — the annotation still emits,
-    with the right text, on the right key. What breaks is one line later: the
-    session gets a SECOND, synthesised proactive from the first tool call, so
-    every consumer counting turn openers double-counts, and the proactive that
-    is supposed to be the agent's own is joined by one Baton invented.
-    """
-    proc, emitter = _processor(proactive="on")
-    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
-
-    proc.handle_client_message(_call("baton_annotate", {"user_goal": "the goal"}, msg_id=9))
-    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}, msg_id=10))
-
-    annotations = [c for c in emitter.calls if c[0] == "annotation"]
-    assert len(annotations) == 1, "the injected-param path opened a second proactive"
-    assert annotations[0][1]["intent"] == "the goal"
-    assert annotations[0][1].get("intent_source") is None, "the survivor is the synthesised one"
-
-
 # --------------------------------------------------------------------------- #
-# proactive_mode — the knob ported from the SDK (SPEC §13 2026-08-10b, §14      #
-# "proactive_mode parity"), shipped 2026-09-01 at today's behaviour.           #
+# proactive_mode — the knob ported from the SDK (SPEC §14                      #
+# "proactive_mode parity").                                                    #
 #                                                                              #
 # It governs TWO legs and not a third. On/off changes the annotation tool's    #
 # description lead and whether the handler accepts an agent-filed pre-call     #
@@ -1100,20 +1019,8 @@ def test_the_reported_tool_is_recorded_as_given(sent: dict[str, Any], recorded: 
     assert emitter.calls[0][1]["tool_name"] == recorded
 
 
-def test_a_report_does_not_claim_the_proactive_slot_but_a_note_does() -> None:
-    for arguments, synthesised in (({"what_happened": "it failed"}, 1), ({}, 0)):
-        proc, emitter = _proactive_processor("on")
-        proc.handle_server_message(_tools_list_response([_tool("alpha")]))
-        proc.handle_client_message(_annotate({"user_goal": "g", **arguments}))
-        proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}))
-
-        notes = [c for kind, c in emitter.calls if kind == "annotation" and c.get("intent_source")]
-        assert len(notes) == synthesised, arguments
-
-
 def test_proactive_on_accepts_the_agents_pre_call_annotation() -> None:
-    """`on` is no longer the default (flipped 2026-09-01 after the verification
-    run) but it is still a supported mode, and it is the one an operator picks
+    """`on` is not the default, but it is a supported mode, and it is the one an operator picks
     to keep proactive turn boundaries until the `call_workflow` correlator
     lands."""
     from baton_proxy.config import DEFAULT_PROACTIVE_MODE
@@ -1124,22 +1031,6 @@ def test_proactive_on_accepts_the_agents_pre_call_annotation() -> None:
     assert action.respond is not None
     assert "reactive-only" not in action.respond["result"]["content"][0]["text"]
     assert [kind for kind, _ in emitter.calls] == ["annotation"]
-
-
-def test_the_knob_never_touches_the_proxys_own_synthesised_proactive() -> None:
-    """The distinction the mode rests on. `off` removes the AGENT's pre-call
-    annotation; the one the proxy synthesises from the first call's injected
-    params is ours, not the agent's, and it is what keeps a turn-opener per
-    session in both modes. If the knob silenced it too, `off` would cost every
-    turn boundary rather than the agent's narration."""
-    proc, emitter = _proactive_processor("off")
-    proc.handle_server_message(_tools_list_response([_tool("alpha")]))
-    proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}))
-
-    kinds = [kind for kind, _ in emitter.calls]
-    assert kinds == ["annotation", "tool_call_start"], kinds
-    assert emitter.calls[0][1]["intent"] == INTENT_TEXT
-    assert emitter.calls[0][1].get("what_happened") is None
 
 
 def test_the_tool_description_changes_with_the_mode_but_the_fields_do_not() -> None:

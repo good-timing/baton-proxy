@@ -78,22 +78,12 @@ _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required"})
 
 # Valid values for BATON_PROACTIVE — whether the agent may FILE its own
 # pre-call annotation. Ported from baton-sdk's ``VendorConfig.proactive_mode``
-# (SPEC §13, 2026-08-10b) and §14's "proactive_mode parity across producers",
-# whose ordering constraint — do not disable proactive before the
-# ``overall_task`` port lands — cleared with `96f31db`.
-#
-# ONE DELIBERATE DIVERGENCE FROM THE SDK, and it is the whole reason to read
-# this comment. The SDK's ``on`` renders a BEFORE clause into the instructions
-# asking for that pre-call annotation. The proxy's ``on`` does NOT: D7
-# (2026-09-01) drops the BEFORE paragraph in BOTH modes, because the injected
-# params already carry the same three fields on every call and the paragraph
-# taught the agent that intent was the tool's job. So here the knob governs
-# only the two remaining legs:
+# (SPEC §14, "proactive_mode parity across producers").
 #
 #   on  — the instructions ask for a pre-call annotation, the tool is described
 #       as proactive-and-reactive, and the handler accepts an annotation with
 #       no what_happened.
-#   off (default since 2026-09-01) — no pre-call request, the tool is described
+#   off (default) — no pre-call request, the tool is described
 #       as reactive-only, and the handler REFUSES an annotation with no
 #       what_happened, the way the SDK does. Refusing there rather than
 #       requiring what_happened in the schema keeps the agent from inventing a
@@ -106,12 +96,10 @@ _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required"})
 # and nothing else — suppressing the tool itself would also lose the reports,
 # which are the product.
 #
-# What the knob never touches: the tool itself, and the proxy's OWN synthesised
-# proactive built from the first call's injected params — that one is ours, not
-# the agent's, and it is what keeps one turn-opener per session in both modes.
+# What the knob never touches: the tool itself, and the injected params, whose
+# intent rides every tool_call_start in both modes.
 #
-# WHY THE DEFAULT IS `off` (2026-09-01, after the D7 verification run — it
-# shipped `on` earlier the same day and flipped on evidence):
+# WHY THE DEFAULT IS `off`:
 #
 #   1. The pre-call request COSTS the optional params. Measured live: with the
 #      paragraph rendered the agent stated its expectation once in the

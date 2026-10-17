@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+**Breaking, for collectors.** Run this only against a collector that reads a
+call's intent from the call (`call_intent` / `call_expected` /
+`call_workflow` on `tool_call_start`). A collector that reads intent only from
+notes shows none for sessions whose agent writes no note.
+
+### Changed
+
+- **The proxy no longer copies a call's intent into a note.** It sent one
+  `annotation` per session built from the first call's injected params
+  (`intent_source: "injected_param"`). That intent already rides every
+  `tool_call_start`, so the note repeated it (SPEC §11.4). A note the agent
+  writes through `baton_annotate` is unchanged.
+- **`baton-spec` moves to `f4e1754`.** Its schema drops `intent_source` from
+  the annotation payload and adds the envelope's optional `session_id_origin`,
+  which the proxy does not send.
+
+### Removed
+
+- **`intent_source` on annotations.** Only the copied note set it. The field
+  stays on `tool_call_start`. `Emitter.enqueue_annotation` still accepts an
+  `intent_source` argument, because baton-extmcp passes it. An annotation
+  given one is a copied note, so it is not sent at all: without its marker it
+  would read as the agent's own note.
+
+No configuration option is removed. `BATON_PROACTIVE` governs the agent's own
+pre-call note, not the copied one.
+
 ## [0.6.16] — 2026-10-09
 
 **Breaking, for agents.** Run this only against a collector that already tells

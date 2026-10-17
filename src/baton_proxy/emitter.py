@@ -738,14 +738,17 @@ class Emitter:
     ) -> None:
         """Annotation event per SPEC §11.4; nullable keys omitted when None.
 
-        ``signal_type`` is accepted and never sent: baton-extmcp depends on
-        this package by floor and passes ``signal_type=None``, so removing the
-        argument would break it on its next install.
+        ``signal_type`` and ``intent_source`` are accepted because
+        baton-extmcp depends on this package by floor and passes both.
+        ``signal_type`` is never sent. An annotation given ``intent_source``
+        is a note copied from a call's intent, which SPEC §11.4 forbids, so
+        it is not sent at all: sent without its marker it would read as the
+        agent's own note.
 
-        ``intent_source`` marks an annotation synthesised from the injected
-        per-tool intent param, and ``tool_name`` is then the tool whose call
-        carried it. On a report, ``tool_name`` is the tool the agent named.
+        On a report, ``tool_name`` is the tool the agent named.
         """
+        if intent_source is not None:
+            return
         candidates: dict[str, Any] = {
             "what_happened": what_happened,
             "intent": intent,
@@ -753,7 +756,6 @@ class Emitter:
             "expected_outcome": expected_outcome,
             "workflow": workflow,
             "context": dict(context) if context is not None else None,
-            "intent_source": intent_source,
             "tool_name": tool_name,
         }
         payload = {k: v for k, v in candidates.items() if v is not None}

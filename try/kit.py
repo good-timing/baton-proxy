@@ -1393,11 +1393,8 @@ def summarize(events: list[dict], size_bytes: int) -> dict:
             if payload.get("call_intent"):
                 calls_with_intent += 1
         elif kind == "annotation":
-            # The proxy synthesises ONE annotation per session out of the first
-            # call's injected params, marked `intent_source="injected_param"`
-            # (`proxy.py`). Counting those as agent-filed would report an agent
-            # that called nothing as one that filed on every session — the same
-            # oracle bug that would have failed the 2026-09-01 denial verify.
+            # A note marked `intent_source="injected_param"` was built by a
+            # producer from a call's params, not filed by the agent (SPEC §11.4).
             if payload.get("intent_source") != INTENT_SOURCE_PARAM:
                 agent_annotations += 1
         elif kind == "surface_snapshot":

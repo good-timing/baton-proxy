@@ -726,11 +726,8 @@ def test_receipt_counts_sessions_calls_and_intent_coverage():
 
 
 def test_a_synthesised_annotation_is_not_counted_as_one_the_agent_filed():
-    """The proxy makes one annotation per session out of the first call's
-    injected params (`intent_source="injected_param"`). Counting those as
-    agent-filed reports an agent that called nothing as one that filed on every
-    session — which is what the first denial-verify oracle did, and it would
-    have failed a passing run."""
+    """A note marked `intent_source="injected_param"` was built by a producer
+    from a call's params, not filed by the agent (SPEC §11.4)."""
     events = [
         _ev(
             session_id="s1",
