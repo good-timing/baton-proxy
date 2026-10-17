@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.17] — 2026-10-16
 
 **Breaking, for collectors.** Run this only against a collector that reads a
 call's intent from the call (`call_intent` / `call_expected` /
