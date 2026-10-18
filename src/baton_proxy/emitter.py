@@ -738,8 +738,8 @@ class Emitter:
     ) -> None:
         """Annotation event per SPEC §11.4; nullable keys omitted when None.
 
-        ``signal_type`` and ``intent_source`` are accepted because
-        baton-extmcp depends on this package by floor and passes both.
+        ``signal_type`` and ``intent_source`` are accepted because an older
+        baton-extmcp, which depends on this package by floor, passes both.
         ``signal_type`` is never sent. An annotation given ``intent_source``
         is a note copied from a call's intent, which SPEC §11.4 forbids, so
         it is not sent at all: sent without its marker it would read as the
