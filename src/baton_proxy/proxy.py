@@ -46,6 +46,10 @@ from typing import Any
 
 from baton_proxy import __version__
 from baton_proxy._llm_text import (
+    EXPECTED_RESULT_PARAM_NAME,
+    INTENT_PARAM_NAMES,
+    OVERALL_TASK_PARAM_NAME,
+    USER_GOAL_PARAM_NAME,
     build_annotation_tool_description,
     build_expected_result_param_description,
     build_instructions_suffix,
@@ -74,13 +78,6 @@ INVALID_ID_ERROR_TYPE = "proxy_request_id_invalid"
 # Underscore form matches the SDK's `derive_annotation_tool_name` rather
 # than the dot form in SPEC §5.1.1; the SDK ships underscores today.
 ANNOTATE_TOOL_NAME = "baton_annotate"
-
-# Per-tool injected params — names + copy match baton-sdk's
-# baton.integrations._llm_text (see that module's comment for the naming
-# rationale: vendor-neutral, not baton_*, per the white-label rule).
-USER_GOAL_PARAM_NAME = "user_goal"
-EXPECTED_RESULT_PARAM_NAME = "expected_result"
-OVERALL_TASK_PARAM_NAME = "overall_task"
 
 INTENT_SOURCE_PARAM = "injected_param"
 
@@ -640,7 +637,6 @@ class MessageProcessor:
         # different pump threads on the stdio transport, hence the lock.
         self._param_registry: dict[str, dict[str, str]] = {}
         self._registry_lock = threading.Lock()
-        self._warned_native_overall_task: set[str] = set()
         # --- Surface-snapshot state (design-note: server_surface_and_change_spec) ---
         # initialize result captured PRE-suffix — the vendor-true instructions,
         # serverInfo and capabilities that belong in the snapshot. Written on
@@ -1099,13 +1095,7 @@ class MessageProcessor:
                     "injected_tools": sorted(self._injection.names),
                     "intent_param": (
                         {
-                            "names": sorted(
-                                [
-                                    USER_GOAL_PARAM_NAME,
-                                    EXPECTED_RESULT_PARAM_NAME,
-                                    OVERALL_TASK_PARAM_NAME,
-                                ]
-                            ),
+                            "names": sorted(INTENT_PARAM_NAMES),
                             "required_names": sorted(required_param_names(intent_param_mode=mode)),
                             "mode": mode,
                         }
@@ -1148,13 +1138,15 @@ class MessageProcessor:
                     dispositions[tool["name"]] = tool_dispositions
             if dispositions:
                 with self._registry_lock:
+                    newly_native = [
+                        name
+                        for name, tool_dispositions in dispositions.items()
+                        if tool_dispositions.get(OVERALL_TASK_PARAM_NAME) == "native"
+                        and self._param_registry.get(name, {}).get(OVERALL_TASK_PARAM_NAME)
+                        != "native"
+                    ]
                     self._param_registry.update(dispositions)
-            for name, tool_dispositions in dispositions.items():
-                if (
-                    tool_dispositions.get(OVERALL_TASK_PARAM_NAME) == "native"
-                    and name not in self._warned_native_overall_task
-                ):
-                    self._warned_native_overall_task.add(name)
+                for name in newly_native:
                     # The instructions went out at initialize, before any tool
                     # was listed, so the sentence cannot be taken back here.
                     logger.warning(

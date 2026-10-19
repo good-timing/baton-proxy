@@ -378,6 +378,7 @@ EXPECTED_RESULT_PARAM_NAME = "expected_result"
 # strip swallow the vendor's own argument, and the name would invite the model
 # to fill in the vendor object it is touching instead of the meta task label.
 OVERALL_TASK_PARAM_NAME = "overall_task"
+INTENT_PARAM_NAMES = (USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME)
 
 # The text below is byte-identical to baton-sdk's and baton-ts's. Each producer
 # pins its own copy in its own suite (this suite ships in the Try Kit, where a
@@ -393,15 +394,11 @@ _USER_GOAL_PARAM_BODY = (
     "One sentence: what the user is actually trying to accomplish "
     "with this call (their goal, not a restatement of the arguments)."
 )
-_USER_GOAL_PARAM_DESCRIPTION = "OPTIONAL. " + _USER_GOAL_PARAM_BODY
-_USER_GOAL_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + _USER_GOAL_PARAM_BODY
 
 _EXPECTED_RESULT_PARAM_BODY = (
     "One sentence: what a successful result should look like, so a "
     "silent/thin failure can be told apart from success."
 )
-_EXPECTED_RESULT_PARAM_DESCRIPTION = "OPTIONAL. " + _EXPECTED_RESULT_PARAM_BODY
-_EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + _EXPECTED_RESULT_PARAM_BODY
 
 # Two parts with two jobs. The leading number says which user message the
 # call answers, and the Console cuts a turn where it changes (SPEC §11.5.1
@@ -420,8 +417,10 @@ _OVERALL_TASK_PARAM_BODY = (
     "serving the same task, across messages; change the label only when the "
     "user starts a different task."
 )
-_OVERALL_TASK_PARAM_DESCRIPTION = "OPTIONAL. " + _OVERALL_TASK_PARAM_BODY
-_OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + _OVERALL_TASK_PARAM_BODY
+
+
+def _labelled(body: str, intent_param_mode: str) -> str:
+    return ("REQUIRED. " if intent_param_mode == "required" else "OPTIONAL. ") + body
 
 
 def build_user_goal_param_description(*, intent_param_mode: str = "optional") -> str:
@@ -433,25 +432,19 @@ def build_user_goal_param_description(*, intent_param_mode: str = "optional") ->
     so that omitting the argument cannot silently advertise a constraint the
     caller never asked for — every real call site passes the configured mode.
     """
-    if intent_param_mode == "required":
-        return _USER_GOAL_PARAM_DESCRIPTION_REQUIRED
-    return _USER_GOAL_PARAM_DESCRIPTION
+    return _labelled(_USER_GOAL_PARAM_BODY, intent_param_mode)
 
 
 def build_expected_result_param_description(*, intent_param_mode: str = "optional") -> str:
     """Build the injected ``expected_result`` param's ``description`` field;
     the mode moves the label as for ``user_goal``."""
-    if intent_param_mode == "required":
-        return _EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED
-    return _EXPECTED_RESULT_PARAM_DESCRIPTION
+    return _labelled(_EXPECTED_RESULT_PARAM_BODY, intent_param_mode)
 
 
 def build_overall_task_param_description(*, intent_param_mode: str = "optional") -> str:
     """Build the injected ``overall_task`` param's ``description`` field;
     the mode moves the label as for ``user_goal``."""
-    if intent_param_mode == "required":
-        return _OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED
-    return _OVERALL_TASK_PARAM_DESCRIPTION
+    return _labelled(_OVERALL_TASK_PARAM_BODY, intent_param_mode)
 
 
 def required_param_names(*, intent_param_mode: str) -> tuple[str, ...]:
@@ -461,6 +454,4 @@ def required_param_names(*, intent_param_mode: str) -> tuple[str, ...]:
     be unwrapped. A tool that declares one of these names itself keeps its own
     schema for it.
     """
-    if intent_param_mode != "required":
-        return ()
-    return (USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME)
+    return INTENT_PARAM_NAMES if intent_param_mode == "required" else ()
