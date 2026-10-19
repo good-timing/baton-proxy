@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.18] — 2026-10-19
+
+### Changed
+
+- **Under the default `BATON_INTENT_PARAM=required`, all three injected params
+  are advertised as required.** Each wrapped tool lists `user_goal`,
+  `expected_result` and `overall_task` in its `required`, and each description
+  starts with `REQUIRED.`. Before, only `user_goal` was. It is still never
+  enforced: a call that leaves one out is forwarded unchanged.
+- **`overall_task` asks for the number of the user's current message**, then a
+  colon, then the task label (`3: prepare campaign approval`). `call_workflow`
+  values carry that number once agents follow it.
+- **The instructions suffix tells an agent to pass that number to a
+  subagent.** The sentence comes before the event-file line, so under
+  `BATON_PROACTIVE=on` a long sink path has about 170 characters of room
+  instead of about 445.
+- The three param descriptions, the required list and the subagent sentence
+  are byte-identical to baton-sdk 0.8.13's. The proactive clause and the
+  annotation tool's `overall_task` field take baton-sdk's `overall_task`
+  wording (SPEC §13, proxy 0.6.18).
+- **`baton-spec` moves to `de3332e`.** No schema shape change.
+
+### Added
+
+- **`required_names` in `surface_snapshot`'s `seam_augmentations.intent_param`**:
+  which injected params the mode advertises as required.
+- **A warning when a wrapped tool declares its own `overall_task`.** The
+  instructions already went out at `initialize`, so the subagent sentence
+  cannot be removed; on that tool a subagent may put the number into the
+  tool's own argument.
+
 ## [0.6.17] — 2026-10-16
 
 **Breaking, for collectors.** Run this only against a collector that reads a
