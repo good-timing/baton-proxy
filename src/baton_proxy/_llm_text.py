@@ -99,9 +99,9 @@ _HEAD_REACTIVE_ONLY = (
 _PROACTIVE_CLAUSE = (
     "BEFORE invoking any tool on this server, you MUST call "
     "`{annotation_tool_name}` with user_goal (REQUIRED), expected_result "
-    "(REQUIRED), and overall_task (REQUIRED when the request fits a "
-    "recognizable broader task, e.g., 'morning meeting prep', "
-    "'pre-outreach research').\n\n"
+    "(REQUIRED), and overall_task (REQUIRED): a short stable label for "
+    "the broader task this call serves (e.g., 'morning meeting prep'), "
+    "repeated verbatim until the user starts a different task.\n\n"
 )
 
 # Always present, in both modes — this is the product signal, and it has no
@@ -169,10 +169,8 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "silent/thin failure can be told apart from success.\n"
     "  - overall_task: short stable label for the broader task this "
     "call serves, e.g., 'morning meeting prep', 'pre-outreach "
-    "research', 'personal scheduling'. REPEAT the exact same string on "
-    "every call serving the same task; change it only when the user "
-    "starts a different task. Skip when the call doesn't fit a "
-    "recognizable broader task.\n"
+    "research'. REPEAT the exact same string on every call serving the "
+    "same task; change it only when the user starts a different task.\n"
     "  - what_happened: REQUIRED on a report{omit_on_a_note}. "
     "1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
     "what came back, and why it was unusable. Do NOT pick a category or "
@@ -250,7 +248,7 @@ def build_instructions_suffix(
     annotation_tool_name: str,
     proactive_mode: str = "off",
     event_file_path: str | None = None,
-    intent_param_mode: str = "off",
+    intent_param_mode: str = "required",
 ) -> str:
     """Build the proxy's instructions suffix.
 

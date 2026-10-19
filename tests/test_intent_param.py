@@ -589,6 +589,8 @@ def _run_http(url: str) -> tuple[dict[int, dict], list[dict]]:
 
 def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     """Shared assertions — both transports must produce this exact contract."""
+    # The default mode reaches the instructions the client receives.
+    assert "When you hand work to a subagent" in by_id[1]["result"]["instructions"]
     # Injection: every upstream tool grew both params; the proxy's own didn't.
     tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
     for name in ("echo", "boom", "softfail", "argkeys"):
@@ -1073,6 +1075,8 @@ def test_a_tool_with_its_own_overall_task_is_warned_about(
     )
     with caplog.at_level(logging.WARNING, logger="baton_proxy"):
         proc.handle_server_message(_tools_list_response([_tool("plain"), native]))
+        # A client re-lists; the warning is not repeated.
+        proc.handle_server_message(_tools_list_response([_tool("plain"), native], msg_id=3))
     warned = [r.getMessage() for r in caplog.records if "overall_task" in r.getMessage()]
     assert len(warned) == 1
     assert "'native'" in warned[0]

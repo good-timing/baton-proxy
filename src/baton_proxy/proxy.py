@@ -640,6 +640,7 @@ class MessageProcessor:
         # different pump threads on the stdio transport, hence the lock.
         self._param_registry: dict[str, dict[str, str]] = {}
         self._registry_lock = threading.Lock()
+        self._warned_native_overall_task: set[str] = set()
         # --- Surface-snapshot state (design-note: server_surface_and_change_spec) ---
         # initialize result captured PRE-suffix — the vendor-true instructions,
         # serverInfo and capabilities that belong in the snapshot. Written on
@@ -1149,7 +1150,11 @@ class MessageProcessor:
                 with self._registry_lock:
                     self._param_registry.update(dispositions)
             for name, tool_dispositions in dispositions.items():
-                if tool_dispositions.get(OVERALL_TASK_PARAM_NAME) == "native":
+                if (
+                    tool_dispositions.get(OVERALL_TASK_PARAM_NAME) == "native"
+                    and name not in self._warned_native_overall_task
+                ):
+                    self._warned_native_overall_task.add(name)
                     # The instructions went out at initialize, before any tool
                     # was listed, so the sentence cannot be taken back here.
                     logger.warning(

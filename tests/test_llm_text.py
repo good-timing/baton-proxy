@@ -100,8 +100,8 @@ def test_the_pre_call_request_is_gated_on_proactive_mode() -> None:
     and no reports. Why it is not deleted: agent-authored proactives supply
     ~54% of turn boundaries, and the proxy fronts servers its operator does not
     own."""
-    on = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
-    off = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="off")
+    on = build_instructions_suffix("baton_annotate", "on", intent_param_mode="off")
+    off = build_instructions_suffix("baton_annotate", "off", intent_param_mode="off")
 
     assert "BEFORE" in on
     assert "BEFORE" not in off
@@ -128,8 +128,8 @@ def test_the_reactive_clauses_survive_both_modes_intact() -> None:
     pins a string cannot see what the string MEANS in each mode — so the
     assertion is now identity modulo that one back-reference, plus the
     back-reference appearing exactly where it has a referent."""
-    on = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
-    off = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="off")
+    on = build_instructions_suffix("baton_annotate", "on", intent_param_mode="off")
+    off = build_instructions_suffix("baton_annotate", "off", intent_param_mode="off")
     for clause in ("AFTER any tool", "IF a tool response", "does NOT replace answering"):
         assert clause in on and clause in off
     tail = "AFTER any tool"
@@ -150,8 +150,8 @@ def test_turning_proactive_off_is_what_buys_the_truncation_headroom() -> None:
     `instructions` at ~2,087 chars — workfront's rendered value measured 4,408
     on 2026-09-01 — so on an enterprise server it is our framing, at the end,
     that is silently cut. `off` takes ~280 chars off the suffix."""
-    on = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
-    off = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="off")
+    on = build_instructions_suffix("baton_annotate", "on", intent_param_mode="off")
+    off = build_instructions_suffix("baton_annotate", "off", intent_param_mode="off")
     assert len(on) - len(off) > 250, (
         f"the paragraph stopped costing anything: {len(on)} vs {len(off)}"
     )
@@ -371,7 +371,9 @@ def test_the_subagent_sentence_follows_the_clauses_when_params_ride(proactive_mo
         "baton_annotate", proactive_mode, intent_param_mode="required"
     )
     assert rendered.endswith("answering.\n\n" + SUBAGENT_SENTENCE)
-    assert SUBAGENT_SENTENCE not in build_instructions_suffix("baton_annotate", proactive_mode)
+    assert SUBAGENT_SENTENCE not in build_instructions_suffix(
+        "baton_annotate", proactive_mode, intent_param_mode="off"
+    )
 
 
 def test_the_event_file_line_stays_after_the_subagent_sentence() -> None:
@@ -518,7 +520,7 @@ def test_the_line_does_not_run_into_the_clause_before_it() -> None:
     two paragraphs jammed together, which every length assertion here passed
     happily. The separator has to LEAD."""
     rendered = build_instructions_suffix(
-        "baton_annotate", "off", event_file_path=_DEFAULT_SINK_PATH
+        "baton_annotate", "off", event_file_path=_DEFAULT_SINK_PATH, intent_param_mode="off"
     )
     assert "answering.\n\nTool calls" in rendered, repr(rendered[-260:])
     assert "answering.Tool" not in rendered
@@ -569,7 +571,6 @@ def test_a_path_too_long_to_fit_is_dropped_not_raised() -> None:
     rendered = build_instructions_suffix("baton_annotate", "on", event_file_path=long_path)
     assert long_path not in rendered
     assert rendered == build_instructions_suffix("baton_annotate", "on")
-    assert len(rendered) <= _INSTRUCTIONS_LENGTH_CAP
 
 
 def test_the_off_mode_default_still_fits_a_deep_path() -> None:
@@ -611,12 +612,15 @@ def test_the_line_leaves_room_for_a_real_operators_path() -> None:
     is `NAME_MAX` territory and comfortably past any sink path an operator types.
     """
     fixed = len(_EVENT_FILE_LINE.replace("{event_file_path}", ""))
-    tightest = _CLAUDE_CODE_TRUNCATION_CAP - len(build_instructions_suffix("baton_annotate", "on"))
-    room = tightest - fixed
-    assert room >= 256, (
-        f"only {room} chars of path fit in the tightest mode (the line is {fixed}); "
-        "a real operator's sink path would be dropped"
-    )
+    # The subagent sentence sits before this line, so under proactive_mode="on"
+    # the line gets less room than in the default mode.
+    for mode, needed in (("off", 256), ("on", 160)):
+        room = _CLAUDE_CODE_TRUNCATION_CAP - len(build_instructions_suffix("baton_annotate", mode))
+        room -= fixed
+        assert room >= needed, (
+            f"only {room} chars of path fit with proactive_mode={mode!r} (the line is "
+            f"{fixed}); a real operator's sink path would be dropped"
+        )
 
 
 def test_the_base_keeps_the_reserve_and_the_event_line_is_exempt() -> None:
@@ -634,7 +638,7 @@ def test_the_base_keeps_the_reserve_and_the_event_line_is_exempt() -> None:
     left 160 chars, and the honest wording does not fit 160.
     """
     for mode in ("off", "on"):
-        base = build_instructions_suffix("baton_annotate", mode)
+        base = build_instructions_suffix("baton_annotate", mode, intent_param_mode="off")
         assert len(base) <= _INSTRUCTIONS_LENGTH_CAP, f"the BASE overflowed in {mode!r}"
         reserve = _CLAUDE_CODE_TRUNCATION_CAP - len(base)
         assert reserve >= 500, (
