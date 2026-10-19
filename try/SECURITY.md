@@ -225,12 +225,12 @@ There is no switch that turns the parameters off; they are the reason the wrap
 exists. The off switch is the wrap itself: `python3 kit.py uninstall` puts your
 original entry back.
 
-`user_goal` is listed in each tool's `required` array by default, and nothing
-enforces it. The proxy appends the name to the advertised list and validates
-nothing: a call that omits `user_goal` is forwarded exactly as it would have
-been unwrapped, and your server never learns whether it was present.
-`BATON_INTENT_PARAM=optional` drops it from the `required` array; that changes
-how the parameter is advertised, not whether it is injected.
+All three are listed in each tool's `required` array by default, and nothing
+enforces them. The proxy appends the names to the advertised list and validates
+nothing: a call that omits one is forwarded exactly as it would have been
+unwrapped, and your server never learns whether it was present.
+`BATON_INTENT_PARAM=optional` drops them from the `required` array; that changes
+how the parameters are advertised, not whether they are injected.
 
 One edge: if a call arrives before the proxy has seen a `tools/list` in that
 process, it cannot know whether the tool natively declares a parameter of one
@@ -240,8 +240,9 @@ lists tools before calling them, a natively declared parameter is recognised and
 forwarded untouched.
 
 **A paragraph appended to your server's `instructions`**, telling the agent that
-`baton_annotate` exists and naming the path of the local event file, so it can
-read the captured calls back when you ask what went wrong (`_llm_text.py`,
+`baton_annotate` exists, asking it to pass the user's message number to any
+subagent that calls your tools, and naming the path of the local event file, so
+it can read the captured calls back when you ask what went wrong (`_llm_text.py`,
 `build_instructions_suffix`). Appended to whatever your server sent, never
 replacing it, and last, so that if your server's own instructions are long
 enough for the client to truncate, this line is what it takes rather than the

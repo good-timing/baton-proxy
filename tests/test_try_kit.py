@@ -4111,16 +4111,15 @@ def test_security_md_injected_param_count_matches_the_code():
 
 
 def test_security_md_says_required_is_advertised_and_not_enforced():
-    """The word "optional" left this sentence on 2026-09-01, when the default
-    became `required` — a reviewer now sees `user_goal` in their own tools'
-    `required` arrays, and a document that did not mention it would be caught
-    omitting the one addition they can see with their own eyes.
+    """A reviewer sees the three params in their own tools' `required` arrays,
+    and a document that did not mention it would be caught omitting the one
+    addition they can see with their own eyes.
 
     Both halves or neither. "Required" alone tells them the wrap can refuse
     their server's traffic, which is false and is the scariest possible false
     claim to make here; silence leaves the retired optional story standing."""
     doc = _flat((KIT_PATH.parent / "SECURITY.md").read_text())
-    assert "and nothing enforces it" in doc, (
+    assert "and nothing enforces them" in doc, (
         "SECURITY.md never says the advertised requirement is not enforced"
     )
     assert "forwarded exactly as it would have been unwrapped" in doc, (
