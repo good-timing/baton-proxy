@@ -145,9 +145,21 @@ def test_snapshot_captures_vendor_true_surface() -> None:
         "names": sorted(
             [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME]
         ),
+        "required_names": [],
         "mode": "optional",
     }
     assert aug["instructions_suffix"] is True
+
+
+def test_required_mode_records_the_required_names() -> None:
+    proc, emitter = _processor(mode="required")
+    proc.handle_server_message(_initialize_response())
+    _drive_list(proc, [_tool("alpha")], msg_id=2)
+    intent_param = emitter.snapshots()[0]["seam_augmentations"]["intent_param"]
+    assert intent_param["required_names"] == sorted(
+        [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME]
+    )
+    assert intent_param["mode"] == "required"
 
 
 def test_snapshot_instructions_captured_before_suffix_injection() -> None:

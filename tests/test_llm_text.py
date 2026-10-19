@@ -40,6 +40,7 @@ from baton_proxy._llm_text import (
     build_annotation_tool_description,
     build_instructions_suffix,
     build_overall_task_param_description,
+    required_param_names,
 )
 from baton_proxy.config import DEFAULT_EVENT_SINK
 from baton_proxy.sinks import find_file_sink_path
@@ -329,16 +330,56 @@ def test_a_reports_only_tool_does_not_describe_a_note() -> None:
 # guarantee of agreement.
 # ---------------------------------------------------------------------------
 
-SELECTED_WORDING = (
-    "OPTIONAL. Short stable label for the broader task this call serves "
-    "(e.g. 'prepare campaign approval'). REPEAT the exact same string on "
-    "every call serving the same task; change it only when the user starts "
-    "a different task."
+SELECTED_BODY = (
+    "The number of the user's current message in this conversation "
+    "(1 for the first), a colon, then a short stable label for the broader "
+    "task this call serves (e.g. '3: prepare campaign approval'). Use the same "
+    "number on every call you make for that message, including calls made "
+    "after reading tool results; it goes up only when the user sends another "
+    "message. REPEAT the exact same label text after the colon on every call "
+    "serving the same task, across messages; change the label only when the "
+    "user starts a different task."
+)
+SUBAGENT_SENTENCE = (
+    "When you hand work to a subagent that may call this server's tools, tell it "
+    "the number of the user's current message in this conversation, and that it "
+    "must start overall_task with that number on every call to this server's "
+    "tools. This applies only to this server's tools."
 )
 
 
 def test_the_task_label_wording_is_the_one_the_experiment_selected() -> None:
-    assert build_overall_task_param_description() == SELECTED_WORDING
+    assert build_overall_task_param_description() == "OPTIONAL. " + SELECTED_BODY
+    assert build_overall_task_param_description(intent_param_mode="required") == (
+        "REQUIRED. " + SELECTED_BODY
+    )
+
+
+def test_required_mode_escalates_all_three_params() -> None:
+    assert required_param_names(intent_param_mode="required") == (
+        "user_goal",
+        "expected_result",
+        "overall_task",
+    )
+    assert required_param_names(intent_param_mode="optional") == ()
+
+
+@pytest.mark.parametrize("proactive_mode", ["off", "on"])
+def test_the_subagent_sentence_follows_the_clauses_when_params_ride(proactive_mode: str) -> None:
+    """A main agent that never loads the tool schemas reads only this."""
+    rendered = build_instructions_suffix(
+        "baton_annotate", proactive_mode, intent_param_mode="required"
+    )
+    assert rendered.endswith("answering.\n\n" + SUBAGENT_SENTENCE)
+    assert SUBAGENT_SENTENCE not in build_instructions_suffix("baton_annotate", proactive_mode)
+
+
+def test_the_event_file_line_stays_after_the_subagent_sentence() -> None:
+    """Truncation eats the end, so the convenience line must be what it takes."""
+    rendered = build_instructions_suffix(
+        "baton_annotate", "on", event_file_path="/tmp/e.jsonl", intent_param_mode="required"
+    )
+    assert rendered.index(SUBAGENT_SENTENCE) < rendered.index("/tmp/e.jsonl")
 
 
 def test_the_wording_does_not_carry_the_rejected_candidate() -> None:
@@ -357,7 +398,7 @@ def test_the_wording_keeps_the_clause_that_makes_it_groupable() -> None:
     """Grouping is by exact string match, so the repeat clause IS the
     mechanism: without it 80% of adjacent same-task calls reword and every task
     shatters, whichever granularity wording is chosen."""
-    assert "REPEAT the exact same string" in build_overall_task_param_description()
+    assert "REPEAT the exact same label text" in build_overall_task_param_description()
 
 
 # The retired agent-facing names. All three remain WIRE keys, so they appear

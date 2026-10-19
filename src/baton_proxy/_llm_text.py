@@ -197,6 +197,16 @@ _CLAUDE_CODE_TRUNCATION_CAP = 2087
 _INSTRUCTIONS_LENGTH_CAP = 1500
 
 
+# A main agent that delegates may never load this server's tool schemas, so the
+# overall_task description never reaches it and its subagents get no number.
+_INSTRUCTIONS_SUBAGENT_CLAUSE = (
+    "\n\nWhen you hand work to a subagent that may call this server's tools, tell it "
+    "the number of the user's current message in this conversation, and that it "
+    "must start overall_task with that number on every call to this server's "
+    "tools. This applies only to this server's tools."
+)
+
+
 # The line that tells the agent where the session's own events are, rendered
 # only when there IS a local file to name. It replaces the retired
 # `baton_session_report` tool (2026-09-27): that tool rendered a fixed template
@@ -240,13 +250,16 @@ def build_instructions_suffix(
     annotation_tool_name: str,
     proactive_mode: str = "off",
     event_file_path: str | None = None,
+    intent_param_mode: str = "off",
 ) -> str:
     """Build the proxy's instructions suffix.
 
     ``proactive_mode="off"`` reframes the head and drops the pre-call
     annotation request; the reactive clauses are the same in both modes apart
     from the word `again`, which is a back-reference to that request and is
-    rendered only when the request is.
+    rendered only when the request is. Any ``intent_param_mode`` but ``"off"``
+    adds the subagent sentence, since every wrapped tool then carries
+    ``overall_task``.
     Leg-for-leg the same selection baton-sdk's ``build_server_instructions``
     makes — only the DEFAULT differs, and deliberately: the SDK wraps a server
     its vendor owns, the proxy fronts servers its operator does not, so the
@@ -314,6 +327,11 @@ def build_instructions_suffix(
             f"(Claude Code truncates at ~{_CLAUDE_CODE_TRUNCATION_CAP}). "
             f"Shorten annotation_tool_name."
         )
+    # After the cap check: the sentence has a fixed length, so it comes out of
+    # the headroom under the truncation point. Before the event-file line, so
+    # truncation still takes that line first.
+    if intent_param_mode != "off":
+        rendered += _INSTRUCTIONS_SUBAGENT_CLAUSE
     if event_file_path:
         # Spliced into the ALREADY-FORMATTED string, so the path never sits
         # inside the multi-field template above. That template is formatted with
@@ -347,24 +365,15 @@ def build_annotation_tool_description(proactive_mode: str = "off") -> str:
     )
 
 
-# Per-tool injected params (`user_goal` / `expected_result`). Unlike
-# instructions, this text rides IN each tool's schema, so it is in front of
-# the model at call-compose time on every client — including Claude Desktop,
-# which ignores initialize-instructions entirely (verified empirically
-# 2026-07-07).
+# Per-tool injected params. Unlike instructions, this text rides IN each tool's
+# schema, so it is in front of the model at call-compose time on every client —
+# including Claude Desktop, which ignores initialize-instructions entirely.
 #
-# Names + copy match baton-sdk's ``baton.integrations._llm_text`` verbatim
-# (ported 2026-08-08 — proxy previously used a single namespaced
-# `baton_intent` param with its own copy; that was the accepted SPEC §13
-# divergence, closed here since neither producer has an external customer
-# depending on the old shape). Vendor-neutral names, not `baton_*` — anything
-# the customer's agent can see on an instrumented surface must speak the
-# vendor's voice, never Baton's (white-label rule); proxy's original
-# namespaced choice was a collision-safety call that doesn't apply once the
-# names match the SDK's spike-proven neutral choice.
+# Vendor-neutral names, not `baton_*`: anything the customer's agent can see on
+# an instrumented surface must speak the vendor's voice, never Baton's.
 USER_GOAL_PARAM_NAME = "user_goal"
 EXPECTED_RESULT_PARAM_NAME = "expected_result"
-# The task-label grouping key (wire field ``call_workflow``; console rung 3b).
+# The task label (wire field ``call_workflow``).
 # Deliberately NOT named ``workflow``: injected params live inside vendor tool
 # schemas, where ``workflow`` is a plausible real vendor param (Workfront
 # approvals, CI pipelines, Notion automations) — a collision would make the
@@ -372,15 +381,16 @@ EXPECTED_RESULT_PARAM_NAME = "expected_result"
 # to fill in the vendor object it is touching instead of the meta task label.
 OVERALL_TASK_PARAM_NAME = "overall_task"
 
-# The leading label has to track ``intent_param_mode``, which defaults to
-# ``required`` here (``config.DEFAULT_INTENT_PARAM_MODE``, flipped 2026-09-01):
-# under that mode the injector appends ``user_goal`` to the schema's advertised
+# The text below is byte-identical to baton-sdk's and baton-ts's. Each producer
+# pins its own copy in its own suite (this suite ships in the Try Kit, where a
+# clone has no siblings to read), so change all three together.
+#
+# The leading label has to track ``intent_param_mode``: under ``"required"``
+# the injector appends the escalated params to the schema's advertised
 # ``required`` list, so a description still opening "OPTIONAL." contradicts the
-# schema it ships inside — and the model reads both. Only the label moves; the
-# body is byte-identical across modes, because that sentence is the measured
-# text and the mode is not a licence to reword it. ``expected_result`` and
-# ``overall_task`` are never added to ``required`` in either mode, so their
-# "OPTIONAL." is true everywhere and they get no variant.
+# schema it ships inside — the model reads both. Only the label moves; the body
+# is byte-identical across modes, because that sentence is the measured text and
+# the mode is not a licence to reword it.
 _USER_GOAL_PARAM_BODY = (
     "One sentence: what the user is actually trying to accomplish "
     "with this call (their goal, not a restatement of the arguments)."
@@ -388,60 +398,71 @@ _USER_GOAL_PARAM_BODY = (
 _USER_GOAL_PARAM_DESCRIPTION = "OPTIONAL. " + _USER_GOAL_PARAM_BODY
 _USER_GOAL_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + _USER_GOAL_PARAM_BODY
 
-_EXPECTED_RESULT_PARAM_DESCRIPTION = (
-    "OPTIONAL. One sentence: what a successful result should look like, so a "
+_EXPECTED_RESULT_PARAM_BODY = (
+    "One sentence: what a successful result should look like, so a "
     "silent/thin failure can be told apart from success."
 )
+_EXPECTED_RESULT_PARAM_DESCRIPTION = "OPTIONAL. " + _EXPECTED_RESULT_PARAM_BODY
+_EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + _EXPECTED_RESULT_PARAM_BODY
 
-
-# The stability contract is the load-bearing design element: user_goal/
-# expected_result are call-scoped diagnostics that reword freely, so they
-# cannot key grouping; this param works ONLY if the model repeats the label
-# verbatim while the task is unchanged (measured 2026-08-10: without the
-# contract, 80% of adjacent same-task calls reword their goal text).
+# Two parts with two jobs. The leading number says which user message the
+# call answers, and the Console cuts a turn where it changes (SPEC §11.5.1
+# rule 2). The label after the colon says which task, and it works ONLY if the
+# model repeats it verbatim while the task is unchanged: user_goal and
+# expected_result reword freely, so they cannot key grouping.
 #
-# Granularity is a KNOWN, MEASURED weakness of this text, kept anyway because
-# the obvious fix is worse. Do not reword without scoring against both corpora
-# in a scored internal experiment (40 paired live-agent sessions,
-# 2026-08-11, one build per run): the candidate ("the specific task the user is
-# working on right now — not the overall theme") fixes boundary detection
-# (0.700 -> 1.000) but relabels *within* one task (0.200 then 0.400 over-split
-# on identical scripts), and shattering is the failure mode that destroys
-# downstream trust. Byte-identical to baton-sdk's
-# ``_OVERALL_TASK_PARAM_DESCRIPTION`` and baton-ts's
-# ``OVERALL_TASK_PARAM_DESCRIPTION``. Each producer pins its own copy in its
-# own suite (no cross-repo read: this suite ships in the Try Kit, where a
-# prospect's clone has no siblings). Three local pins make a change deliberate
-# and visible in review; they cannot notice the three drifting apart, so change
-# all three together.
-_OVERALL_TASK_PARAM_DESCRIPTION = (
-    "OPTIONAL. Short stable label for the broader task this call serves "
-    "(e.g. 'prepare campaign approval'). REPEAT the exact same string on "
-    "every call serving the same task; change it only when the user starts "
-    "a different task."
+# Do not reword without scoring the result on live agents.
+_OVERALL_TASK_PARAM_BODY = (
+    "The number of the user's current message in this conversation "
+    "(1 for the first), a colon, then a short stable label for the broader "
+    "task this call serves (e.g. '3: prepare campaign approval'). Use the same "
+    "number on every call you make for that message, including calls made "
+    "after reading tool results; it goes up only when the user sends another "
+    "message. REPEAT the exact same label text after the colon on every call "
+    "serving the same task, across messages; change the label only when the "
+    "user starts a different task."
 )
-
-
-def build_overall_task_param_description() -> str:
-    """Build the injected ``overall_task`` param's ``description`` field."""
-    return _OVERALL_TASK_PARAM_DESCRIPTION
+_OVERALL_TASK_PARAM_DESCRIPTION = "OPTIONAL. " + _OVERALL_TASK_PARAM_BODY
+_OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + _OVERALL_TASK_PARAM_BODY
 
 
 def build_user_goal_param_description(*, intent_param_mode: str = "optional") -> str:
     """Build the injected ``user_goal`` param's ``description`` field.
 
     ``intent_param_mode="required"`` swaps the leading label for "REQUIRED.",
-    matching the ``required`` entry the injector adds under that mode. Any
-    other value returns the text unchanged. The default is ``"optional"``
-    rather than the proxy's own ``required`` default so that omitting the
-    argument cannot silently advertise a constraint the caller never asked
-    for — every real call site passes the configured mode explicitly.
+    matching the ``required`` entry the injector adds under that mode. The
+    default is ``"optional"`` rather than the proxy's own ``required`` default
+    so that omitting the argument cannot silently advertise a constraint the
+    caller never asked for — every real call site passes the configured mode.
     """
     if intent_param_mode == "required":
         return _USER_GOAL_PARAM_DESCRIPTION_REQUIRED
     return _USER_GOAL_PARAM_DESCRIPTION
 
 
-def build_expected_result_param_description() -> str:
-    """Build the injected ``expected_result`` param's ``description`` field."""
+def build_expected_result_param_description(*, intent_param_mode: str = "optional") -> str:
+    """Build the injected ``expected_result`` param's ``description`` field;
+    the mode moves the label as for ``user_goal``."""
+    if intent_param_mode == "required":
+        return _EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED
     return _EXPECTED_RESULT_PARAM_DESCRIPTION
+
+
+def build_overall_task_param_description(*, intent_param_mode: str = "optional") -> str:
+    """Build the injected ``overall_task`` param's ``description`` field;
+    the mode moves the label as for ``user_goal``."""
+    if intent_param_mode == "required":
+        return _OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED
+    return _OVERALL_TASK_PARAM_DESCRIPTION
+
+
+def required_param_names(*, intent_param_mode: str) -> tuple[str, ...]:
+    """Which injected params ``intent_param_mode`` advertises as required.
+
+    Advertised, never enforced: a call that omits one is forwarded as it would
+    be unwrapped. A tool that declares one of these names itself keeps its own
+    schema for it.
+    """
+    if intent_param_mode != "required":
+        return ()
+    return (USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME)

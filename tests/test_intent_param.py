@@ -17,6 +17,7 @@ Param names + mechanics match baton-sdk's ``baton.integrations._llm_text`` /
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -31,6 +32,7 @@ import fixture_http_server  # noqa: E402
 
 from baton_proxy._llm_text import (
     build_expected_result_param_description,
+    build_overall_task_param_description,
     build_user_goal_param_description,
 )
 from baton_proxy.config import (
@@ -59,6 +61,9 @@ FIXTURE = HERE / "fixture_server.py"
 # --------------------------------------------------------------------------- #
 
 
+ALL_THREE = (USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME)
+
+
 def _tool(name: str = "t", schema: Any = "default") -> dict[str, Any]:
     t: dict[str, Any] = {"name": name, "description": "d"}
     if schema == "default":
@@ -85,58 +90,52 @@ def test_inject_optional_adds_all_three_params_without_touching_required() -> No
     assert tool["inputSchema"]["required"] == ["x"]
 
 
-def test_inject_required_appends_only_user_goal_to_required() -> None:
+def test_inject_required_appends_all_three_to_required() -> None:
     tool = _tool(schema={"type": "object", "properties": {}, "required": ["x"]})
     assert _inject_goal_params(tool, "required") == {
         USER_GOAL_PARAM_NAME: "injected",
         EXPECTED_RESULT_PARAM_NAME: "injected",
         OVERALL_TASK_PARAM_NAME: "injected",
     }
-    # Only user_goal is forced required — expected_result and overall_task
-    # stay optional even in "required" mode, matching baton-sdk's
-    # _inject_goal_params.
-    assert tool["inputSchema"]["required"] == ["x", USER_GOAL_PARAM_NAME]
+    assert tool["inputSchema"]["required"] == ["x", *ALL_THREE]
+
+
+def test_inject_required_leaves_a_native_param_out_of_required() -> None:
+    tool = _tool(
+        schema={"type": "object", "properties": {EXPECTED_RESULT_PARAM_NAME: {"type": "string"}}}
+    )
+    _inject_goal_params(tool, "required")
+    assert tool["inputSchema"]["required"] == [USER_GOAL_PARAM_NAME, OVERALL_TASK_PARAM_NAME]
 
 
 @pytest.mark.parametrize(
     ("mode", "expected_lead"), [("optional", "OPTIONAL."), ("required", "REQUIRED.")]
 )
-def test_inject_user_goal_description_label_tracks_the_mode(mode: str, expected_lead: str) -> None:
-    """The advertised label has to move with the schema.
-
-    Under ``required`` — this proxy's DEFAULT since 2026-09-01 — the injector
-    appends ``user_goal`` to the tool's ``required`` list, so a description
-    still opening "OPTIONAL." contradicts the schema it ships inside, and the
-    model reads both. Pinned in BOTH directions: the ``optional`` leg is the
-    control that proves the mode is what moves the label, not the injection.
-    """
+def test_inject_description_labels_track_the_mode(mode: str, expected_lead: str) -> None:
+    """Under ``required`` the injector appends all three to the tool's
+    ``required`` list, so a description still opening "OPTIONAL." would
+    contradict the schema it ships inside. The ``optional`` leg is the control
+    that proves the mode moves the label, not the injection."""
     tool = _tool()
     _inject_goal_params(tool, mode)
     props = tool["inputSchema"]["properties"]
 
-    goal_desc = props[USER_GOAL_PARAM_NAME]["description"]
-    assert goal_desc.startswith(expected_lead), f"{mode} mode advertised {goal_desc[:12]!r}"
-    assert goal_desc == build_user_goal_param_description(intent_param_mode=mode)
-    # Only the label moved — the measured sentence after it is identical.
-    assert (
-        goal_desc[len(expected_lead) :] == build_user_goal_param_description()[len("OPTIONAL.") :]
-    )
-
-    # Neither sibling is ever escalated, so neither label ever moves. This is
-    # what separates a label that tracks the SCHEMA from one that tracks the
-    # mode.
-    assert (
-        props[EXPECTED_RESULT_PARAM_NAME]["description"]
-        == build_expected_result_param_description()
-    )
-    assert props[EXPECTED_RESULT_PARAM_NAME]["description"].startswith("OPTIONAL.")
-    assert props[OVERALL_TASK_PARAM_NAME]["description"].startswith("OPTIONAL.")
+    for name, build in (
+        (USER_GOAL_PARAM_NAME, build_user_goal_param_description),
+        (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description),
+        (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description),
+    ):
+        desc = props[name]["description"]
+        assert desc.startswith(expected_lead), f"{name} in {mode} mode: {desc[:12]!r}"
+        assert desc == build(intent_param_mode=mode)
+        # Only the label moved — the measured sentence after it is identical.
+        assert desc[len(expected_lead) :] == build()[len("OPTIONAL.") :]
 
 
 def test_inject_required_creates_required_list_when_absent() -> None:
     tool = _tool()
     _inject_goal_params(tool, "required")
-    assert tool["inputSchema"]["required"] == [USER_GOAL_PARAM_NAME]
+    assert tool["inputSchema"]["required"] == list(ALL_THREE)
 
 
 def test_inject_handles_schemaless_tool() -> None:
@@ -421,21 +420,17 @@ def test_config_defaults_to_required(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_required_is_advertised_and_never_enforced() -> None:
-    """The claim the default flip rests on, and the one that made the flip
-    correct rather than reckless. `required` appends `user_goal` to the
-    schema's advertised list and validates NOTHING — a wrapper that refused a
-    customer's call to collect a telemetry string would be changing how the
-    wrapped server behaves, which is the one thing it promises not to do.
+    """`required` appends the three params to the schema's advertised list and
+    validates NOTHING — a wrapper that refused a customer's call to collect a
+    telemetry string would be changing how the wrapped server behaves, which is
+    the one thing it promises not to do.
 
     Both halves asserted: the schema says required, AND the omitting call is
     served and forwarded untouched."""
     proc, emitter = _processor("required")
     tool = _tool("alpha")
     proc.handle_server_message(_tools_list_response([tool]))
-    assert USER_GOAL_PARAM_NAME in tool["inputSchema"]["required"]
-    # ...and only that one. Promoting the other two would make the
-    # advertisement a lie about three fields instead of a claim about one.
-    assert tool["inputSchema"]["required"] == [USER_GOAL_PARAM_NAME]
+    assert tool["inputSchema"]["required"] == list(ALL_THREE)
 
     action = proc.handle_client_message(_call("alpha", {"text": "hi"}))
     assert action.respond is None, "an omitting call must not be answered by us"
@@ -599,14 +594,10 @@ def _assert_intent_session(by_id: dict[int, dict], events: list[dict]) -> None:
     for name in ("echo", "boom", "softfail", "argkeys"):
         assert USER_GOAL_PARAM_NAME in tools[name]["inputSchema"]["properties"], name
         assert EXPECTED_RESULT_PARAM_NAME in tools[name]["inputSchema"]["properties"], name
-        # Default flipped to `required` 2026-09-01: the ADVERTISED list gains
-        # `user_goal`, and only `user_goal`. The vendor's own required entries
-        # are left alone — `argkeys` declares `text`, and appending to that
-        # list must not rewrite it.
+        # The default is `required`: the ADVERTISED list gains all three. The
+        # vendor's own required entries are left alone.
         advertised = tools[name]["inputSchema"].get("required") or []
-        assert USER_GOAL_PARAM_NAME in advertised, name
-        assert EXPECTED_RESULT_PARAM_NAME not in advertised, name
-        assert OVERALL_TASK_PARAM_NAME not in advertised, name
+        assert set(ALL_THREE) <= set(advertised), name
     # `echo` is the fixture tool that declares a required field of its own
     # (`argkeys` ships `required: []`), so it is the one that can catch a
     # replace-instead-of-append.
@@ -674,9 +665,7 @@ def test_intent_param_e2e_http_bridge() -> None:
 def test_intent_param_e2e_required_mode() -> None:
     by_id, _events = _run_stdio({"BATON_INTENT_PARAM": "required"})
     tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
-    assert USER_GOAL_PARAM_NAME in tools["echo"]["inputSchema"]["required"]
-    # expected_result stays optional even in required mode.
-    assert EXPECTED_RESULT_PARAM_NAME not in tools["echo"]["inputSchema"]["required"]
+    assert set(ALL_THREE) <= set(tools["echo"]["inputSchema"]["required"])
     # The annotate tool's required list is its own contract — untouched.
     assert tools["baton_annotate"]["inputSchema"]["required"] == ["user_goal", "tool_name"]
 
@@ -1059,9 +1048,31 @@ def test_the_injection_carries_the_mode_into_the_rendered_suffix() -> None:
     silent-no-op shape this repo keeps finding."""
     from baton_proxy._llm_text import build_instructions_suffix
 
-    on = _Injection.create(None, proactive_mode="on")
-    off = _Injection.create(None, proactive_mode="off")
-    assert on.instructions_suffix == build_instructions_suffix("baton_annotate", "on")
-    assert off.instructions_suffix == build_instructions_suffix("baton_annotate", "off")
+    on = _Injection.create(None, proactive_mode="on", intent_param_mode="required")
+    off = _Injection.create(None, proactive_mode="off", intent_param_mode="required")
+    no_params = _Injection.create(None, intent_param_mode="off")
+    assert on.instructions_suffix == build_instructions_suffix(
+        "baton_annotate", "on", intent_param_mode="required"
+    )
+    assert off.instructions_suffix == build_instructions_suffix(
+        "baton_annotate", "off", intent_param_mode="required"
+    )
     assert "BEFORE" in on.instructions_suffix
     assert "BEFORE" not in off.instructions_suffix
+    assert "subagent" in off.instructions_suffix
+    assert "subagent" not in no_params.instructions_suffix
+
+
+def test_a_tool_with_its_own_overall_task_is_warned_about(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    proc, _emitter = _processor("required")
+    native = _tool(
+        "native",
+        schema={"type": "object", "properties": {OVERALL_TASK_PARAM_NAME: {"type": "string"}}},
+    )
+    with caplog.at_level(logging.WARNING, logger="baton_proxy"):
+        proc.handle_server_message(_tools_list_response([_tool("plain"), native]))
+    warned = [r.getMessage() for r in caplog.records if "overall_task" in r.getMessage()]
+    assert len(warned) == 1
+    assert "'native'" in warned[0]

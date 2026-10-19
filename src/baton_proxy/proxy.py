@@ -51,6 +51,7 @@ from baton_proxy._llm_text import (
     build_instructions_suffix,
     build_overall_task_param_description,
     build_user_goal_param_description,
+    required_param_names,
 )
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter, utc_now_ms
@@ -179,7 +180,10 @@ class _Injection:
         removes.
         """
         suffix = build_instructions_suffix(
-            ANNOTATE_TOOL_NAME, proactive_mode, event_file_path=event_file_path
+            ANNOTATE_TOOL_NAME,
+            proactive_mode,
+            event_file_path=event_file_path,
+            intent_param_mode=intent_param_mode,
         )
         return cls(
             tools=[_build_injected_tool(ANNOTATE_TOOL_NAME, proactive_mode)],
@@ -376,8 +380,14 @@ def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
             USER_GOAL_PARAM_NAME,
             build_user_goal_param_description(intent_param_mode=mode),
         ),
-        (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description()),
-        (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description()),
+        (
+            EXPECTED_RESULT_PARAM_NAME,
+            build_expected_result_param_description(intent_param_mode=mode),
+        ),
+        (
+            OVERALL_TASK_PARAM_NAME,
+            build_overall_task_param_description(intent_param_mode=mode),
+        ),
     ):
         if name in props:
             dispositions[name] = "native"
@@ -385,13 +395,17 @@ def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
         dispositions[name] = "injected"
         props[name] = {"type": "string", "description": description}
 
-    if mode == "required" and dispositions[USER_GOAL_PARAM_NAME] == "injected":
+    escalated = [
+        name
+        for name in required_param_names(intent_param_mode=mode)
+        if dispositions[name] == "injected"
+    ]
+    if escalated:
         required = schema.get("required")
         if isinstance(required, list):
-            if USER_GOAL_PARAM_NAME not in required:
-                required.append(USER_GOAL_PARAM_NAME)
+            required.extend(name for name in escalated if name not in required)
         else:
-            schema["required"] = [USER_GOAL_PARAM_NAME]
+            schema["required"] = escalated
     return dispositions
 
 
@@ -619,9 +633,9 @@ class MessageProcessor:
         # "native"}, UPSERTED per tools/list response (never cleared —
         # tools/list paginates via cursor, Desktop lazily re-lists,
         # listChanged refires; a clear-per-response would forget
-        # dispositions for tools on other pages). Two params tracked
-        # independently per tool — a tool can natively declare one of
-        # user_goal/expected_result without the other.
+        # dispositions for tools on other pages). Each param is tracked
+        # independently per tool — a tool can natively declare one of them
+        # without the others.
         # Written on the server-message path, read on the client-message path —
         # different pump threads on the stdio transport, hence the lock.
         self._param_registry: dict[str, dict[str, str]] = {}
@@ -1091,6 +1105,7 @@ class MessageProcessor:
                                     OVERALL_TASK_PARAM_NAME,
                                 ]
                             ),
+                            "required_names": sorted(required_param_names(intent_param_mode=mode)),
                             "mode": mode,
                         }
                         if mode != "off"
@@ -1133,6 +1148,16 @@ class MessageProcessor:
             if dispositions:
                 with self._registry_lock:
                     self._param_registry.update(dispositions)
+            for name, tool_dispositions in dispositions.items():
+                if tool_dispositions.get(OVERALL_TASK_PARAM_NAME) == "native":
+                    # The instructions went out at initialize, before any tool
+                    # was listed, so the sentence cannot be taken back here.
+                    logger.warning(
+                        "baton-proxy: tool %r declares its own overall_task, and the "
+                        "instructions ask a subagent to start overall_task with a "
+                        "message number, so that tool's argument may get one",
+                        name,
+                    )
         except Exception:
             logger.exception("baton-proxy: intent param injection failed")
 
