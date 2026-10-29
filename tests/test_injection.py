@@ -98,8 +98,7 @@ def test_the_default_install_serves_only_the_subagent_sentence() -> None:
 
 def test_reports_on_carries_the_annotation_instructions() -> None:
     instructions = _instructions(_run_proxy_with_env(REPORTS_ON))
-    assert "baton_annotate" in instructions
-    assert "MUST" in instructions
+    assert "Use `baton_annotate` to report a tool call on this server" in instructions
 
 
 @pytest.mark.parametrize("report_mode", ["off", "on"])

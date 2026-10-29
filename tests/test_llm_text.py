@@ -80,10 +80,8 @@ def test_instructions_raises_when_tool_name_exceeds_cap() -> None:
 def test_instructions_carry_must_required_framing() -> None:
     """The AFTER/IF MUST/REQUIRED framing drives annotation population —
     milder phrasing empirically under-populates fields. Don't drop it
-    accidentally.
-
-    BEFORE is deliberately absent; see the test below."""
-    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate")
+    accidentally."""
+    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
     assert "AFTER" in rendered
     assert "MUST" in rendered
     assert "REQUIRED" in rendered
@@ -110,35 +108,23 @@ def test_the_pre_call_request_is_gated_on_proactive_mode() -> None:
     # The head moves with it — "record what the user is trying to do" is a
     # promise the reactive-only mode does not keep.
     assert "record what the user is trying to do" in on
-    assert "report when a tool call on this server goes wrong" in off
+    assert "report a tool call on this server that went wrong" in off
 
 
-def test_the_reactive_clauses_survive_both_modes_intact() -> None:
-    """The half that must never be gated. AFTER and IF are the friction
-    signal — the product — and they have no param analogue, so the proactive
-    choice may not weaken them.
-
-    It may touch ONE word. This test asserted byte-identity until 2026-09-01,
-    and that identity was the defect: `again` back-references the pre-call
-    request, so under the shipped `off` default the agent's first instruction
-    was to call the tool "again" with nothing to refer back to. A test that
-    pins a string cannot see what the string MEANS in each mode — so the
-    assertion is now identity modulo that one back-reference, plus the
-    back-reference appearing exactly where it has a referent."""
+def test_the_reactive_clauses_move_to_the_tool_when_reports_only() -> None:
+    """The AFTER and IF clauses are the product signal. With proactive on they
+    stay in the suffix; reports only, each rule is written once, in the tool's
+    description, and the suffix only points at it."""
     on = build_instructions_suffix("baton_annotate", "on", intent_param_mode="off")
     off = build_instructions_suffix("baton_annotate", "off", intent_param_mode="off")
     for clause in ("AFTER any tool", "IF a tool response", "does NOT replace answering"):
-        assert clause in on and clause in off
-    tail = "AFTER any tool"
-    on_tail, off_tail = on[on.index(tail) :], off[off.index(tail) :]
-    # Identical apart from the back-reference: dropping it from `on` must
-    # reproduce `off` exactly, so no other rewrite can hide in this diff.
-    assert on_tail.replace("`baton_annotate` again with", "`baton_annotate` with") == off_tail
-    # And the word itself is gated on having something to point at.
-    assert "again" in on_tail
-    assert "again" not in off
-    # No collapsed spacing where the token was removed.
-    assert "  " not in off
+        assert clause in on
+    for rule in ("AFTER", "MUST", "once per user request", "wrapped in"):
+        assert rule not in off, rule
+    description = build_annotation_tool_description("off")
+    assert "right after a call errors, times out" in description
+    assert "or you had to work around one" in description
+    assert "and still answer the user" in description
 
 
 def test_turning_proactive_off_is_what_buys_the_truncation_headroom() -> None:
@@ -199,22 +185,27 @@ def test_no_tool_is_asked_for_as_the_word_none(proactive_mode: str) -> None:
     instructions = build_instructions_suffix("baton_annotate", proactive_mode)
     description = build_annotation_tool_description(proactive_mode)
 
-    assert "tool_name (none if no tool)" in instructions
-    assert "Write none if no tool exists" in description
+    if proactive_mode == "on":
+        assert "tool_name (none if no tool)" in instructions
+        assert "Write none if no tool exists" in description
+    else:
+        assert "or none if no tool exists" in description
     for text in (instructions, description):
         assert '""' not in text
         assert "mpty string" not in text
 
 
 def test_a_missing_tool_is_reported_once_per_request() -> None:
-    assert "once per user request, not per call" in build_instructions_suffix("baton_annotate")
+    assert "once per user request, not per call" in build_instructions_suffix(
+        "baton_annotate", "on"
+    )
 
 
 def test_instructions_carry_dont_replace_answering_guardrail() -> None:
     """Without the 'doesn't replace answering' clause the agent treats
     the annotation as proxy-satisfaction and stops answering the user —
     documented failure mode from the SDK's iteration history."""
-    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate")
+    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
     assert "does NOT replace answering" in rendered
 
 
@@ -227,7 +218,7 @@ def test_instructions_carry_error_mechanical_trigger() -> None:
     """Errors must remain a mechanical trigger — the strongest clause
     in the original template, and the one Dave's 2026-06-12 live-Claude
     session showed actually firing in practice."""
-    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate")
+    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
     # Phrasing is in the AFTER block: "errors, times out, ...".
     assert "errors" in rendered.lower()
 
@@ -240,7 +231,7 @@ def test_instructions_carry_feature_gap_mechanical_triggers() -> None:
     push-to-user) and never filed a feature_gap because the original
     template lacked a mechanical trigger for the workaround case.
     """
-    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate")
+    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
     # The IF block carries the three concrete gap triggers. Check each.
     assert "lacks a structured field" in rendered
     assert "workaround" in rendered
@@ -297,8 +288,42 @@ def test_a_reports_only_tool_does_not_describe_a_note() -> None:
     """It refuses a note, and a field that says how to send one invites it."""
     description = build_annotation_tool_description()
     assert "proactive" not in description
-    assert "what_happened: REQUIRED on a report. 1-2 plain sentences" in description
-    assert "suggested_improvement: A concrete sentence" in description
+
+
+# The SDK's scored reports-only text, with "on this server" for the vendor name:
+# rewording it needs a new scored run (agent_cost_knobs.md, "Trim the report text").
+REPORTS_ONLY_SUFFIX = (
+    " Use `baton_annotate` to report a tool call on this server that went wrong, or "
+    "a request no tool covers; its description says when and how.\n\nWhen you hand "
+    "work to a subagent that may call this server's tools, tell it the number of the "
+    "user's current message in this conversation, and that it must start user_goal "
+    "with that number on every call to this server's tools. This applies only to "
+    "this server's tools."
+)
+REPORTS_ONLY_TOOL_DESCRIPTION = (
+    "Report a tool call on this server that went wrong, so the team behind this "
+    "server can fix it. Call this right after a call errors, times out, or returns "
+    "an empty, unhelpful or contradictory result. Also call it once per user request "
+    "when no tool or field covers what they asked for, or you had to work around "
+    "one. Do not call it before a tool call or for normal successful work.\n\nA "
+    "report does not replace the work: after it, work out why the call failed, fix "
+    "the input and try again (do not repeat the same failing call), and still answer "
+    "the user.\n\nFields:\n  - user_goal: the same '<n>: <what this call is for>; "
+    "success is <what its result should show>' as on this server's other tools.\n  "
+    "- what_happened: REQUIRED. 1-2 plain sentences in your own words: what you "
+    "asked for, what came back, and why it was unusable. Not a category.\n  - "
+    "tool_name: REQUIRED. The tool on this server that went wrong, or none if no tool "
+    "exists for the request.\n  - suggested_improvement: one concrete sentence on the "
+    "product change that would have helped.\n  - context: supplementary info not "
+    "covered above. Common keys: plan, alternatives_considered, likely_cause, "
+    "user_impact, error_class, downstream_blocked, confidence_in_intent. When no tool "
+    "covers the request also missing_capability_field and requested_capability."
+)
+
+
+def test_reports_only_text_is_the_scored_text() -> None:
+    assert build_instructions_suffix("baton_annotate") == REPORTS_ONLY_SUFFIX
+    assert build_annotation_tool_description() == REPORTS_ONLY_TOOL_DESCRIPTION
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +373,8 @@ def test_the_subagent_sentence_follows_the_clauses_when_params_ride(proactive_mo
     rendered = build_instructions_suffix(
         "baton_annotate", proactive_mode, intent_param_mode="required"
     )
-    assert rendered.endswith("answering.\n\n" + SUBAGENT_SENTENCE)
+    last = {"on": "answering.", "off": "when and how."}[proactive_mode]
+    assert rendered.endswith(last + "\n\n" + SUBAGENT_SENTENCE)
     assert SUBAGENT_SENTENCE not in build_instructions_suffix(
         "baton_annotate", proactive_mode, intent_param_mode="off"
     )
@@ -493,16 +519,15 @@ def test_the_line_sits_after_both_must_clauses() -> None:
 
 
 def test_the_line_does_not_run_into_the_clause_before_it() -> None:
-    """`_REACTIVE_CLAUSES` ends mid-sentence with no break of its own — it was
-    always last. Appending a line that carried its separator at the END rendered
+    """The report text ends with no break of its own. Appending a line that carried its separator at the END rendered
     "...does NOT replace answering.Tool calls and results...", one string with
     two paragraphs jammed together, which every length assertion here passed
     happily. The separator has to LEAD."""
     rendered = build_instructions_suffix(
         "baton_annotate", "off", event_file_path=_DEFAULT_SINK_PATH, intent_param_mode="off"
     )
-    assert "answering.\n\nTool calls" in rendered, repr(rendered[-260:])
-    assert "answering.Tool" not in rendered
+    assert "when and how.\n\nTool calls" in rendered, repr(rendered[-260:])
+    assert "how.Tool" not in rendered
 
 
 def test_the_line_does_not_claim_the_file_holds_only_this_session() -> None:

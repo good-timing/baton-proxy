@@ -6,45 +6,20 @@ the calling agent. Vendors moving from proxy (hosted-eval depth) to SDK
 (deep instrumentation depth) get the same field reference and the same
 behavioral framing — only the deployment shape differs.
 
-**Split of responsibility** (load-bearing under Claude Code's truncation
-cap on ``InitializeResult.instructions``):
+**Reports only** (``proactive_mode="off"``, the default): the instructions
+suffix is one sentence pointing at the annotation tool, and the tool's
+description holds the triggers, the recovery rule and the fields, so each rule
+is written once. The proxy APPENDS to the upstream server's instructions and
+Claude Code truncates the field at ~2,087 from the end, so a short suffix is
+also the one least likely to be cut.
 
-- *Server instructions* (this module's ``build_instructions_suffix``)
-  carry the MUST/REQUIRED behavioral framing — the AFTER/IF triggers,
-  the report fields, and the "annotation doesn't replace answering"
-  guardrail. Loaded once at session init.
+**Proactive** (``proactive_mode="on"``): the suffix carries the BEFORE/AFTER/IF
+triggers, because only text loaded at session start can ask for an annotation
+before the first tool call.
 
-  The BEFORE clause renders only under ``proactive_mode="on"``
-  (``_PROACTIVE_CLAUSE`` below). The injected params carry INTENT on every
-  call and this tool carries FRICTION, so under ``off`` the session loses
-  the agent's turn-opener, not the intent: every tool_call_start carries
-  its call's intent.
-- *Annotation tool description* (this module's
-  ``build_annotation_tool_description``) carries the field-level
-  reference — what belongs in user_goal / what_happened / tool_name /
-  suggested_improvement / context. Loaded by Claude on every call to
-  the annotation tool itself, so this is the right place for the
-  just-in-time field dictionary. Its LEAD varies with ``proactive_mode``,
-  and the field reference describes a note only in the mode that takes one.
-
-**Why not put both in instructions:** empirically the truncation cap
-drops the tail silently, and the proxy APPENDS — on a large enterprise
-server it is this text, at the end, that gets cut. **Why not put the
-behavioral framing in the description:** per-call context overhead, and
-the description is read at *call* time, which is too late for a trigger
-that has to fire before the agent decides to call anything.
-
-**Trigger discipline.** A live-Claude proxy test on 2026-06-12 surfaced
-an asymmetry the original templates baked in: only the
-"if a call returned an error" trigger was mechanical (an observable
-state Claude could check at the end of any tool call); the
-feature-gap path required vigilance, and vigilance loses to task
-completion every time. Three mechanical triggers now sit alongside
-each other in the instructions: (1) error after a call, (2) intent
-satisfied via workaround because no tool matched, (3) user asked for
-something this server can't do. Each is a state Claude can check
-deterministically against its own behavior, on par with "the call
-returned an error".
+Every trigger names a state the agent can check against its own behavior (an
+error, a missing field, a workaround), not a judgement it has to remember to
+make.
 """
 
 from __future__ import annotations
@@ -56,13 +31,8 @@ from __future__ import annotations
 #      concatenate cleanly onto a trailing-stop upstream value.
 #   2. There's no per-vendor display name plumbed through the proxy
 #      (the proxy is opaque to the wrapped server's identity), so the
-#      template uses neutral "any tool on this server" phrasing instead
-#      of the SDK's "{vendor_display_name} tool".
-# Two heads and one gated clause, selected by ``proactive_mode`` — a
-# leg-for-leg port of baton-sdk's ``build_server_instructions``. The head
-# differs only in what it promises the tool is for: with proactive on it
-# records intent AND outcomes; with it off the injected params carry intent
-# and the tool is the friction channel alone.
+#      template uses neutral "on this server" phrasing instead of the SDK's
+#      "{vendor_display_name} tool".
 _HEAD_PROACTIVE = (
     " This server is wrapped in the Baton usage and friction proxy. Use "
     "`{annotation_tool_name}` to record what the user is trying to do "
@@ -71,12 +41,11 @@ _HEAD_PROACTIVE = (
     "that tool's description for field-level detail.\n\n"
 )
 
-_HEAD_REACTIVE_ONLY = (
-    " This server is wrapped in the Baton usage and friction proxy. Use "
-    "`{annotation_tool_name}` to report when a tool call on this server "
-    "goes wrong, or when a tool you needed does not exist, so the team "
-    "behind this server can improve it. See that tool's description for "
-    "field-level detail.\n\n"
+# The whole report suffix under proactive_mode="off". Holds no report rule:
+# each is written once, in the tool's description.
+_REPORT_POINTER = (
+    " Use `{annotation_tool_name}` to report a tool call on this server that went "
+    "wrong, or a request no tool covers; its description says when and how."
 )
 
 # Rendered only when proactive_mode == "on".
@@ -99,19 +68,10 @@ _PROACTIVE_CLAUSE = (
     "`{annotation_tool_name}` with user_goal (REQUIRED).\n\n"
 )
 
-# Always present, in both modes — this is the product signal, and it has no
-# param analogue.
-#
-# ONE WORD VARIES, and it is a back-reference rather than a rewrite: `again`
-# points at the pre-call request, so under ``proactive_mode="off"`` — the
-# default since 2026-09-01 — it pointed at a paragraph that no longer renders.
-# The agent's first instruction was to do a thing "again" it had never been
-# asked to do once, while the tool description one field over said "Do NOT call
-# it before a tool call". Found in review 2026-09-01, live on every wrap.
 _REACTIVE_CLAUSES = (
     "AFTER any tool on this server errors, times out, returns an "
     "unhelpful or contradictory result, or the user shows signs of "
-    "giving up, you MUST call `{annotation_tool_name}` {again}with "
+    "giving up, you MUST call `{annotation_tool_name}` again with "
     "what_happened (REQUIRED, your own words, NOT a category), tool_name "
     "(REQUIRED) and suggested_improvement (REQUIRED whenever you can "
     "articulate one).\n\n"
@@ -126,16 +86,6 @@ _REACTIVE_CLAUSES = (
 )
 
 
-# The annotation tool's two description leads, selected by the same
-# ``proactive_mode``. Ported from baton-sdk's ``_ANNOTATION_LEAD_PROACTIVE`` /
-# ``_ANNOTATION_LEAD_REACTIVE_ONLY``.
-#
-# `off` reframes the tool as the friction channel alone, which is also what the
-# handler then enforces — text is only a request.
-#
-# `user_goal` stays required in BOTH leads: a friction report still has to say
-# what was being attempted, and by then the params have carried it once
-# already. That duplication is cheap; a signal with no subject is not.
 _ANNOTATION_LEAD_PROACTIVE = (
     "Record structured signal about a tool call on this server — what "
     "the user is trying to do, and how it went. Populate proactively "
@@ -143,32 +93,52 @@ _ANNOTATION_LEAD_PROACTIVE = (
     "unhelpful (what_happened + tool_name + suggested_improvement).\n"
 )
 
-_ANNOTATION_LEAD_REACTIVE_ONLY = (
-    "Report a tool call on this server that went wrong — call this AFTER a "
-    "call returns an unhelpful, empty, failed or contradictory result, or "
-    "when no tool covers what the user asked for. Do NOT call it before a "
-    "tool call or to narrate normal successful work. What the user is trying "
-    "to do is already recorded on each tool call.\n"
-)
+# The Console splits user_goal on "; success is" (SPEC §11.5.1 rule 2).
+_USER_GOAL_FORMAT = "'<n>: <what this call is for>; success is <what its result should show>'"
 
-_DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
-    "{lead}"
-    "\n"
-    "Fields:\n"
-    "  - user_goal: {user_goal}\n"
-    "  - what_happened: REQUIRED on a report{omit_on_a_note}. "
-    "1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
-    "what came back, and why it was unusable. Do NOT pick a category or "
-    "invent a label — describe it.\n"
-    "  - tool_name: REQUIRED on a report. The tool on this server that went "
-    "wrong. Write none if no tool exists for the request.\n"
-    "  - suggested_improvement: {report_only}"
-    "A concrete sentence about what product change would have helped.\n"
+# Without its key list, no report put a diagnosis in context.
+_CONTEXT_FIELD = (
     "  - context: supplementary info not covered above. Common keys: "
     "plan, alternatives_considered, likely_cause, user_impact, "
     "error_class, downstream_blocked, confidence_in_intent. When no tool "
     "covers the request also missing_capability_field and "
     "requested_capability."
+)
+
+_PROACTIVE_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
+    _ANNOTATION_LEAD_PROACTIVE + "\n"
+    "Fields:\n"
+    "  - user_goal: {user_goal}\n"
+    "  - what_happened: REQUIRED on a report — omit on a proactive annotation. "
+    "1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
+    "what came back, and why it was unusable. Do NOT pick a category or "
+    "invent a label — describe it.\n"
+    "  - tool_name: REQUIRED on a report. The tool on this server that went "
+    "wrong. Write none if no tool exists for the request.\n"
+    "  - suggested_improvement: reactive-only — omit on a proactive. "
+    "A concrete sentence about what product change would have helped.\n" + _CONTEXT_FIELD
+)
+
+# The SDK's scored report-tool text, with "on this server" for the vendor name.
+_REPORT_TOOL_DESCRIPTION = (
+    "Report a tool call on this server that went wrong, so the team behind this "
+    "server can fix it. Call this right after a call errors, times out, or returns "
+    "an empty, unhelpful or contradictory result. Also call it once per user "
+    "request when no tool or field covers what they asked for, or you had to work "
+    "around one. Do not call it before a tool call or for normal successful work.\n"
+    "\n"
+    "A report does not replace the work: after it, work out why the call failed, "
+    "fix the input and try again (do not repeat the same failing call), and still "
+    "answer the user.\n"
+    "\n"
+    "Fields:\n"
+    "  - user_goal: the same " + _USER_GOAL_FORMAT + " as on this server's other tools.\n"
+    "  - what_happened: REQUIRED. 1-2 plain sentences in your own words: what you "
+    "asked for, what came back, and why it was unusable. Not a category.\n"
+    "  - tool_name: REQUIRED. The tool on this server that went wrong, or none if "
+    "no tool exists for the request.\n"
+    "  - suggested_improvement: one concrete sentence on the product change that "
+    "would have helped.\n" + _CONTEXT_FIELD
 )
 
 
@@ -326,15 +296,11 @@ def build_instructions_suffix(
 
 
 def _render_report_text(annotation_tool_name: str, proactive_mode: str) -> str:
-    head = _HEAD_PROACTIVE if proactive_mode == "on" else _HEAD_REACTIVE_ONLY
-    clause = _PROACTIVE_CLAUSE if proactive_mode == "on" else ""
-    rendered = (head + clause + _REACTIVE_CLAUSES).format(
-        annotation_tool_name=annotation_tool_name,
-        # The back-reference only has a referent when the clause above it
-        # rendered. Trailing space lives in the token so `off` leaves no
-        # double space behind.
-        again="again " if proactive_mode == "on" else "",
-    )
+    if proactive_mode == "on":
+        template = _HEAD_PROACTIVE + _PROACTIVE_CLAUSE + _REACTIVE_CLAUSES
+    else:
+        template = _REPORT_POINTER
+    rendered = template.format(annotation_tool_name=annotation_tool_name)
     if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:
         raise ValueError(
             f"Rendered instructions suffix is {len(rendered)} chars, which "
@@ -348,20 +314,15 @@ def _render_report_text(annotation_tool_name: str, proactive_mode: str) -> str:
 def build_annotation_tool_description(proactive_mode: str = "off") -> str:
     """Build the annotation tool's ``description`` field.
 
-    ``proactive_mode="off"`` swaps the lead for the reactive-only one and
-    drops every mention of a note from the field reference: a reports-only
-    tool refuses a note, so its fields must not describe one.
-
-    No vendor placeholder — the proxy is opaque to the wrapped server's
-    identity, so the field reference uses neutral "this server" phrasing.
+    ``proactive_mode="off"`` makes it the report tool, holding the report rules
+    the suffix only points at. Its ``user_goal`` line refers to the other tools'
+    template, which they always carry: config refuses ``BATON_INTENT_PARAM=off``.
     """
-    takes_notes = proactive_mode == "on"
-    return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
-        lead=_ANNOTATION_LEAD_PROACTIVE if takes_notes else _ANNOTATION_LEAD_REACTIVE_ONLY,
-        user_goal=_USER_GOAL_PARAM_BODY,
-        omit_on_a_note=" — omit on a proactive annotation" if takes_notes else "",
-        report_only="reactive-only — omit on a proactive. " if takes_notes else "",
-    )
+    if proactive_mode == "on":
+        return _PROACTIVE_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
+            user_goal=_USER_GOAL_PARAM_BODY
+        )
+    return _REPORT_TOOL_DESCRIPTION
 
 
 # Per-tool injected params. Unlike instructions, this text rides IN each tool's
@@ -391,8 +352,7 @@ RETIRED_PARAM_NAMES = (EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME)
 #
 # Do not reword without scoring the result on live agents.
 _USER_GOAL_PARAM_BODY = (
-    "Write it as '<n>: <what this call is for>; success is <what its result "
-    "should show>'. n is the number of the user's current message in this "
+    f"Write it as {_USER_GOAL_FORMAT}. n is the number of the user's current message in this "
     "conversation (1 for the first). Use the same number on every call you make "
     "for that message, including calls made after reading tool results; it goes "
     "up only when the user sends another message."

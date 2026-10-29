@@ -37,6 +37,11 @@ baton-sdk 0.8.22's one numbered `user_goal` and 0.8.23's opt-in reports.
 - `intent_source` is set when any of the three values arrives, as in
   baton-sdk; it ignored `call_workflow` before.
 - **`baton-spec` moves to `bf26c5a`.** No schema shape change for the proxy.
+- **With `BATON_ANNOTATE=on` and `BATON_PROACTIVE=off`, the text is shorter.**
+  The instructions suffix is one sentence pointing at `baton_annotate`, and the
+  tool's description holds when to report, how to keep going after a report,
+  and the fields: baton-sdk's scored text, with "on this server" for the vendor
+  name. `BATON_PROACTIVE=on` is unchanged.
 
 ### Fixed
 

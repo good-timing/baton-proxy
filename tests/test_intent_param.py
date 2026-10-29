@@ -969,7 +969,7 @@ def test_the_tool_description_changes_with_the_mode_but_the_fields_do_not() -> N
     off = _build_injected_tool("baton_annotate", "off")["description"]
 
     assert "Populate proactively" in on
-    assert "Do NOT call it before a tool call" in off
+    assert "Do not call it before a tool call" in off
     assert "Populate proactively" not in off
     for field in ("user_goal", "what_happened", "tool_name"):
         assert field in on and field in off
