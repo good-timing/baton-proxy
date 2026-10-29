@@ -29,7 +29,11 @@ baton-sdk 0.8.22's one numbered `user_goal` and 0.8.23's opt-in reports.
   tool and the suffix as before. `BATON_PROACTIVE=on` has no effect without it,
   and warns. To keep receiving agent reports, set `BATON_ANNOTATE=on`.
 - **The try kit sets `BATON_ANNOTATE=on`** in the entry it writes, so a trial
-  keeps the agent's reports. `try/SECURITY.md` §3 says so.
+  keeps the agent's reports. Running `setup` again on a trial an older kit
+  wrapped adds it, unless the entry already sets it. On a trial this kit
+  wrapped, setup never puts it back. Setting or removing it by hand no longer
+  makes `setup` or `uninstall` refuse the entry. `try/SECURITY.md` §3
+  says so.
 - `intent_source` is set when any of the three values arrives, as in
   baton-sdk; it ignored `call_workflow` before.
 - **`baton-spec` moves to `bf26c5a`.** No schema shape change for the proxy.

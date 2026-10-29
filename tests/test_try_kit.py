@@ -7741,3 +7741,60 @@ def test_the_doc_says_to_keep_the_quotes_and_not_only_shows_them():
         "the rule no longer tells the agent the two quoting strategies AGREE, which is "
         "the sentence that stops it from editing the kit's line"
     )
+
+
+def _wrapped_env(state: dict) -> dict:
+    data = json.loads(Path(state["config_path"]).read_text(encoding="utf-8"))
+    return kit.entry_at(data, state["scope"])[state["server_name"]]["env"]
+
+
+def _edit_wrapped_env(state: dict, edit) -> None:
+    path = Path(state["config_path"])
+    data = json.loads(path.read_text(encoding="utf-8"))
+    edit(kit.entry_at(data, state["scope"])[state["server_name"]]["env"])
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def test_setup_turns_on_reports_in_a_wrap_an_older_kit_wrote(tmp_path, kit_home, capsys):
+    path = _project_config(tmp_path, "/Users/someone/work/app")
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    state = kit.load_state()
+    _edit_wrapped_env(state, lambda env: env.pop("BATON_ANNOTATE"))
+    del state["wrapped_entry"]["env"]["BATON_ANNOTATE"]
+    kit.write_state_file(state)
+    capsys.readouterr()
+
+    assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
+    out, _err = capsys.readouterr()
+    assert "Turned on the agent's reports (BATON_ANNOTATE=on)" in out
+    state = kit.load_state()
+    assert _wrapped_env(state)["BATON_ANNOTATE"] == "on"
+    assert state["wrapped_entry"]["env"]["BATON_ANNOTATE"] == "on"
+
+
+def test_setup_keeps_a_reports_setting_made_by_hand(tmp_path, kit_home, capsys):
+    path = _project_config(tmp_path, "/Users/someone/work/app")
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    state = kit.load_state()
+    _edit_wrapped_env(state, lambda env: env.update(BATON_ANNOTATE="off"))
+    capsys.readouterr()
+
+    assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
+    out, _err = capsys.readouterr()
+    assert "Nothing changed" in out
+    assert '"BATON_ANNOTATE": "off"' in out
+    assert _wrapped_env(kit.load_state())["BATON_ANNOTATE"] == "off"
+    assert kit.main(["uninstall"]) == 0
+
+
+def test_setup_leaves_reports_off_when_the_person_removed_the_key(tmp_path, kit_home, capsys):
+    path = _project_config(tmp_path, "/Users/someone/work/app")
+    assert kit.main(["setup", "notion", "--src-config", str(path), "--tenant", "t"]) == 0
+    state = kit.load_state()
+    _edit_wrapped_env(state, lambda env: env.pop("BATON_ANNOTATE"))
+    capsys.readouterr()
+
+    assert kit.main(["setup", "notion", "--src-config", str(path)]) == 0
+    out, _err = capsys.readouterr()
+    assert "Nothing changed" in out
+    assert "BATON_ANNOTATE" not in _wrapped_env(kit.load_state())

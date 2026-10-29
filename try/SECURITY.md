@@ -212,7 +212,9 @@ server.
   record where a tool call went wrong. Its only effect is a line in the local
   event file. The proxy adds it only with `BATON_ANNOTATE=on`, which the kit
   writes into the wrapped entry (`kit.py`, `build_wrapped_entry`); without it,
-  no tool is added.
+  no tool is added. Running `setup` again on a trial wrapped by an older kit
+  adds it to that entry (`turn_on_reports`), unless you have set it yourself.
+  On a trial this kit wrapped, the value is yours: setup never puts it back.
 
 There were two until 2026-09-27. The second, `baton_session_report`, rendered a
 markdown summary of the session by reading the local event file, and was

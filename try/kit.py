@@ -1526,16 +1526,26 @@ def approval_step(folder: Path) -> str:
     )
 
 
-def is_still_our_wrap(current: dict | None, state: dict) -> bool:
-    """Is the entry on disk the one setup wrote, untouched since?
+def _ignoring_annotate(entry: Any) -> Any:
+    """The entry without ``BATON_ANNOTATE``, which is the person's to change."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("env"), dict):
+        return entry
+    env = {k: v for k, v in entry["env"].items() if k != "BATON_ANNOTATE"}
+    return {**entry, "env": env}
 
-    One predicate, two callers — `apply_unwrap` before it restores, and
-    `remove_project_config` before it deletes. Both had the comparison written
-    out, and both use it to decide the same thing: whether a person has been in
-    there by hand, which is the case where guessing is worst. A definition that
-    changed in one copy and not the other would make one path refuse when it
-    should not, and the other delete something it should not have touched."""
-    return current == state["wrapped_entry"]
+
+def is_still_our_wrap(current: dict | None, state: dict) -> bool:
+    """Is the entry on disk the one setup wrote, untouched since apart from
+    ``BATON_ANNOTATE``?
+
+    One predicate for every caller — `apply_unwrap` before it restores,
+    `remove_project_config` before it deletes, and `wrap_still_present` before
+    setup says the wrap is in place. All decide the same thing: whether a person
+    has been in there by hand, which is the case where guessing is worst. A
+    definition that changed in one copy and not another would make one path
+    refuse when it should not, and another delete something it should not have
+    touched."""
+    return _ignoring_annotate(current) == _ignoring_annotate(state["wrapped_entry"])
 
 
 def entry_home(scope: str | None, config_path: str | Path) -> Path | None:
@@ -1996,8 +2006,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
             )
         print(f"Already wrapped: `{state['server_name']}` since {state['wrapped_at']}.")
         print(f"  config: {describe(Path(state['config_path']), state['scope'])}")
-        print("\nNothing changed. Current entry:\n")
-        print(entry_json(state["wrapped_entry"]))
+        if turn_on_reports(state):
+            print("\nTurned on the agent's reports (BATON_ANNOTATE=on). Current entry:\n")
+        else:
+            print("\nNothing changed. Current entry:\n")
+        print(entry_json(current_entry(state) or state["wrapped_entry"]))
         print(f"\n{RESTART_NOTE}")
         # The handoff again, not only on the first run. Someone re-running setup
         # days later has usually lost the window that carried it — a multi-day
@@ -2270,13 +2283,47 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
-def wrap_still_present(state: dict) -> bool:
-    """Is the entry setup wrote still exactly what is in the config?"""
+def current_entry(state: dict) -> dict | None:
+    """The wrapped server's entry as it is on disk now, or None if unreadable."""
     try:
         data = json.loads(Path(state["config_path"]).read_text(encoding="utf-8"))
-        return entry_at(data, state["scope"]).get(state["server_name"]) == state["wrapped_entry"]
+        return entry_at(data, state["scope"]).get(state["server_name"])
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def wrap_still_present(state: dict) -> bool:
+    """Is the entry setup wrote still what is in the config?"""
+    current = current_entry(state)
+    return current is not None and is_still_our_wrap(current, state)
+
+
+def turn_on_reports(state: dict) -> bool:
+    """Add ``BATON_ANNOTATE=on`` when setup recorded a wrap without it.
+
+    Returns whether the config changed. When setup recorded the key, whatever
+    the entry holds now, the key or its absence, is the person's choice."""
+    if "BATON_ANNOTATE" in (state["wrapped_entry"].get("env") or {}):
         return False
+    path = Path(state["config_path"])
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = json.loads(text)
+        entry = entry_at(data, state["scope"])[state["server_name"]]
+        env = entry.setdefault("env", {})
+        if "BATON_ANNOTATE" in env:
+            return False
+        env["BATON_ANNOTATE"] = "on"
+        write_atomically(path, dumps_like(data, text))
+    except (OSError, ValueError, KeyError, TypeError) as err:
+        raise Refuse(
+            f"could not turn on the agent's reports in {path}: {err}\n"
+            "  → your entry is unchanged. Run setup again, or add\n"
+            '    "BATON_ANNOTATE": "on" to its env by hand.'
+        ) from None
+    state["wrapped_entry"] = entry
+    write_state_file(state)
+    return True
 
 
 def cmd_receipt(args: argparse.Namespace) -> int:
