@@ -48,21 +48,10 @@ _REPORT_POINTER = (
     "wrong, or a request no tool covers; its description says when and how."
 )
 
-# Rendered only when proactive_mode == "on".
-#
-# WHY IT IS GATED RATHER THAN DELETED. It names the same field the
-# injected param already carries on every call, so it teaches the agent that
-# intent is the annotation tool's job, and agents then file pre-call
-# annotations instead of friction signals. It also costs 260 of the suffix's
-# chars, which is not free: the proxy APPENDS to the upstream server's own
-# instructions, and Claude Code truncates the field at ~2,087, so on a large
-# server it is the tail — our framing — that is silently cut.
-#
-# Both of those are arguments for turning it OFF, not for removing the choice.
-# The proxy fronts servers its operator does not own, and agent-authored
-# proactive annotations supply ~54% of turn boundaries (SPEC §11.5 tier 2), so
-# deleting it outright would take that from every existing wrap on the next
-# restart with nobody choosing it. It is the knob's job, exactly as in the SDK.
+# Rendered only when proactive_mode == "on". Gated rather than deleted: it
+# teaches the agent that intent is the annotation tool's job, which argues for
+# off by default, but agent-authored proactive annotations still mark turn
+# boundaries (SPEC §11.5 tier 2) on wraps whose operator chose them.
 _PROACTIVE_CLAUSE = (
     "BEFORE invoking any tool on this server, you MUST call "
     "`{annotation_tool_name}` with user_goal (REQUIRED).\n\n"
@@ -274,14 +263,8 @@ def build_instructions_suffix(
     if intent_param_mode != "off":
         rendered += _INSTRUCTIONS_SUBAGENT_CLAUSE
     if event_file_path:
-        # Spliced into the ALREADY-FORMATTED string, so the path never sits
-        # inside the multi-field template above. That template is formatted with
-        # `annotation_tool_name` and `again`, so a `{` or `}` in the operator's
-        # sink path would raise KeyError out of it — at injection time, on the
-        # handshake, over a punctuation character in a directory name. Composing
-        # the line here rather than adding it to that template is the whole
-        # guard; `.replace` vs `.format` on this line alone is not, since
-        # `.format` does not re-process what it substitutes in.
+        # Spliced into the already-formatted report text: a `{` or `}` in the
+        # operator's sink path would make `.format` on that template raise.
         line = _EVENT_FILE_LINE.replace("{event_file_path}", event_file_path)
         if len(rendered) + len(line) <= _CLAUDE_CODE_TRUNCATION_CAP:
             rendered += line
@@ -309,7 +292,8 @@ def build_annotation_tool_description(proactive_mode: str = "off") -> str:
 
     ``proactive_mode="off"`` makes it the report tool, holding the report rules
     the suffix only points at. Its ``user_goal`` line refers to the other tools'
-    template, which they always carry: config refuses ``BATON_INTENT_PARAM=off``.
+    template, which they always carry: config coerces ``BATON_INTENT_PARAM=off``
+    to the default.
     """
     if proactive_mode == "on":
         return _PROACTIVE_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
@@ -339,9 +323,9 @@ RETIRED_PARAM_NAMES = (EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME)
 # clone has no siblings to read), so change all three together.
 #
 # The leading number says which user message the call answers, and the
-# Console cuts a turn where it changes (SPEC §11.5.1 rule 2). The Console
-# splits the rest on "; success is". Only the leading label tracks
-# ``intent_param_mode``, so it agrees with the schema's ``required`` list.
+# Console cuts a turn where it changes (SPEC §11.5.1 rule 2). Only the leading
+# label tracks ``intent_param_mode``, so it agrees with the schema's ``required``
+# list.
 #
 # Do not reword without scoring the result on live agents.
 _USER_GOAL_PARAM_BODY = (

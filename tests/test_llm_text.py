@@ -10,13 +10,11 @@ so the two modules stay coherent. Load-bearing properties:
 - ``build_instructions_suffix`` MUST raise if rendered output would
   exceed the cap, rather than silently returning a string Claude Code
   will truncate mid-sentence.
-- The AFTER/IF MUST/REQUIRED behavioral framing is load-bearing —
+- Reports only (the default), the suffix is one pointer sentence and the
+  report rules live in the tool's description; both texts are pinned whole.
+- Proactive, the suffix carries the BEFORE/AFTER/IF MUST/REQUIRED framing —
   milder framing under-populates fields, and the IF clause is the
-  feature_gap mechanical trigger surfaced by the 2026-06-12 live-Claude
-  proxy test on Notion MCP. The BEFORE trigger was DROPPED 2026-09-01
-  (D7) and its absence is now itself pinned, below: intent rides the
-  injected params, and the suffix asking for it again taught the agent
-  otherwise.
+  feature_gap mechanical trigger.
 - The agent describes the problem and the collector groups it (SPEC
   §11.5.5): no text offers ``signal_type`` or a category to pick.
 - The "annotation doesn't replace answering" guardrail is load-bearing —
@@ -55,11 +53,14 @@ def test_instructions_under_truncation_cap() -> None:
     assert len(rendered) <= _INSTRUCTIONS_LENGTH_CAP
 
 
-def test_instructions_under_cap_with_long_annotation_tool_name() -> None:
+@pytest.mark.parametrize("proactive_mode", ["off", "on"])
+def test_instructions_under_cap_with_long_annotation_tool_name(proactive_mode: str) -> None:
     """A reasonably-long vendor-prefixed annotate name (per the
     `{vendor_id}_annotate` convention) must still fit under the cap."""
     rendered = build_instructions_suffix(
         annotation_tool_name="very_long_vendor_display_name_annotate",
+        proactive_mode=proactive_mode,
+        intent_param_mode="off",
     )
     assert len(rendered) <= _INSTRUCTIONS_LENGTH_CAP
 
@@ -88,16 +89,9 @@ def test_instructions_carry_must_required_framing() -> None:
 
 
 def test_the_pre_call_request_is_gated_on_proactive_mode() -> None:
-    """The whole of D7's separation, and it is a KNOB rather than a deletion —
-    leg-for-leg the same choice baton-sdk's ``build_server_instructions``
-    makes, so one agent meeting both producers reads one rule.
-
-    Why the paragraph is worth turning off: it names the same field the
-    injected param carries on every call, so it teaches the agent that intent is
-    the annotation tool's job: sessions that had it filed pre-call annotations
-    and no reports. Why it is not deleted: agent-authored proactives supply
-    ~54% of turn boundaries, and the proxy fronts servers its operator does not
-    own."""
+    """A knob rather than a deletion, leg-for-leg the same choice baton-sdk's
+    ``build_server_instructions`` makes, so one agent meeting both producers
+    reads one rule."""
     on = build_instructions_suffix("baton_annotate", "on", intent_param_mode="off")
     off = build_instructions_suffix("baton_annotate", "off", intent_param_mode="off")
 
@@ -105,8 +99,7 @@ def test_the_pre_call_request_is_gated_on_proactive_mode() -> None:
     assert "BEFORE" not in off
     assert "with user_goal (REQUIRED)" in on
     assert "user_goal" not in off
-    # The head moves with it — "record what the user is trying to do" is a
-    # promise the reactive-only mode does not keep.
+    # "record what the user is trying to do" is a promise reports-only does not keep.
     assert "record what the user is trying to do" in on
     assert "report a tool call on this server that went wrong" in off
 
@@ -128,12 +121,9 @@ def test_the_reactive_clauses_move_to_the_tool_when_reports_only() -> None:
 
 
 def test_turning_proactive_off_is_what_buys_the_truncation_headroom() -> None:
-    """The cost side of the knob, and the reason someone would flip it on a
-    large server. The proxy APPENDS its suffix, and Claude Code truncates
-    `instructions` at ~2,087 chars — workfront's rendered value measured 4,408
-    on 2026-09-01 — so on an enterprise server it is our framing, at the end,
-    that is silently cut. `off` takes ~130 chars off the suffix, and
-    BATON_ANNOTATE=off takes all but the subagent sentence."""
+    """The proxy APPENDS its suffix and Claude Code truncates `instructions`
+    from the end, so on a server with long instructions of its own it is our
+    text that is cut."""
     on = build_instructions_suffix("baton_annotate", "on", intent_param_mode="off")
     off = build_instructions_suffix("baton_annotate", "off", intent_param_mode="off")
     assert len(on) - len(off) > 100, (
@@ -143,11 +133,7 @@ def test_turning_proactive_off_is_what_buys_the_truncation_headroom() -> None:
 
 
 def test_the_default_renders_no_pre_call_request() -> None:
-    """Both producers now default `off`, so the proxy and the SDK agree on the
-    legs AND on the default. Flipped 2026-09-01 on the verification run: the
-    paragraph did not add intent, it moved `expected_result` out of the
-    per-call record (3/3 to 0/5) while `user_goal` held at 8/8 on the strength
-    of the schema advertisement alone."""
+    """The proxy and the SDK agree on the legs AND on the default."""
     from baton_proxy.config import DEFAULT_PROACTIVE_MODE
 
     assert DEFAULT_PROACTIVE_MODE == "off"
@@ -215,9 +201,8 @@ def test_instructions_carry_dont_replace_answering_guardrail() -> None:
 
 
 def test_instructions_carry_error_mechanical_trigger() -> None:
-    """Errors must remain a mechanical trigger — the strongest clause
-    in the original template, and the one Dave's 2026-06-12 live-Claude
-    session showed actually firing in practice."""
+    """Errors must remain a mechanical trigger: an observable state the agent
+    can check at the end of any call."""
     rendered = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
     # Phrasing is in the AFTER block: "errors, times out, ...".
     assert "errors" in rendered.lower()
@@ -225,12 +210,8 @@ def test_instructions_carry_error_mechanical_trigger() -> None:
 
 def test_instructions_carry_feature_gap_mechanical_triggers() -> None:
     """Three observable conditions an agent can check against its own
-    behavior, on par with 'the call returned an error'. Surfaced by the
-    proxy's 2026-06-12 live-Claude test on Notion MCP: the agent
-    successfully routed around a missing capability (Neuralink-style
-    push-to-user) and never filed a feature_gap because the original
-    template lacked a mechanical trigger for the workaround case.
-    """
+    behavior, on par with 'the call returned an error'. Without the workaround
+    trigger, an agent that routes around a missing capability files nothing."""
     rendered = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
     # The IF block carries the three concrete gap triggers. Check each.
     assert "lacks a structured field" in rendered
@@ -259,16 +240,8 @@ def test_description_carries_field_reference() -> None:
 
 
 def test_description_does_not_duplicate_triggers() -> None:
-    """Triggers belong in instructions (loaded once at session init, drives
-    the first proactive annotation). Description is read at call time —
-    too late to drive 'should I call this at all'. Don't duplicate the
-    behavioral framing; it's just per-call context overhead."""
-    description = build_annotation_tool_description()
-    # The description shouldn't carry the instructions' MUST framing. Checked
-    # against the PROACTIVE description: the reactive-only one (the default
-    # since 2026-09-01) says "call this AFTER a call returns…" in its own lead,
-    # which is the tool telling the agent when it applies rather than a
-    # duplicated trigger — so the bare-word check would fire on the fix.
+    """Proactive only: the suffix carries the triggers, so the description must
+    not repeat them. Reports only, the description holds them by design."""
     description = build_annotation_tool_description("on")
     assert "BEFORE" not in description
     assert "AFTER" not in description
@@ -291,7 +264,7 @@ def test_a_reports_only_tool_does_not_describe_a_note() -> None:
 
 
 # The SDK's scored reports-only text, with "on this server" for the vendor name:
-# rewording it needs a new scored run (agent_cost_knobs.md, "Trim the report text").
+# rewording it needs a new scored run.
 REPORTS_ONLY_SUFFIX = (
     " Use `baton_annotate` to report a tool call on this server that went wrong, or "
     "a request no tool covers; its description says when and how.\n\nWhen you hand "
@@ -519,10 +492,8 @@ def test_the_line_sits_after_both_must_clauses() -> None:
 
 
 def test_the_line_does_not_run_into_the_clause_before_it() -> None:
-    """The report text ends with no break of its own. Appending a line that carried its separator at the END rendered
-    "...does NOT replace answering.Tool calls and results...", one string with
-    two paragraphs jammed together, which every length assertion here passed
-    happily. The separator has to LEAD."""
+    """The report text ends with no break of its own, so the line's separator
+    has to lead."""
     rendered = build_instructions_suffix(
         "baton_annotate", "off", event_file_path=_DEFAULT_SINK_PATH, intent_param_mode="off"
     )
