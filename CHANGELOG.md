@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+baton-sdk 0.8.22's one numbered `user_goal` and 0.8.23's opt-in reports.
+
+### Changed
+
+- **One injected param, `user_goal`, written as `'<n>: <what this call is
+  for>; success is <what its result should show>'`.** `n` numbers the user's
+  message (SPEC §11.5.1 rule 2). `expected_result` and `overall_task` are no
+  longer injected, and `baton_annotate` no longer takes them. A client holding
+  a tool list from before may still send them: they are removed before the call
+  is forwarded and recorded as `call_expected` and `call_workflow`. A tool that
+  declares one of them itself keeps it. A call made before the proxy has seen
+  the tool listed has them stripped too: unlike baton-sdk, the proxy cannot
+  read the upstream's schema, and a strict upstream refuses a name it never
+  declared. The subagent sentence names `user_goal`.
+  The `user_goal` description and the subagent sentence are byte-identical
+  to baton-sdk 0.8.23's.
+- **`baton_annotate` is off by default.** The new `BATON_ANNOTATE` turns it
+  on. `off` (the default) serves no tool, and the instructions suffix is the
+  subagent sentence and, with a file sink, the event-file line. `on` serves the
+  tool and the suffix as before. `BATON_PROACTIVE=on` has no effect without it,
+  and warns. To keep receiving agent reports, set `BATON_ANNOTATE=on`.
+- **The try kit sets `BATON_ANNOTATE=on`** in the entry it writes, so a trial
+  keeps the agent's reports. `try/SECURITY.md` §3 says so.
+- `intent_source` is set when any of the three values arrives, as in
+  baton-sdk; it ignored `call_workflow` before.
+- **`baton-spec` moves to `bf26c5a`.** No schema shape change for the proxy.
+
+### Fixed
+
+- With `BATON_ANNOTATE=on`, a server with no instructions of its own got ours
+  with a leading space.
+
 ## [0.6.18] — 2026-10-19
 
 ### Changed

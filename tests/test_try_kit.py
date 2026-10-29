@@ -280,6 +280,15 @@ def test_baton_vars_are_written_last_so_a_stray_value_cannot_shadow_them():
     assert e["env"]["BATON_TENANT_ID"] == "trial-abc123"
 
 
+def test_the_wrap_turns_the_agents_reports_on():
+    """The proxy serves no `baton_annotate` by default; SECURITY.md §3 tells a
+    reviewer the kit adds it, and this is what makes that true."""
+    original = {"command": "npx", "args": ["srv"], "env": {"BATON_ANNOTATE": "off"}}
+    e = kit.build_wrapped_entry(original, **WRAP_ARGS)
+    assert e["env"]["BATON_ANNOTATE"] == "on"
+    assert "BATON_ANNOTATE" in kit._OUR_ENV_KEYS
+
+
 def test_sink_is_the_file_only_never_stderr():
     """The proxy's default also mirrors to stderr, which the client may capture
     into its own logs. SECURITY.md §7 promises that does not happen here."""
@@ -4066,7 +4075,7 @@ def _injected_param_names() -> list[str]:
 # The disclosure's own words, so the anchor and the count claim below cannot
 # drift apart. "grafted onto" became "added to" in the 2026-09-04 rewrite; the
 # sentence is the same sentence and this is the one place that spelling lives.
-_INJECTION_CLAIM_TAIL = "parameters added to every upstream tool's schema"
+_INJECTION_CLAIM_TAIL = "added to every upstream tool's schema"
 
 
 def _injection_disclosure() -> str:
@@ -4102,8 +4111,10 @@ def test_security_md_injected_param_count_matches_the_code():
     fourth param added and documented still leaves the sentence saying "Three".
     """
     doc = (KIT_PATH.parent / "SECURITY.md").read_text()
-    expected = _COUNT_WORDS[len(_injected_param_names())]
-    claim = f"**{expected} {_INJECTION_CLAIM_TAIL}:**"
+    count = len(_injected_param_names())
+    expected = _COUNT_WORDS[count]
+    noun = "parameter" if count == 1 else "parameters"
+    claim = f"**{expected} {noun} {_INJECTION_CLAIM_TAIL}:**"
     assert claim in doc, (
         f"SECURITY.md §4 does not say {expected!r} parameters; the proxy injects "
         f"{_injected_param_names()}"
@@ -4111,7 +4122,7 @@ def test_security_md_injected_param_count_matches_the_code():
 
 
 def test_security_md_says_required_is_advertised_and_not_enforced():
-    """A reviewer sees the three params in their own tools' `required` arrays,
+    """A reviewer sees the param in their own tools' `required` arrays,
     and a document that did not mention it would be caught omitting the one
     addition they can see with their own eyes.
 
@@ -4119,7 +4130,7 @@ def test_security_md_says_required_is_advertised_and_not_enforced():
     their server's traffic, which is false and is the scariest possible false
     claim to make here; silence leaves the retired optional story standing."""
     doc = _flat((KIT_PATH.parent / "SECURITY.md").read_text())
-    assert "and nothing enforces them" in doc, (
+    assert "and nothing enforces it" in doc, (
         "SECURITY.md never says the advertised requirement is not enforced"
     )
     assert "forwarded exactly as it would have been unwrapped" in doc, (
@@ -6408,8 +6419,8 @@ def test_the_single_client_assumption_is_stated_before_it_bites(rel):
 # states today. Read "step 2" below as "any summary we give before the wrap".
 #
 # Step 2's list covered the config entry, the credentials, the local file and
-# reversibility. It did not cover the added tool or the three grafted
-# parameters — which is the addition a person is most likely to SEE, since it
+# reversibility. It did not cover the added tool or the grafted
+# parameter — which is the addition a person is most likely to SEE, since it
 # shows up in their own agent's tool list. Every `a1` run volunteered it anyway,
 # but from `SECURITY.md` §3 rather than from step 2, so an agent that skipped
 # the document gave a strictly worse summary and could not tell.
@@ -6435,13 +6446,13 @@ def test_the_tool_name_step_2_promises_is_the_one_the_proxy_grafts():
 
 
 def test_step_2s_parameter_count_is_the_injectors_own():
-    """The word "three" is a number in a security summary, so it is read off the
+    """The word "one" is a number in a security summary, so it is read off the
     code that does the grafting rather than copied from `SECURITY.md` §3 — two
     docs agreeing proves only that they were written together."""
     tool: dict[str, Any] = {"name": "t", "inputSchema": {"type": "object", "properties": {}}}
     dispositions = _inject_goal_params(tool, "optional")
-    assert len(dispositions) == 3, (
-        f"the proxy grafts {len(dispositions)} parameters; step 2 and SECURITY.md §3 say three"
+    assert len(dispositions) == 1, (
+        f"the proxy grafts {len(dispositions)} parameters; SECURITY.md §3 says one"
     )
     assert "required" not in tool["inputSchema"], (
         "step 2 calls them optional; the default mode now marks one required"

@@ -39,7 +39,7 @@ from baton_proxy._llm_text import (
     _INSTRUCTIONS_LENGTH_CAP,
     build_annotation_tool_description,
     build_instructions_suffix,
-    build_overall_task_param_description,
+    build_user_goal_param_description,
     required_param_names,
 )
 from baton_proxy.config import DEFAULT_EVENT_SINK
@@ -94,8 +94,8 @@ def test_the_pre_call_request_is_gated_on_proactive_mode() -> None:
     leg-for-leg the same choice baton-sdk's ``build_server_instructions``
     makes, so one agent meeting both producers reads one rule.
 
-    Why the paragraph is worth turning off: it names the same three fields the
-    injected params carry on every call, so it teaches the agent that intent is
+    Why the paragraph is worth turning off: it names the same field the
+    injected param carries on every call, so it teaches the agent that intent is
     the annotation tool's job: sessions that had it filed pre-call annotations
     and no reports. Why it is not deleted: agent-authored proactives supply
     ~54% of turn boundaries, and the proxy fronts servers its operator does not
@@ -105,11 +105,8 @@ def test_the_pre_call_request_is_gated_on_proactive_mode() -> None:
 
     assert "BEFORE" in on
     assert "BEFORE" not in off
-    # Named individually: a suffix that still asks for the three fields under
-    # some other heading is the same thing with different spelling.
-    for field in ("expected_result", "overall_task"):
-        assert field in on
-        assert field not in off
+    assert "with user_goal (REQUIRED)" in on
+    assert "user_goal" not in off
     # The head moves with it — "record what the user is trying to do" is a
     # promise the reactive-only mode does not keep.
     assert "record what the user is trying to do" in on
@@ -149,10 +146,11 @@ def test_turning_proactive_off_is_what_buys_the_truncation_headroom() -> None:
     large server. The proxy APPENDS its suffix, and Claude Code truncates
     `instructions` at ~2,087 chars — workfront's rendered value measured 4,408
     on 2026-09-01 — so on an enterprise server it is our framing, at the end,
-    that is silently cut. `off` takes ~280 chars off the suffix."""
+    that is silently cut. `off` takes ~130 chars off the suffix, and
+    BATON_ANNOTATE=off takes all but the subagent sentence."""
     on = build_instructions_suffix("baton_annotate", "on", intent_param_mode="off")
     off = build_instructions_suffix("baton_annotate", "off", intent_param_mode="off")
-    assert len(on) - len(off) > 250, (
+    assert len(on) - len(off) > 100, (
         f"the paragraph stopped costing anything: {len(on)} vs {len(off)}"
     )
     assert len(on) <= _INSTRUCTIONS_LENGTH_CAP
@@ -261,8 +259,6 @@ def test_description_carries_field_reference() -> None:
     description = build_annotation_tool_description()
     for field in (
         "user_goal:",
-        "expected_result:",
-        "overall_task:",
         "what_happened:",
         "tool_name:",
         "suggested_improvement:",
@@ -306,61 +302,43 @@ def test_a_reports_only_tool_does_not_describe_a_note() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The task label's wording is a result, not a style choice.
-#
-# It comes out of a scored internal experiment (
-# 40 paired live-agent sessions): one wording misses task boundaries the user
-# does not announce, the other splits single tasks, and the trade was decided
-# in favour of the text below. Rewording it re-runs that experiment on live
-# traffic without scoring it.
-#
-# All three producers must ask in the SAME words, and this is not hypothetical:
-# the revert of the rejected wording landed in baton-sdk and never reached
-# baton-ts, which shipped the losing arm undetected because nothing pinned it.
-# Each producer now pins the literal in its own suite, beside this reasoning —
-# baton-sdk's `_OVERALL_TASK_PARAM_DESCRIPTION` and baton-ts's
+# The user_goal wording is a result, not a style choice: it was scored on live
+# agents. All three producers must ask in the SAME words, so each pins the
+# literal in its own suite — baton-sdk's `_USER_GOAL_PARAM_BODY` and baton-ts's
 # `llmText.test.ts`. Deliberately NOT a cross-repo read: this suite ships in
 # the Try Kit, where a prospect's clone has no sibling checkouts, and a test
 # that skips for them would break SECURITY.md §8's skip count — a number the
 # document offers a reviewer as checkable.
 #
-# What that costs, stated plainly: three local pins cannot notice the three
-# drifting apart on their own. Each makes a change deliberate and visible in
-# review, which is what was missing when ts drifted; it is not a mechanical
+# Three local pins cannot notice the three drifting apart on their own. Each
+# makes a change deliberate and visible in review; it is not a mechanical
 # guarantee of agreement.
 # ---------------------------------------------------------------------------
 
-SELECTED_BODY = (
-    "The number of the user's current message in this conversation "
-    "(1 for the first), a colon, then a short stable label for the broader "
-    "task this call serves (e.g. '3: prepare campaign approval'). Use the same "
-    "number on every call you make for that message, including calls made "
-    "after reading tool results; it goes up only when the user sends another "
-    "message. REPEAT the exact same label text after the colon on every call "
-    "serving the same task, across messages; change the label only when the "
-    "user starts a different task."
+USER_GOAL_BODY = (
+    "Write it as '<n>: <what this call is for>; success is <what its result "
+    "should show>'. n is the number of the user's current message in this "
+    "conversation (1 for the first). Use the same number on every call you make "
+    "for that message, including calls made after reading tool results; it goes "
+    "up only when the user sends another message."
 )
 SUBAGENT_SENTENCE = (
     "When you hand work to a subagent that may call this server's tools, tell it "
     "the number of the user's current message in this conversation, and that it "
-    "must start overall_task with that number on every call to this server's "
+    "must start user_goal with that number on every call to this server's "
     "tools. This applies only to this server's tools."
 )
 
 
-def test_the_task_label_wording_is_the_one_the_experiment_selected() -> None:
-    assert build_overall_task_param_description() == "OPTIONAL. " + SELECTED_BODY
-    assert build_overall_task_param_description(intent_param_mode="required") == (
-        "REQUIRED. " + SELECTED_BODY
+def test_the_user_goal_wording_is_the_one_baton_sdk_ships() -> None:
+    assert build_user_goal_param_description() == "OPTIONAL. " + USER_GOAL_BODY
+    assert build_user_goal_param_description(intent_param_mode="required") == (
+        "REQUIRED. " + USER_GOAL_BODY
     )
 
 
-def test_required_mode_escalates_all_three_params() -> None:
-    assert required_param_names(intent_param_mode="required") == (
-        "user_goal",
-        "expected_result",
-        "overall_task",
-    )
+def test_required_mode_escalates_user_goal_only() -> None:
+    assert required_param_names(intent_param_mode="required") == ("user_goal",)
     assert required_param_names(intent_param_mode="optional") == ()
 
 
@@ -376,6 +354,18 @@ def test_the_subagent_sentence_follows_the_clauses_when_params_ride(proactive_mo
     )
 
 
+def test_reports_off_leaves_only_the_subagent_sentence_and_the_event_file_line() -> None:
+    assert build_instructions_suffix("baton_annotate", report_mode="off") == (
+        "\n\n" + SUBAGENT_SENTENCE
+    )
+    with_file = build_instructions_suffix(
+        "baton_annotate", "on", event_file_path="/tmp/e.jsonl", report_mode="off"
+    )
+    assert with_file.startswith("\n\n" + SUBAGENT_SENTENCE)
+    assert "/tmp/e.jsonl" in with_file
+    assert "baton_annotate" not in with_file
+
+
 def test_the_event_file_line_stays_after_the_subagent_sentence() -> None:
     """Truncation eats the end, so the convenience line must be what it takes."""
     rendered = build_instructions_suffix(
@@ -384,29 +374,16 @@ def test_the_event_file_line_stays_after_the_subagent_sentence() -> None:
     assert rendered.index(SUBAGENT_SENTENCE) < rendered.index("/tmp/e.jsonl")
 
 
-def test_the_wording_does_not_carry_the_rejected_candidate() -> None:
-    """Named phrases, so a re-introduction fails by name rather than by diff.
-
-    Both are load-bearing in the rejected text: they scoped the label to the
-    current turn rather than the task, which produced the A -> B -> A relabel a
-    merge-only consumer resolves as three tasks instead of one.
-    """
-    text = build_overall_task_param_description()
-    assert "not the overall theme" not in text
-    assert "working on right now" not in text
-
-
-def test_the_wording_keeps_the_clause_that_makes_it_groupable() -> None:
-    """Grouping is by exact string match, so the repeat clause IS the
-    mechanism: without it 80% of adjacent same-task calls reword and every task
-    shatters, whichever granularity wording is chosen."""
-    assert "REPEAT the exact same label text" in build_overall_task_param_description()
-
-
-# The retired agent-facing names. All three remain WIRE keys, so they appear
-# legitimately across the codebase — but never in text an agent reads, where
-# they would name a param the schema no longer accepts.
-RETIRED_AGENT_FACING_NAMES = ("intent", "expected_outcome", "workflow")
+# The retired agent-facing names. They still appear across the codebase, as
+# wire keys or as names a stale client may send — but never in text an agent
+# reads, where they would name a param the schema no longer accepts.
+RETIRED_AGENT_FACING_NAMES = (
+    "intent",
+    "expected_outcome",
+    "workflow",
+    "expected_result",
+    "overall_task",
+)
 
 
 def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
@@ -426,7 +403,9 @@ def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
     """
     surfaces = {
         "instructions suffix": build_instructions_suffix("baton_annotate"),
+        "proactive instructions suffix": build_instructions_suffix("baton_annotate", "on"),
         "annotation tool description": build_annotation_tool_description(),
+        "proactive annotation tool description": build_annotation_tool_description("on"),
     }
     for where, text in surfaces.items():
         for retired in RETIRED_AGENT_FACING_NAMES:

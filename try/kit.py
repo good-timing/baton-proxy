@@ -276,14 +276,14 @@ INTENT_SOURCE_PARAM = "injected_param"
 # as "the agent never called `baton_annotate`" — a cause that was wrong then and
 # is impossible now: intent rides parameters on the tool's own schema, so there
 # is no prompt to refuse and no tool to skip. What the file cannot say is WHY the
-# model left them off, and that half is stated rather than left to be filled in.
+# model left it off, and that half is stated rather than left to be filled in.
 INTENT_IS_ZERO = (
-    "                     The goal rides parameters the proxy adds to your own\n"
+    "                     The goal rides a parameter the proxy adds to your own\n"
     "                     tools' schemas, so there is nothing here to refuse and\n"
-    "                     nothing to switch off: a zero means the model left them\n"
+    "                     nothing to switch off: a zero means the model left it\n"
     "                     off every call, no call failed for it, and your server\n"
     "                     saw the calls exactly as it always does. Why the model\n"
-    "                     left them off is not in this file."
+    "                     left it off is not in this file."
 )
 
 # Printed under the annotations line when it is zero. This is the number where
@@ -910,7 +910,9 @@ def hidden_label(value: str) -> str:
 # a ``BATON_`` prefix on purpose: SECURITY.md §7 contemplates a user having their
 # OWN variable beginning BATON_, and a prefix test would print its literal value
 # on the grounds that we must have written it. We did not.
-_OUR_ENV_KEYS = frozenset({"PYTHONPATH", "BATON_TENANT_ID", "BATON_VENDOR_ID", "BATON_EVENT_SINK"})
+_OUR_ENV_KEYS = frozenset(
+    {"PYTHONPATH", "BATON_TENANT_ID", "BATON_VENDOR_ID", "BATON_EVENT_SINK", "BATON_ANNOTATE"}
+)
 
 
 def shown_env_value(key: str, value: str) -> str:
@@ -1094,6 +1096,8 @@ def build_wrapped_entry(
       on our side, which is the difference between the file being useful and not.
     - ``PYTHONPATH`` is APPENDED, not prepended: it is inherited by the wrapped
       server too, and a Python server's own modules must keep winning.
+    - ``BATON_ANNOTATE=on``: the proxy serves no ``baton_annotate`` by default,
+      and a trial is where the agent's own reports are worth seeing.
     """
     env = {str(k): str(v) for k, v in (original.get("env") or {}).items()}
     # Append only if absent. Re-wrapping an entry that already carries our path
@@ -1106,6 +1110,7 @@ def build_wrapped_entry(
     env["BATON_TENANT_ID"] = tenant_id
     env["BATON_VENDOR_ID"] = vendor_id
     env["BATON_EVENT_SINK"] = file_sink_uri(events_path)
+    env["BATON_ANNOTATE"] = "on"
 
     bridge = http_bridge(original)
     if bridge is not None:

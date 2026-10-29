@@ -306,7 +306,7 @@ rather than treating it as impossible in the mode you are in. A new session
 will not have the checkout's file unless it starts in `try/` or is told to read
 `try/CLAUDE.md`; say so if they plan to come back later. If they check in, run
 `receipt` and relay it. Two of its rows are about intent: `intent captured`
-counts calls that carried the goal parameters the proxy adds to their tools, so
+counts calls that carried the goal parameter the proxy adds to their tools, so
 a refusal cannot zero it; `annotations filed` counts what their agent chose to
 file with `baton_annotate`, friction only, so zero is ordinary.
 

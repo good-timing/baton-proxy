@@ -188,6 +188,32 @@ def test_from_env_proactive_rejects_unknown_values(monkeypatch: pytest.MonkeyPat
         Config.from_env()
 
 
+def test_from_env_annotate_defaults_to_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    assert Config.from_env().report_mode == "off"
+    monkeypatch.setenv("BATON_ANNOTATE", "on")
+    assert Config.from_env().report_mode == "on"
+
+
+def test_from_env_annotate_rejects_unknown_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("BATON_ANNOTATE", "true")
+    with pytest.raises(ValueError, match="BATON_ANNOTATE"):
+        Config.from_env()
+
+
+def test_proactive_without_reports_is_warned_about(monkeypatch: pytest.MonkeyPatch) -> None:
+    _scrub_baton_env(monkeypatch)
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("BATON_PROACTIVE", "on")
+    warned = Config.from_env().startup_warnings
+    assert any("BATON_PROACTIVE='on' has no effect" in w for w in warned), warned
+    monkeypatch.setenv("BATON_ANNOTATE", "on")
+    assert not any("has no effect" in w for w in Config.from_env().startup_warnings)
+
+
 def test_intent_param_off_is_ignored_with_a_warning_and_the_proxy_starts(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

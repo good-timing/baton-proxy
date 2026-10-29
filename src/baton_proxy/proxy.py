@@ -46,14 +46,11 @@ from typing import Any
 
 from baton_proxy import __version__
 from baton_proxy._llm_text import (
-    EXPECTED_RESULT_PARAM_NAME,
     INTENT_PARAM_NAMES,
-    OVERALL_TASK_PARAM_NAME,
+    RETIRED_PARAM_NAMES,
     USER_GOAL_PARAM_NAME,
     build_annotation_tool_description,
-    build_expected_result_param_description,
     build_instructions_suffix,
-    build_overall_task_param_description,
     build_user_goal_param_description,
     required_param_names,
 )
@@ -110,16 +107,14 @@ def _build_injected_tool(tool_name: str, proactive_mode: str = "off") -> dict[st
             "type": "object",
             "properties": {
                 "user_goal": {"type": "string"},
-                "expected_result": {"type": "string"},
                 "what_happened": {"type": "string"},
                 "tool_name": {"type": "string"},
-                "overall_task": {"type": "string"},
                 "suggested_improvement": {"type": "string"},
                 "context": {"type": "object"},
             },
-            # `user_goal`, `expected_result` and `overall_task` share their
-            # names with the INJECTED params (one concept, one name), so the two
-            # mechanisms cannot be told apart by param name. They stay separate
+            # `user_goal` shares its name with the INJECTED param (one concept,
+            # one name), so the two mechanisms cannot be told apart by param
+            # name. They stay separate
             # structurally: injection runs only over upstream tools, before
             # this one is appended, so it never enters the param registry — and
             # a call to this tool is answered here rather than forwarded, so it
@@ -133,10 +128,8 @@ def _build_injected_tool(tool_name: str, proactive_mode: str = "off") -> dict[st
 class _Injection:
     """Resolved per-process injection state.
 
-    One injected tool, the annotate tool. There was a second — a
-    session-report tool gated on a local-only sink — until 2026-09-27; it
-    advertised a summary of errors and rendered only agent-filed annotations,
-    so the agent now reads the event file itself, told where by a line in
+    The annotate tool under ``BATON_ANNOTATE=on``, else no tool. The agent
+    reads the event file itself, told where by a line in
     ``instructions_suffix``.
     """
 
@@ -168,6 +161,7 @@ class _Injection:
         *,
         intent_param_mode: str = "optional",
         proactive_mode: str = "off",
+        report_mode: str = "on",
     ) -> _Injection:
         """``event_file_path`` is the local event file, already resolved.
 
@@ -181,9 +175,15 @@ class _Injection:
             proactive_mode,
             event_file_path=event_file_path,
             intent_param_mode=intent_param_mode,
+            report_mode=report_mode,
+        )
+        tools = (
+            []
+            if report_mode == "off"
+            else [_build_injected_tool(ANNOTATE_TOOL_NAME, proactive_mode)]
         )
         return cls(
-            tools=[_build_injected_tool(ANNOTATE_TOOL_NAME, proactive_mode)],
+            tools=tools,
             instructions_suffix=suffix,
             event_line_dropped=bool(event_file_path) and event_file_path not in suffix,
             intent_param_mode=intent_param_mode,
@@ -349,16 +349,13 @@ def _evict_overflow(pending: OrderedDict[Any, _PendingCall], emitter: Emitter) -
 
 
 def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
-    """Add ``user_goal``/``expected_result``/``overall_task`` to one tool's
-    inputSchema; return each param's disposition, keyed independently — a tool
-    that already declares one of the names is left untouched for that name
-    only.
-
-    Disposition is "injected" (param added), "native" (the tool already had
-    a param with that name — left untouched, per skip-if-exists). Not a
-    recognisable tool object -> empty dict, nothing recorded. Mutates the
-    tool in place. ``mode`` is "optional" or "required" — "off" is gated by
-    the caller. Mirrors baton-sdk's ``_inject_goal_params``.
+    """Add ``user_goal`` to one tool's inputSchema; return each name's
+    disposition. "injected" (param added) or "native" (the tool already
+    declares the name, left untouched, per skip-if-exists) — a retired name the
+    tool declares is recorded "native" so a stale client's value for it is
+    forwarded. Not a recognisable tool object -> empty dict, nothing recorded.
+    Mutates the tool in place. ``mode`` is "optional" or "required" — "off" is
+    gated by the caller. Mirrors baton-sdk's ``inject_goal_params``.
     """
     if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
         return {}
@@ -371,38 +368,22 @@ def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
         props = {}
         schema["properties"] = props
 
-    dispositions: dict[str, str] = {}
-    for name, description in (
-        (
-            USER_GOAL_PARAM_NAME,
-            build_user_goal_param_description(intent_param_mode=mode),
-        ),
-        (
-            EXPECTED_RESULT_PARAM_NAME,
-            build_expected_result_param_description(intent_param_mode=mode),
-        ),
-        (
-            OVERALL_TASK_PARAM_NAME,
-            build_overall_task_param_description(intent_param_mode=mode),
-        ),
-    ):
-        if name in props:
-            dispositions[name] = "native"
-            continue
-        dispositions[name] = "injected"
-        props[name] = {"type": "string", "description": description}
-
-    escalated = [
-        name
-        for name in required_param_names(intent_param_mode=mode)
-        if dispositions[name] == "injected"
-    ]
-    if escalated:
+    dispositions = {name: "native" for name in RETIRED_PARAM_NAMES if name in props}
+    if USER_GOAL_PARAM_NAME in props:
+        dispositions[USER_GOAL_PARAM_NAME] = "native"
+        return dispositions
+    dispositions[USER_GOAL_PARAM_NAME] = "injected"
+    props[USER_GOAL_PARAM_NAME] = {
+        "type": "string",
+        "description": build_user_goal_param_description(intent_param_mode=mode),
+    }
+    if USER_GOAL_PARAM_NAME in required_param_names(intent_param_mode=mode):
         required = schema.get("required")
         if isinstance(required, list):
-            required.extend(name for name in escalated if name not in required)
+            if USER_GOAL_PARAM_NAME not in required:
+                required.append(USER_GOAL_PARAM_NAME)
         else:
-            schema["required"] = escalated
+            schema["required"] = [USER_GOAL_PARAM_NAME]
     return dispositions
 
 
@@ -423,7 +404,9 @@ def _inject_into_response(msg: dict[str, Any], injection: _Injection) -> dict[st
             original = result.get("instructions", "")
             if not isinstance(original, str):
                 original = ""
-            result["instructions"] = original + injection.instructions_suffix
+            combined = original + injection.instructions_suffix
+            # The suffix opens with a separator, which has nothing above it here.
+            result["instructions"] = combined if original else combined.lstrip()
 
         if "tools" in result and isinstance(result["tools"], list):
             result["tools"].extend(injection.tools)
@@ -542,6 +525,11 @@ def _handle_injected_call(req: dict[str, Any]) -> dict[str, Any]:
         "id": req.get("id"),
         "result": {"content": [{"type": "text", "text": confirmation}]},
     }
+
+
+def _pop_text(args: dict[str, Any], name: str) -> str | None:
+    raw = args.pop(name, None)
+    return raw if isinstance(raw, str) and raw.strip() else None
 
 
 def _write_line(stream: Any, payload: dict[str, Any] | str) -> None:
@@ -752,9 +740,7 @@ class MessageProcessor:
                     # proactive_mode="off": refuse the agent's OWN pre-call
                     # annotation structurally, not by instruction text alone.
                     # Before the enqueue on purpose: a refused annotation must
-                    # leave NO event, because one stray umbrella
-                    # `overall_task` from it is enough to merge two distinct
-                    # tasks in a consumer that groups on the annotation label.
+                    # leave NO event.
                     what_happened = args.get("what_happened")
                     reporting = _is_report(what_happened)
                     if self._injection.proactive_mode == "off" and not reporting:
@@ -770,19 +756,10 @@ class MessageProcessor:
                             # A string is sent as given: "" and the word none
                             # both say "no tool exists" and must not become null.
                             tool_name=reported_tool if isinstance(reported_tool, str) else None,
-                            # Agent-facing names -> wire keys, as with
-                            # overall_task below: `user_goal` is stored as
-                            # `intent`, `expected_result` as
-                            # `expected_outcome`.
+                            # The agent-facing `user_goal` is stored as the
+                            # wire key `intent`.
                             intent=args.get("user_goal"),
                             suggested_improvement=args.get("suggested_improvement"),
-                            expected_outcome=args.get("expected_result"),
-                            # Agent-facing param ``overall_task`` -> wire key
-                            # ``workflow``, the same split the injected params
-                            # use (``overall_task`` -> ``call_workflow``):
-                            # renaming the param must not move the key the
-                            # console groups on.
-                            workflow=args.get("overall_task"),
                             context=ctx,
                             runtime_meta=ann_meta,
                         )
@@ -830,12 +807,9 @@ class MessageProcessor:
                     call_intent=call_intent,
                     call_expected=call_expected,
                     call_workflow=call_workflow,
-                    # Provenance covers the pair. An agent may fill either param
-                    # alone, so key off both — an expectation with no goal is
-                    # still injected-param capture, not unattributed.
                     intent_source=(
                         INTENT_SOURCE_PARAM
-                        if (call_intent is not None or call_expected is not None)
+                        if any(v is not None for v in (call_intent, call_expected, call_workflow))
                         else None
                     ),
                     runtime_meta=runtime_meta,
@@ -905,14 +879,14 @@ class MessageProcessor:
     def _extract_goal_params(
         self, tool_name: str, params: dict[str, Any]
     ) -> tuple[str | None, str | None, str | None]:
-        """Strip the injected ``user_goal``/``expected_result``/``overall_task``
-        params from a tools/call; return their values independently (any may be
-        absent).
+        """Strip the injected ``user_goal`` and a stale client's retired
+        ``expected_result`` / ``overall_task`` from a tools/call; return their
+        values (any may be absent).
 
         Mutates ``params["arguments"]`` in place (the same object the transport
-        forwards, so the upstream never sees either param). Never raises; on
-        any error the call proceeds with whatever state it has (fail-open).
-        Mirrors baton-sdk's ``_extract_goal_params``.
+        forwards, so the upstream never sees them). A listed tool that declares
+        a retired name keeps it. Never raises; on any error the call proceeds
+        with whatever state it has (fail-open).
         """
         if self._injection.intent_param_mode == "off":
             return None, None, None
@@ -923,11 +897,13 @@ class MessageProcessor:
             with self._registry_lock:
                 dispositions = self._param_registry.get(tool_name)
             goal = self._extract_one_goal_param(tool_name, args, USER_GOAL_PARAM_NAME, dispositions)
-            expected = self._extract_one_goal_param(
-                tool_name, args, EXPECTED_RESULT_PARAM_NAME, dispositions
-            )
-            workflow = self._extract_one_goal_param(
-                tool_name, args, OVERALL_TASK_PARAM_NAME, dispositions
+            # Stripped on a cold registry too: the proxy cannot read the
+            # upstream's schema, and a strict upstream refuses an unknown name.
+            expected, workflow = (
+                None
+                if dispositions is not None and dispositions.get(name) == "native"
+                else _pop_text(args, name)
+                for name in RETIRED_PARAM_NAMES
             )
             return goal, expected, workflow
         except Exception:
@@ -959,10 +935,7 @@ class MessageProcessor:
                 param_name,
                 tool_name,
             )
-        raw = args.pop(param_name, None)
-        if isinstance(raw, str) and raw.strip():
-            return raw
-        return None
+        return _pop_text(args, param_name)
 
     def handle_server_message(self, msg: dict[str, Any]) -> dict[str, Any]:
         """Correlate/emit for a server->client message; return the message to write out."""
@@ -1109,8 +1082,7 @@ class MessageProcessor:
             logger.exception("baton-proxy: surface snapshot capture failed")
 
     def _inject_intent_params(self, msg: dict[str, Any]) -> None:
-        """Add user_goal/expected_result/overall_task to every upstream tool
-        in a tools/list response.
+        """Add user_goal to every upstream tool in a tools/list response.
 
         Runs BEFORE ``_inject_into_response`` appends the proxy's own tools, so
         those never grow the params. Records each tool's per-param dispositions
@@ -1141,17 +1113,16 @@ class MessageProcessor:
                     newly_native = [
                         name
                         for name, tool_dispositions in dispositions.items()
-                        if tool_dispositions.get(OVERALL_TASK_PARAM_NAME) == "native"
-                        and self._param_registry.get(name, {}).get(OVERALL_TASK_PARAM_NAME)
-                        != "native"
+                        if tool_dispositions.get(USER_GOAL_PARAM_NAME) == "native"
+                        and self._param_registry.get(name, {}).get(USER_GOAL_PARAM_NAME) != "native"
                     ]
                     self._param_registry.update(dispositions)
                 for name in newly_native:
                     # The instructions went out at initialize, before any tool
                     # was listed, so the sentence cannot be taken back here.
                     logger.warning(
-                        "baton-proxy: tool %r declares its own overall_task, and the "
-                        "instructions ask a subagent to start overall_task with a "
+                        "baton-proxy: tool %r declares its own user_goal, and the "
+                        "instructions ask a subagent to start user_goal with a "
                         "message number, so that tool's argument may get one",
                         name,
                     )
@@ -1355,6 +1326,7 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
         event_file,
         intent_param_mode=config.intent_param_mode,
         proactive_mode=config.proactive_mode,
+        report_mode=config.report_mode,
     )
     # The instructions suffix DROPS the event-file line rather than breaching the
     # length cap, because the path's length is the operator's and a deep
@@ -1362,11 +1334,13 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     # loop above: the alternative is an operator whose agent never learns where
     # the events are, with nothing anywhere saying why.
     if injection.event_line_dropped:
+        proactive = config.report_mode == "on" and config.proactive_mode == "on"
         logger.warning(
             "baton-proxy: the event file path (%s) did not fit the instructions "
             "length cap, so the agent will not be told where to read the captured "
-            "calls. Use a shorter sink path, or BATON_PROACTIVE=off, to restore it.",
+            "calls. Use a shorter sink path%s to restore it.",
             event_file,
+            ", or BATON_PROACTIVE=off," if proactive else "",
         )
     emitter = Emitter(config)
     emitter.start()

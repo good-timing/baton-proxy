@@ -1,6 +1,6 @@
 # baton-proxy
 
-Transparent MCP proxy. Wraps a stdio MCP server as a subprocess, **or** bridges to a remote Streamable-HTTP MCP server (`--url`); injects an annotation tool and three intent parameters into the handshake, and emits friction events to one or more sinks (stderr, a JSONL file, or a Baton Console).
+Transparent MCP proxy. Wraps a stdio MCP server as a subprocess, **or** bridges to a remote Streamable-HTTP MCP server (`--url`); injects a `user_goal` intent parameter into every tool, and a `baton_annotate` report tool with `BATON_ANNOTATE=on`, and emits friction events to one or more sinks (stderr, a JSONL file, or a Baton Console).
 
 > **"Console" vs "collector".** The receiver is called the **Console** in places
 > throughout this repo's docstrings, for brevity. It is just whatever HTTP

@@ -164,6 +164,7 @@ def _collect_events() -> list[dict[str, Any]]:
             # to prove the annotation path works end to end over a real
             # subprocess, and it should say which mode it is proving.
             "BATON_PROACTIVE": "on",
+            "BATON_ANNOTATE": "on",
         }
     )
     proc = subprocess.Popen(

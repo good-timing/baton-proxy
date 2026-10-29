@@ -21,8 +21,6 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 
 from baton_proxy.proxy import (
-    EXPECTED_RESULT_PARAM_NAME,
-    OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
     MessageProcessor,
     _Injection,
@@ -133,7 +131,6 @@ def test_snapshot_captures_vendor_true_surface() -> None:
     assert names == ["enrich_company", "get_intent_signals"]
     for tool in snap["tools"]:
         assert USER_GOAL_PARAM_NAME not in tool["inputSchema"]["properties"]
-        assert EXPECTED_RESULT_PARAM_NAME not in tool["inputSchema"]["properties"]
 
     out_names = {t["name"] for t in out["result"]["tools"]}
     assert "baton_annotate" in out_names  # mutation still happened downstream
@@ -142,9 +139,7 @@ def test_snapshot_captures_vendor_true_surface() -> None:
     aug = snap["seam_augmentations"]
     assert "baton_annotate" in aug["injected_tools"]
     assert aug["intent_param"] == {
-        "names": sorted(
-            [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME]
-        ),
+        "names": [USER_GOAL_PARAM_NAME],
         "required_names": [],
         "mode": "optional",
     }
@@ -156,9 +151,7 @@ def test_required_mode_records_the_required_names() -> None:
     proc.handle_server_message(_initialize_response())
     _drive_list(proc, [_tool("alpha")], msg_id=2)
     intent_param = emitter.snapshots()[0]["seam_augmentations"]["intent_param"]
-    assert intent_param["required_names"] == sorted(
-        [USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME]
-    )
+    assert intent_param["required_names"] == [USER_GOAL_PARAM_NAME]
     assert intent_param["mode"] == "required"
 
 
@@ -336,7 +329,6 @@ def test_e2e_snapshot_on_stderr_sink() -> None:
     for tool in payload["tools"]:
         props = tool.get("inputSchema", {}).get("properties", {})
         assert USER_GOAL_PARAM_NAME not in props
-        assert EXPECTED_RESULT_PARAM_NAME not in props
     assert payload["surface_hash"].startswith("sha256:")
     # Envelope fields present like any other event.
     assert snaps[0]["vendor_id"] == "fixture"

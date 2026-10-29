@@ -1,6 +1,7 @@
 """End-to-end injection test: drive a scripted JSON-RPC stream through the
-proxy and verify it injects the annotation tool + instructions and handles
-the injected call without forwarding.
+proxy and verify what it injects — by default the subagent sentence alone,
+and under ``BATON_ANNOTATE=on`` the annotation tool and its instructions,
+answering a call to that tool without forwarding it.
 
 Mirrors the smoke-test spike's checks now run against the production module.
 Emission is disabled (env vars unset) so this test is fully offline.
@@ -16,6 +17,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+
+import pytest
 
 HERE = Path(__file__).parent
 REPO = HERE.parent
@@ -82,16 +85,38 @@ def _run_proxy() -> dict[int, dict]:
     return _run_proxy_with_env({})
 
 
-def test_initialize_carries_injected_instructions() -> None:
-    by_id = _run_proxy()
-    instructions = _instructions(by_id)
+REPORTS_ON = {"BATON_ANNOTATE": "on"}
+SUBAGENT_SENTENCE_START = "When you hand work to a subagent"
+
+
+def test_the_default_install_serves_only_the_subagent_sentence() -> None:
+    instructions = _instructions(_run_proxy())
+    assert SUBAGENT_SENTENCE_START in instructions
+    assert "baton_annotate" not in instructions
+    assert "MUST" not in instructions
+
+
+def test_reports_on_carries_the_annotation_instructions() -> None:
+    instructions = _instructions(_run_proxy_with_env(REPORTS_ON))
     assert "baton_annotate" in instructions
     assert "MUST" in instructions
 
 
-def test_tools_list_contains_injected_tool() -> None:
-    by_id = _run_proxy()
-    names = _served_names(by_id)
+@pytest.mark.parametrize("report_mode", ["off", "on"])
+def test_a_server_with_no_instructions_gets_ours_without_a_leading_separator(
+    report_mode: str,
+) -> None:
+    from baton_proxy.proxy import _inject_into_response, _Injection
+
+    injection = _Injection.create(None, report_mode=report_mode)
+    msg = {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-03-26"}}
+    instructions = _inject_into_response(msg, injection)["result"]["instructions"]
+    assert instructions == injection.instructions_suffix.lstrip()
+
+
+def test_tools_list_contains_injected_tool_only_with_reports_on() -> None:
+    assert "baton_annotate" not in _served_names(_run_proxy())
+    names = _served_names(_run_proxy_with_env(REPORTS_ON))
     assert "baton_annotate" in names
     assert "echo" in names  # upstream tool still there
 
@@ -132,7 +157,7 @@ def test_an_http_only_wrap_names_no_event_file() -> None:
     )
     instructions = _instructions(by_id)
     assert "captured as JSONL" not in instructions
-    assert "baton_annotate" in instructions, "the rest of the suffix went with it"
+    assert SUBAGENT_SENTENCE_START in instructions, "the rest of the suffix went with it"
 
 
 def test_a_custom_file_sink_is_the_path_named(tmp_path: Path) -> None:
@@ -154,8 +179,9 @@ def test_a_custom_file_sink_is_the_path_named(tmp_path: Path) -> None:
 # here: a hardcoded copy reds when the fixture gains a fifth tool, which is a
 # maintenance failure dressed as a finding, and it would not have caught the
 # thing this set exists to catch. What is hardcoded is the one name the proxy
-# ADDS, because that is the number under test — one, not two.
-def _expected_served() -> set[str]:
+# can ADD, because that is the number under test — none by default, one with
+# BATON_ANNOTATE=on, never two.
+def _expected_served(reports: bool = False) -> set[str]:
     # PACKAGE-qualified: the bare name `fixture_responses` resolves only inside
     # the fixture SUBPROCESS, whose sys.path starts at its own directory, but
     # `tests` is a package (`tests/__init__.py`) and the repo root is on the path,
@@ -167,15 +193,16 @@ def _expected_served() -> set[str]:
     listed = result_for({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     upstream = {t["name"] for t in listed["result"]["tools"]}
     assert upstream, "the fixture declares no tools; this set would assert nothing"
-    return upstream | {"baton_annotate"}
+    return upstream | {"baton_annotate"} if reports else upstream
 
 
-def test_the_default_install_serves_annotate_and_the_upstream_tool_only() -> None:
+def test_the_default_install_serves_the_upstream_tools_only() -> None:
     """Default install (no env vars) -> sink defaults to stderr + file, which is
     the shape that USED to inject a second tool, `baton_session_report`. It was
     retired 2026-09-27; the file sink now only decides whether the instructions
     can name a path."""
     assert _served_names(_run_proxy()) == _expected_served()
+    assert _served_names(_run_proxy_with_env(REPORTS_ON)) == _expected_served(reports=True)
 
 
 def test_an_http_sink_serves_the_same_set() -> None:
@@ -219,7 +246,7 @@ def test_the_customer_mode_arm_serves_the_same_set(tmp_path: Path) -> None:
 
 
 def test_injected_tool_call_handled_by_proxy() -> None:
-    by_id = _run_proxy()
+    by_id = _run_proxy_with_env(REPORTS_ON)
     inj = by_id.get(3)
     assert inj is not None
     text = inj["result"]["content"][0]["text"]
@@ -301,7 +328,7 @@ def test_vendor_id_does_not_affect_tool_name() -> None:
     via the proxy always see ``baton_annotate``, regardless of which vendor
     they wrapped. Regression guard — flipping this back to vendor-namespaced
     is a deliberate move (vendor opt-in to white-label), not an accident."""
-    by_id = _run_proxy_with_env({"BATON_VENDOR_ID": "acme"})
+    by_id = _run_proxy_with_env({"BATON_VENDOR_ID": "acme", **REPORTS_ON})
 
     instructions = _instructions(by_id)
     assert "baton_annotate" in instructions
@@ -423,6 +450,7 @@ def test_baton_annotate_emits_annotation_event_end_to_end() -> None:
                 "BATON_API_KEY": "k",
                 "BATON_CONSENT_TOKEN": "c",
                 "BATON_VENDOR_ID": "v",
+                **REPORTS_ON,
             }
         )
         proc = subprocess.Popen(
@@ -490,10 +518,11 @@ def test_a_dropped_event_file_line_is_logged_to_the_operator(tmp_path: Path) -> 
     long_path = str(deep / "events.jsonl")
     assert len(long_path) > 490, f"{len(long_path)} chars is no longer enough to overflow"
     by_id = _run_proxy_with_env(
-        {"BATON_EVENT_SINK": f"stderr:,file://{long_path}", "BATON_PROACTIVE": "on"}
+        {"BATON_EVENT_SINK": f"stderr:,file://{long_path}", "BATON_PROACTIVE": "on", **REPORTS_ON}
     )
     stderr = by_id["stderr"]
     assert "did not fit the instructions length cap" in stderr, stderr[-900:]
+    assert "or BATON_PROACTIVE=off" in stderr
     assert long_path in stderr
     # ...and it really was dropped, so the warning is not crying wolf.
     assert long_path not in _instructions(by_id)

@@ -137,6 +137,8 @@ def _drive_proxy(
             "PYTHONPATH": str(REPO / "src"),
             "BATON_VENDOR_ID": "acme",
             "BATON_EVENT_SINK": "stderr:",
+            # The bridge is checked carrying the whole injection, tool included.
+            "BATON_ANNOTATE": "on",
         }
     )
     if env_extra:
@@ -664,6 +666,8 @@ def test_non_object_json_line_does_not_kill_the_bridge(http_server: str) -> None
             "PYTHONPATH": str(REPO / "src"),
             "BATON_VENDOR_ID": "acme",
             "BATON_EVENT_SINK": "stderr:",
+            # The bridge is checked carrying the whole injection, tool included.
+            "BATON_ANNOTATE": "on",
         }
     )
     proc = subprocess.Popen(

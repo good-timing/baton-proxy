@@ -28,8 +28,15 @@ SCHEMA_PATH = REPO / "baton-spec" / "events.schema.json"
 # failure a producer makes above the vendor's handler, and the proxy has no such
 # layer. ``result_capture`` marks withheld results, which the proxy cannot do.
 # ``signal_type`` is in the schema for older producers only (SPEC §11.4).
+# ``expected_outcome`` and ``workflow`` are retired agent-facing fields: the
+# annotate tool no longer takes them.
+# A stale client's retired names, which the proxy records only once it has seen
+# the tool listed; the subprocess sends its whole script at once, so that is a
+# race there. Driven through the emitter below instead.
+EXERCISED_BY_THE_EMITTER = {"tool_call_start": {"call_expected", "call_workflow"}}
+
 NEVER_SENT = {
-    "annotation": {"signal_type"},
+    "annotation": {"signal_type", "expected_outcome", "workflow"},
     "tool_call_end": {"result_capture"},
     "tool_call_error": {"failure_kind", "result_capture"},
 }
@@ -53,12 +60,7 @@ E2E_REQUESTS: list[dict] = [
         "method": "tools/call",
         "params": {
             "name": "argkeys",
-            "arguments": {
-                "text": "x",
-                "user_goal": "verify conformance",
-                "expected_result": "a valid envelope",
-                "overall_task": "verify conformance",
-            },
+            "arguments": {"text": "x", "user_goal": "verify conformance"},
         },
     },
     {
@@ -90,9 +92,7 @@ E2E_REQUESTS: list[dict] = [
             "arguments": {
                 "what_happened": "the call came back unusable",
                 "user_goal": "exercise every declared annotation member",
-                "expected_result": "all declared properties present",
                 "suggested_improvement": "return a structured empty result",
-                "overall_task": "conformance coverage",
                 "tool_name": "softfail",
                 "context": {"tool": "softfail", "outcome": "isError"},
             },
@@ -140,6 +140,8 @@ def _run_stdio() -> list[dict]:
             "PYTHONPATH": str(REPO / "src"),
             "BATON_VENDOR_ID": "v",
             "BATON_EVENT_SINK": "stderr:",
+            # The scenario files an annotation, which needs the tool served.
+            "BATON_ANNOTATE": "on",
         }
     )
     proc = subprocess.Popen(
@@ -199,7 +201,12 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
         for event in events:
             if event["event_type"] == event_type:
                 produced |= set(event["payload"])
-        missing = declared - produced - NEVER_SENT.get(event_type, set())
+        missing = (
+            declared
+            - produced
+            - NEVER_SENT.get(event_type, set())
+            - EXERCISED_BY_THE_EMITTER.get(event_type, set())
+        )
         if missing:
             unexercised[event_type] = sorted(missing)
         assert not produced & NEVER_SENT.get(event_type, set()), event_type
@@ -223,7 +230,12 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
     emitter = Emitter(config)
     emitter.start()
     emitter.enqueue_tool_call_start(
-        tool_name="echo", params={}, principal=Principal(principal_id="u123"), call_id="c1"
+        tool_name="echo",
+        params={},
+        principal=Principal(principal_id="u123"),
+        call_id="c1",
+        call_expected="one record",
+        call_workflow="2: lookup",
     )
     emitter.stop()
     event = json.loads(sink.read_text().splitlines()[-1])
@@ -238,6 +250,7 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
     assert principal["id"] == "u123"
     assert principal["source"] == "asserted", "the proxy verifies nothing"
     assert principal["form"] == "raw"
+    assert set(EXERCISED_BY_THE_EMITTER["tool_call_start"]) <= set(event["payload"])
     jsonschema.validate(event, event_schema)
 
 

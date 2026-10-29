@@ -72,7 +72,8 @@ After:
     "PYTHONPATH": "/absolute/path/to/baton-proxy/src",
     "BATON_TENANT_ID": "notion",
     "BATON_VENDOR_ID": "notion",
-    "BATON_EVENT_SINK": "file:///absolute/path/to/baton-proxy/try/events.jsonl"
+    "BATON_EVENT_SINK": "file:///absolute/path/to/baton-proxy/try/events.jsonl",
+    "BATON_ANNOTATE": "on"
   }
 }
 ```
@@ -104,7 +105,8 @@ After:
     "PYTHONPATH": "/absolute/path/to/baton-proxy/src",
     "BATON_TENANT_ID": "github",
     "BATON_VENDOR_ID": "github",
-    "BATON_EVENT_SINK": "file:///absolute/path/to/baton-proxy/try/events.jsonl"
+    "BATON_EVENT_SINK": "file:///absolute/path/to/baton-proxy/try/events.jsonl",
+    "BATON_ANNOTATE": "on"
   }
 }
 ```
@@ -207,8 +209,10 @@ never writes it down).
 server.
 
 - `baton_annotate` (`proxy.py`, `ANNOTATE_TOOL_NAME`). The agent calls it to
-  record what the user was trying to do and where a tool call went wrong. Its
-  only effect is a line in the local event file.
+  record where a tool call went wrong. Its only effect is a line in the local
+  event file. The proxy adds it only with `BATON_ANNOTATE=on`, which the kit
+  writes into the wrapped entry (`kit.py`, `build_wrapped_entry`); without it,
+  no tool is added.
 
 There were two until 2026-09-27. The second, `baton_session_report`, rendered a
 markdown summary of the session by reading the local event file, and was
@@ -216,26 +220,29 @@ injected whenever a file sink was configured — which the try setup does, so a
 trial wrap got it. It is deleted, with nothing in its place: your agent reads
 the event file itself, which is why the paragraph below now names the path.
 
-**Three parameters added to every upstream tool's schema:** `user_goal`,
-`expected_result` and `overall_task` (`proxy.py`, `_inject_goal_params`). They
-are removed from the arguments before the call is forwarded, so your server
-receives exactly the arguments it would have received unwrapped.
+**One parameter added to every upstream tool's schema:** `user_goal`
+(`proxy.py`, `_inject_goal_params`). It is removed from the arguments before the
+call is forwarded, so your server receives exactly the arguments it would have
+received unwrapped. An agent holding a tool list from an older proxy may still
+send `expected_result` or `overall_task`; those are removed too, unless your
+tool declares them itself.
 
-There is no switch that turns the parameters off; they are the reason the wrap
+There is no switch that turns the parameter off; it is the reason the wrap
 exists. The off switch is the wrap itself: `python3 kit.py uninstall` puts your
 original entry back.
 
-All three are listed in each tool's `required` array by default, and nothing
-enforces them. The proxy appends the names to the advertised list and validates
-nothing: a call that omits one is forwarded exactly as it would have been
-unwrapped, and your server never learns whether it was present.
-`BATON_INTENT_PARAM=optional` drops them from the `required` array; that changes
-how the parameters are advertised, not whether they are injected.
+It is listed in each tool's `required` array by default, and nothing enforces
+it. The proxy appends the name to the advertised list and validates nothing: a
+call that omits it is forwarded exactly as it would have been unwrapped, and
+your server never learns whether it was present. `BATON_INTENT_PARAM=optional`
+drops it from the `required` array; that changes how the parameter is
+advertised, not whether it is injected.
 
 One edge: if a call arrives before the proxy has seen a `tools/list` in that
-process, it cannot know whether the tool natively declares a parameter of one
-of those three names, and it strips the parameter anyway, with a warning
-(`proxy.py`, `_extract_one_goal_param`). On the normal path, where the client
+process, it cannot know whether the tool natively declares `user_goal`, and it
+strips the parameter anyway, with a warning (`proxy.py`,
+`_extract_one_goal_param`). The two older names are stripped on that path too.
+On the normal path, where the client
 lists tools before calling them, a natively declared parameter is recognised and
 forwarded untouched.
 
@@ -409,8 +416,9 @@ Recorded in full:
 - **Tool definitions**: a `surface_snapshot` event carrying your server's full
   tool list, server info, capabilities and instructions, recorded once per
   distinct surface.
-- **Intent**: whatever the agent wrote into `user_goal`, `expected_result`,
-  `overall_task` and `baton_annotate`. This is free text the model composed. An
+- **Intent**: whatever the agent wrote into `user_goal` and `baton_annotate`
+  (and, from an agent holding an older tool list, `expected_result` and
+  `overall_task`). This is free text the model composed. An
   agent arguing that a result was wrong will restate the result, which is where
   a second copy of your data comes from (§6).
 

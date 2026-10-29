@@ -46,15 +46,13 @@ DEFAULT_CONSENT_TOKEN = "local"
 DEFAULT_VENDOR_ID = "local"
 
 # Valid values for BATON_INTENT_PARAM — the per-tool goal-param injection
-# mode. ``optional`` injects `user_goal`/`expected_result` as optional params
-# on every upstream tool; ``required`` (default since 2026-09-01) additionally
-# marks `user_goal` required in the schema (`expected_result` and
-# ``overall_task`` stay optional even then). **There is no ``off``** — the
-# params ALWAYS ride (2026-09-01): they are the intent channel, they are
-# stripped before the call is forwarded, and the way to stop them is to stop
-# wrapping the server. Clients fill the params even when optional (Desktop, verified
-# 2026-07-07), while ignoring initialize-instructions — so param injection is
-# the reliable intent channel and instructions remain a best-effort extra.
+# mode. ``optional`` injects `user_goal` as an optional param on every upstream
+# tool; ``required`` (the default) also marks it required in the schema.
+# **There is no ``off``**: the param is the intent channel, it is stripped
+# before the call is forwarded, and the way to stop it is to stop wrapping the
+# server. Clients fill the param even when optional, while ignoring
+# initialize-instructions, so the param is the reliable intent channel and
+# instructions are a best-effort extra.
 #
 # WHAT ``required`` MEANS HERE, because the word is doing unusual work
 # (D7, 2026-09-01): **advertised as required, never enforced.** It appends
@@ -126,6 +124,14 @@ _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required"})
 DEFAULT_PROACTIVE_MODE = "off"
 _PROACTIVE_MODES: frozenset[str] = frozenset({"on", "off"})
 
+# Valid values for BATON_ANNOTATE — whether the proxy serves `baton_annotate`
+# at all, as baton-sdk's ``VendorConfig.report_mode``. ``off`` (the default)
+# serves no tool and leaves only the subagent sentence (and the event-file
+# line) in the instructions; each call's goal still rides `user_goal`. ``on``
+# serves the tool and its instructions, and BATON_PROACTIVE then applies.
+DEFAULT_REPORT_MODE = "off"
+_REPORT_MODES: frozenset[str] = frozenset({"on", "off"})
+
 
 @dataclass(frozen=True)
 class Config:
@@ -167,6 +173,9 @@ class Config:
     # Whether the agent may file its own pre-call annotation: on | off.
     # See DEFAULT_PROACTIVE_MODE above.
     proactive_mode: str = DEFAULT_PROACTIVE_MODE
+
+    # Whether `baton_annotate` is served: on | off. See DEFAULT_REPORT_MODE.
+    report_mode: str = DEFAULT_REPORT_MODE
 
     # Warnings raised while READING the environment, held here instead of
     # logged. ``from_env`` runs BEFORE ``_configure_logging`` (proxy.py
@@ -258,6 +267,16 @@ class Config:
                 f"BATON_PROACTIVE must be one of {sorted(_PROACTIVE_MODES)}; "
                 f"got {proactive_mode!r}."
             )
+        report_mode = _env("BATON_ANNOTATE") or DEFAULT_REPORT_MODE
+        if report_mode not in _REPORT_MODES:
+            raise ValueError(
+                f"BATON_ANNOTATE must be one of {sorted(_REPORT_MODES)}; got {report_mode!r}."
+            )
+        if report_mode == "off" and proactive_mode == "on":
+            warnings.append(
+                "baton-proxy: BATON_PROACTIVE='on' has no effect with BATON_ANNOTATE='off', "
+                "because no annotation tool is served."
+            )
         return cls(
             session_id=str(uuid.uuid4()),
             event_sink=_env("BATON_EVENT_SINK") or DEFAULT_EVENT_SINK,
@@ -267,6 +286,7 @@ class Config:
             vendor_id=vendor_id,
             intent_param_mode=intent_param_mode,
             proactive_mode=proactive_mode,
+            report_mode=report_mode,
             log_file=_env("BATON_PROXY_LOG_FILE"),
             startup_warnings=tuple(warnings),
         )

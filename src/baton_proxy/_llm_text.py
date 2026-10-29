@@ -21,7 +21,7 @@ cap on ``InitializeResult.instructions``):
   its call's intent.
 - *Annotation tool description* (this module's
   ``build_annotation_tool_description``) carries the field-level
-  reference — what belongs in user_goal / expected_result / overall_task /
+  reference — what belongs in user_goal / what_happened / tool_name /
   suggested_improvement / context. Loaded by Claude on every call to
   the annotation tool itself, so this is the right place for the
   just-in-time field dictionary. Its LEAD varies with ``proactive_mode``,
@@ -81,15 +81,13 @@ _HEAD_REACTIVE_ONLY = (
 
 # Rendered only when proactive_mode == "on".
 #
-# WHY IT IS GATED RATHER THAN DELETED. It names the same three fields the
-# injected params already carry on every call, so it teaches the agent that
-# intent is the annotation tool's job — measured 2026-09-01, three real
-# sessions filed four annotations, every one of them a pre-call annotation
-# carrying intent with no `signal_type`, and ZERO friction signals. It also
-# costs 260 of the suffix's chars, which is not free: the proxy APPENDS to the
-# upstream server's own instructions, and Claude Code truncates the field at
-# ~2,087 (workfront's rendered value measured 4,408 on 2026-09-01), so on a
-# large enterprise server it is the tail — our framing — that is silently cut.
+# WHY IT IS GATED RATHER THAN DELETED. It names the same field the
+# injected param already carries on every call, so it teaches the agent that
+# intent is the annotation tool's job, and agents then file pre-call
+# annotations instead of friction signals. It also costs 260 of the suffix's
+# chars, which is not free: the proxy APPENDS to the upstream server's own
+# instructions, and Claude Code truncates the field at ~2,087, so on a large
+# server it is the tail — our framing — that is silently cut.
 #
 # Both of those are arguments for turning it OFF, not for removing the choice.
 # The proxy fronts servers its operator does not own, and agent-authored
@@ -98,10 +96,7 @@ _HEAD_REACTIVE_ONLY = (
 # restart with nobody choosing it. It is the knob's job, exactly as in the SDK.
 _PROACTIVE_CLAUSE = (
     "BEFORE invoking any tool on this server, you MUST call "
-    "`{annotation_tool_name}` with user_goal (REQUIRED), expected_result "
-    "(REQUIRED), and overall_task (REQUIRED): a short stable label for "
-    "the broader task this call serves (e.g., 'morning meeting prep'), "
-    "repeated verbatim until the user starts a different task.\n\n"
+    "`{annotation_tool_name}` with user_goal (REQUIRED).\n\n"
 )
 
 # Always present, in both modes — this is the product signal, and it has no
@@ -136,9 +131,7 @@ _REACTIVE_CLAUSES = (
 # ``_ANNOTATION_LEAD_REACTIVE_ONLY``.
 #
 # `off` reframes the tool as the friction channel alone, which is also what the
-# handler then enforces — text is only a request, and one stray pre-call
-# annotation carrying an umbrella `overall_task` label is enough to merge two
-# distinct tasks in a consumer that groups on it.
+# handler then enforces — text is only a request.
 #
 # `user_goal` stays required in BOTH leads: a friction report still has to say
 # what was being attempted, and by then the params have carried it once
@@ -146,9 +139,8 @@ _REACTIVE_CLAUSES = (
 _ANNOTATION_LEAD_PROACTIVE = (
     "Record structured signal about a tool call on this server — what "
     "the user is trying to do, and how it went. Populate proactively "
-    "before the call (user_goal + expected_result + overall_task) and "
-    "reactively after if the result was unhelpful (what_happened + "
-    "tool_name + suggested_improvement).\n"
+    "before the call (user_goal) and reactively after if the result was "
+    "unhelpful (what_happened + tool_name + suggested_improvement).\n"
 )
 
 _ANNOTATION_LEAD_REACTIVE_ONLY = (
@@ -163,14 +155,7 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "{lead}"
     "\n"
     "Fields:\n"
-    "  - user_goal: one sentence on what the user is trying to "
-    "accomplish.\n"
-    "  - expected_result: what a successful result should look like, so a "
-    "silent/thin failure can be told apart from success.\n"
-    "  - overall_task: short stable label for the broader task this "
-    "call serves, e.g., 'morning meeting prep', 'pre-outreach "
-    "research'. REPEAT the exact same string on every call serving the "
-    "same task; change it only when the user starts a different task.\n"
+    "  - user_goal: {user_goal}\n"
     "  - what_happened: REQUIRED on a report{omit_on_a_note}. "
     "1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
     "what came back, and why it was unusable. Do NOT pick a category or "
@@ -196,13 +181,17 @@ _INSTRUCTIONS_LENGTH_CAP = 1500
 
 
 # A main agent that delegates may never load this server's tool schemas, so the
-# overall_task description never reaches it and its subagents get no number.
+# user_goal description never reaches it and its subagents get no number.
 _INSTRUCTIONS_SUBAGENT_CLAUSE = (
     "\n\nWhen you hand work to a subagent that may call this server's tools, tell it "
     "the number of the user's current message in this conversation, and that it "
-    "must start overall_task with that number on every call to this server's "
+    "must start user_goal with that number on every call to this server's "
     "tools. This applies only to this server's tools."
 )
+
+#: All of the proxy's instructions under ``BATON_ANNOTATE=off``, apart from the
+#: event-file line; the same sentence baton-sdk exports.
+INTENT_INSTRUCTIONS = _INSTRUCTIONS_SUBAGENT_CLAUSE.strip()
 
 
 # The line that tells the agent where the session's own events are, rendered
@@ -249,6 +238,7 @@ def build_instructions_suffix(
     proactive_mode: str = "off",
     event_file_path: str | None = None,
     intent_param_mode: str = "required",
+    report_mode: str = "on",
 ) -> str:
     """Build the proxy's instructions suffix.
 
@@ -257,7 +247,9 @@ def build_instructions_suffix(
     from the word `again`, which is a back-reference to that request and is
     rendered only when the request is. Any ``intent_param_mode`` but ``"off"``
     adds the subagent sentence, since every wrapped tool then carries
-    ``overall_task``.
+    ``user_goal``. ``report_mode="off"`` drops the annotation text, leaving the
+    subagent sentence and the event-file line; its default here is ``"on"`` so
+    a caller that does not pass it gets the text this function always built.
     Leg-for-leg the same selection baton-sdk's ``build_server_instructions``
     makes — only the DEFAULT differs, and deliberately: the SDK wraps a server
     its vendor owns, the proxy fronts servers its operator does not, so the
@@ -309,25 +301,13 @@ def build_instructions_suffix(
     routine, and ``_bootstrap`` logs a warning when it happens, so an operator
     whose agent was never told the path can find out why.
     """
-    head = _HEAD_PROACTIVE if proactive_mode == "on" else _HEAD_REACTIVE_ONLY
-    clause = _PROACTIVE_CLAUSE if proactive_mode == "on" else ""
-    rendered = (head + clause + _REACTIVE_CLAUSES).format(
-        annotation_tool_name=annotation_tool_name,
-        # The back-reference only has a referent when the clause above it
-        # rendered. Trailing space lives in the token so `off` leaves no
-        # double space behind.
-        again="again " if proactive_mode == "on" else "",
-    )
-    if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:
-        raise ValueError(
-            f"Rendered instructions suffix is {len(rendered)} chars, which "
-            f"exceeds the {_INSTRUCTIONS_LENGTH_CAP}-char safety cap "
-            f"(Claude Code truncates at ~{_CLAUDE_CODE_TRUNCATION_CAP}). "
-            f"Shorten annotation_tool_name."
-        )
-    # After the cap check: the sentence has a fixed length, so it comes out of
-    # the headroom under the truncation point. Before the event-file line, so
-    # truncation still takes that line first.
+    if report_mode == "off":
+        rendered = ""
+    else:
+        rendered = _render_report_text(annotation_tool_name, proactive_mode)
+    # After `_render_report_text` caps its text: the sentence has a fixed
+    # length, so it comes out of the headroom under the truncation point.
+    # Before the event-file line, so truncation still takes that line first.
     if intent_param_mode != "off":
         rendered += _INSTRUCTIONS_SUBAGENT_CLAUSE
     if event_file_path:
@@ -345,6 +325,26 @@ def build_instructions_suffix(
     return rendered
 
 
+def _render_report_text(annotation_tool_name: str, proactive_mode: str) -> str:
+    head = _HEAD_PROACTIVE if proactive_mode == "on" else _HEAD_REACTIVE_ONLY
+    clause = _PROACTIVE_CLAUSE if proactive_mode == "on" else ""
+    rendered = (head + clause + _REACTIVE_CLAUSES).format(
+        annotation_tool_name=annotation_tool_name,
+        # The back-reference only has a referent when the clause above it
+        # rendered. Trailing space lives in the token so `off` leaves no
+        # double space behind.
+        again="again " if proactive_mode == "on" else "",
+    )
+    if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:
+        raise ValueError(
+            f"Rendered instructions suffix is {len(rendered)} chars, which "
+            f"exceeds the {_INSTRUCTIONS_LENGTH_CAP}-char safety cap "
+            f"(Claude Code truncates at ~{_CLAUDE_CODE_TRUNCATION_CAP}). "
+            f"Shorten annotation_tool_name."
+        )
+    return rendered
+
+
 def build_annotation_tool_description(proactive_mode: str = "off") -> str:
     """Build the annotation tool's ``description`` field.
 
@@ -358,6 +358,7 @@ def build_annotation_tool_description(proactive_mode: str = "off") -> str:
     takes_notes = proactive_mode == "on"
     return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
         lead=_ANNOTATION_LEAD_PROACTIVE if takes_notes else _ANNOTATION_LEAD_REACTIVE_ONLY,
+        user_goal=_USER_GOAL_PARAM_BODY,
         omit_on_a_note=" — omit on a proactive annotation" if takes_notes else "",
         report_only="reactive-only — omit on a proactive. " if takes_notes else "",
     )
@@ -370,57 +371,32 @@ def build_annotation_tool_description(proactive_mode: str = "off") -> str:
 # Vendor-neutral names, not `baton_*`: anything the customer's agent can see on
 # an instrumented surface must speak the vendor's voice, never Baton's.
 USER_GOAL_PARAM_NAME = "user_goal"
+INTENT_PARAM_NAMES = (USER_GOAL_PARAM_NAME,)
+
+# No longer injected, but a client holding a tool list from before may still
+# send them: the upstream tool would get an argument it never declared, and
+# ``overall_task`` carries the turn number the Console falls back to.
 EXPECTED_RESULT_PARAM_NAME = "expected_result"
-# The task label (wire field ``call_workflow``).
-# Deliberately NOT named ``workflow``: injected params live inside vendor tool
-# schemas, where ``workflow`` is a plausible real vendor param (Workfront
-# approvals, CI pipelines, Notion automations) — a collision would make the
-# strip swallow the vendor's own argument, and the name would invite the model
-# to fill in the vendor object it is touching instead of the meta task label.
 OVERALL_TASK_PARAM_NAME = "overall_task"
-INTENT_PARAM_NAMES = (USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME)
+RETIRED_PARAM_NAMES = (EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME)
 
 # The text below is byte-identical to baton-sdk's and baton-ts's. Each producer
 # pins its own copy in its own suite (this suite ships in the Try Kit, where a
 # clone has no siblings to read), so change all three together.
 #
-# The leading label has to track ``intent_param_mode``: under ``"required"``
-# the injector appends the escalated params to the schema's advertised
-# ``required`` list, so a description still opening "OPTIONAL." contradicts the
-# schema it ships inside — the model reads both. Only the label moves; the body
-# is byte-identical across modes, because that sentence is the measured text and
-# the mode is not a licence to reword it.
-_USER_GOAL_PARAM_BODY = (
-    "One sentence: what the user is actually trying to accomplish "
-    "with this call (their goal, not a restatement of the arguments)."
-)
-
-_EXPECTED_RESULT_PARAM_BODY = (
-    "One sentence: what a successful result should look like, so a "
-    "silent/thin failure can be told apart from success."
-)
-
-# Two parts with two jobs. The leading number says which user message the
-# call answers, and the Console cuts a turn where it changes (SPEC §11.5.1
-# rule 2). The label after the colon says which task, and it works ONLY if the
-# model repeats it verbatim while the task is unchanged: user_goal and
-# expected_result reword freely, so they cannot key grouping.
+# The leading number says which user message the call answers, and the
+# Console cuts a turn where it changes (SPEC §11.5.1 rule 2). The Console
+# splits the rest on "; success is". Only the leading label tracks
+# ``intent_param_mode``, so it agrees with the schema's ``required`` list.
 #
 # Do not reword without scoring the result on live agents.
-_OVERALL_TASK_PARAM_BODY = (
-    "The number of the user's current message in this conversation "
-    "(1 for the first), a colon, then a short stable label for the broader "
-    "task this call serves (e.g. '3: prepare campaign approval'). Use the same "
-    "number on every call you make for that message, including calls made "
-    "after reading tool results; it goes up only when the user sends another "
-    "message. REPEAT the exact same label text after the colon on every call "
-    "serving the same task, across messages; change the label only when the "
-    "user starts a different task."
+_USER_GOAL_PARAM_BODY = (
+    "Write it as '<n>: <what this call is for>; success is <what its result "
+    "should show>'. n is the number of the user's current message in this "
+    "conversation (1 for the first). Use the same number on every call you make "
+    "for that message, including calls made after reading tool results; it goes "
+    "up only when the user sends another message."
 )
-
-
-def _labelled(body: str, intent_param_mode: str) -> str:
-    return ("REQUIRED. " if intent_param_mode == "required" else "OPTIONAL. ") + body
 
 
 def build_user_goal_param_description(*, intent_param_mode: str = "optional") -> str:
@@ -432,19 +408,8 @@ def build_user_goal_param_description(*, intent_param_mode: str = "optional") ->
     so that omitting the argument cannot silently advertise a constraint the
     caller never asked for — every real call site passes the configured mode.
     """
-    return _labelled(_USER_GOAL_PARAM_BODY, intent_param_mode)
-
-
-def build_expected_result_param_description(*, intent_param_mode: str = "optional") -> str:
-    """Build the injected ``expected_result`` param's ``description`` field;
-    the mode moves the label as for ``user_goal``."""
-    return _labelled(_EXPECTED_RESULT_PARAM_BODY, intent_param_mode)
-
-
-def build_overall_task_param_description(*, intent_param_mode: str = "optional") -> str:
-    """Build the injected ``overall_task`` param's ``description`` field;
-    the mode moves the label as for ``user_goal``."""
-    return _labelled(_OVERALL_TASK_PARAM_BODY, intent_param_mode)
+    label = "REQUIRED. " if intent_param_mode == "required" else "OPTIONAL. "
+    return label + _USER_GOAL_PARAM_BODY
 
 
 def required_param_names(*, intent_param_mode: str) -> tuple[str, ...]:
