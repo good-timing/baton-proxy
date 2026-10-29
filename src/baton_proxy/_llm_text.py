@@ -96,7 +96,7 @@ _ANNOTATION_LEAD_PROACTIVE = (
 # The Console splits user_goal on "; success is" (SPEC §11.5.1 rule 2).
 _USER_GOAL_FORMAT = "'<n>: <what this call is for>; success is <what its result should show>'"
 
-# Without its key list, no report put a diagnosis in context.
+# Keep the key list: without it, agents leave context empty.
 _CONTEXT_FIELD = (
     "  - context: supplementary info not covered above. Common keys: "
     "plan, alternatives_considered, likely_cause, user_impact, "
@@ -212,10 +212,9 @@ def build_instructions_suffix(
 ) -> str:
     """Build the proxy's instructions suffix.
 
-    ``proactive_mode="off"`` reframes the head and drops the pre-call
-    annotation request; the reactive clauses are the same in both modes apart
-    from the word `again`, which is a back-reference to that request and is
-    rendered only when the request is. Any ``intent_param_mode`` but ``"off"``
+    ``proactive_mode="off"`` renders only the pointer to the annotation tool,
+    whose description holds the report rules; ``"on"`` renders the head, the
+    pre-call request and the AFTER/IF clauses. Any ``intent_param_mode`` but ``"off"``
     adds the subagent sentence, since every wrapped tool then carries
     ``user_goal``. ``report_mode="off"`` drops the annotation text, leaving the
     subagent sentence and the event-file line; its default here is ``"on"`` so
@@ -225,15 +224,11 @@ def build_instructions_suffix(
     its vendor owns, the proxy fronts servers its operator does not, so the
     proxy ships at today's behaviour and the operator chooses.
 
-    ``event_file_path`` names the local event file, LAST, after both MUST
-    clauses. ⚠ That is deliberate and it is the opposite of where this line first
-    went. Claude Code truncates ``instructions`` at ~2,087 from the END and the
-    proxy APPENDS to whatever the upstream server sent, so on a server with
-    roughly 920-1,040 chars of its own instructions the cut lands inside our
-    suffix — and putting this line first moved the cut onto "Filing the
-    annotation does NOT replace answering", the clause without which the agent
-    treats the annotation as satisfying the user. Last means the convenience
-    line is what truncation takes, which is the right thing to lose.
+    ``event_file_path`` names the local event file, LAST, after the report
+    text. Claude Code truncates ``instructions`` at ~2,087 from the END and the
+    proxy APPENDS to whatever the upstream server sent, so on a server with long
+    instructions of its own the cut lands inside our suffix. Last means the
+    convenience line is what truncation takes, not a report rule.
 
     None when the sink spec has no ``file://`` leg — every http-only wrap, which
     is the common production shape. ⚠ NOT "every production wrap": a
@@ -251,18 +246,16 @@ def build_instructions_suffix(
 
     ⚠ TWO CAPS, and the split is the point.
 
-    ``_INSTRUCTIONS_LENGTH_CAP`` (1,500) bounds the BASE suffix — head, optional
-    pre-call clause, both MUST clauses — and overflowing it RAISES, as it always
-    did. Its 587-char margin under the client's ~2,087 exists so that a server
-    with instructions of its own does not have OUR normative text cut.
+    ``_INSTRUCTIONS_LENGTH_CAP`` (1,500) bounds the report text — the pointer, or
+    under ``proactive_mode="on"`` the head, pre-call request and AFTER/IF
+    clauses — and overflowing it RAISES. Its margin under the client's ~2,087
+    exists so that a server with instructions of its own does not have our
+    report text cut.
 
     The event-file line is measured against ``_CLAUDE_CODE_TRUNCATION_CAP``
-    instead, and it earns that by being LAST. Truncation eats the end, so this
-    line's bytes can only ever displace this line — they cannot push a MUST
-    clause over the cliff, which is the whole thing the 1,500 margin protects.
-    Holding it to 1,500 as well bought nothing and cost the sentence its
-    accuracy: it left 160 chars under ``proactive_mode="on"``, and the honest
-    wording does not fit 160.
+    instead, and it earns that by being LAST: truncation eats the end, so this
+    line's bytes can only ever displace this line, never the report text the
+    1,500 margin protects.
 
     It is still DROPPED rather than raised on when it does not fit even that,
     because its length comes from the operator's sink URL — a filesystem path is
