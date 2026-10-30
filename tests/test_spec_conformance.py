@@ -16,7 +16,7 @@ import pytest
 
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter
-from baton_proxy.identity import Principal
+from baton_proxy.identity import Organization, Principal
 from tests.fixture_responses import BAD_CURSOR
 
 HERE = Path(__file__).parent
@@ -232,7 +232,7 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
     emitter.enqueue_tool_call_start(
         tool_name="echo",
         params={},
-        principal=Principal(principal_id="u123"),
+        principal=Principal(principal_id="u123", organization=Organization("org_acme")),
         call_id="c1",
         call_expected="one record",
         call_workflow="2: lookup",
@@ -250,6 +250,7 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
     assert principal["id"] == "u123"
     assert principal["source"] == "asserted", "the proxy verifies nothing"
     assert principal["form"] == "raw"
+    assert event["organization"] == {"id": "org_acme", "source": "asserted", "form": "raw"}
     assert set(EXERCISED_BY_THE_EMITTER["tool_call_start"]) <= set(event["payload"])
     jsonschema.validate(event, event_schema)
 

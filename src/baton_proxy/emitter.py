@@ -38,6 +38,7 @@ from baton_proxy.identity import (
     PRINCIPAL_FORMS,
     PRINCIPAL_ID_MAX_LEN,
     PRINCIPAL_SOURCE,
+    Organization,
     Principal,
 )
 from baton_proxy.scrub import Scrubber
@@ -104,7 +105,8 @@ class _PrincipalWire:
     """The principal AS EMITTED — the finished envelope value (SPEC §11.4).
 
     ⚠ **Not ``identity.Principal``.** That one is what a resolver HANDS US;
-    this is what ``_wire_principal`` puts on the wire for it.
+    this is what ``_wire_caller`` puts on the wire for it, as ``principal`` or
+    ``organization``.
 
     All three members are required together — canonical wording in
     ``baton-spec/events.schema.json`` ``$defs.PrincipalWire``, checked out
@@ -124,38 +126,28 @@ class _PrincipalWire:
 _UNSENDABLE = re.compile("[\x00\ud800-\udfff]")
 
 
-def _wire_principal(principal: Principal | None) -> _PrincipalWire | None:
-    """The resolver's principal as the wire object, or ``None``.
+def _wire_identity(value_id: object, form: object, *, field: str) -> _PrincipalWire | None:
+    """One resolved identity as its wire object, or ``None``.
 
     The id is sent as given and not scrubbed: a scrubber that redacts emails
     would map every user onto one redaction constant and merge them into a
     single actor.
     """
-    if principal is None:
-        return None
-    if not isinstance(principal, Principal):
+    if not isinstance(value_id, str) or not value_id.strip():
+        # A blank id names nobody, and every such caller would merge into one.
         logger.warning(
-            "baton-proxy: resolver returned %s, not a Principal — dropping "
-            "principal (events still emit)",
-            type(principal).__name__,
+            "baton-proxy: resolver returned an empty or non-string %s — dropping it "
+            "(events still emit)",
+            field,
         )
         return None
-    principal_id = principal.principal_id
-    if not isinstance(principal_id, str) or not principal_id.strip():
-        # A blank id names nobody, and every such caller would merge into one
-        # actor.
+    if _UNSENDABLE.search(value_id):
         logger.warning(
-            "baton-proxy: resolver returned an empty or non-string principal_id "
-            "— dropping principal (events still emit)"
+            "baton-proxy: resolver returned a %s holding a lone surrogate or U+0000 "
+            "— dropping it (events still emit)",
+            field,
         )
         return None
-    if _UNSENDABLE.search(principal_id):
-        logger.warning(
-            "baton-proxy: resolver returned a principal_id holding a lone surrogate "
-            "or U+0000 — dropping principal (events still emit)"
-        )
-        return None
-    form = principal.form
     if not isinstance(form, str) or form not in PRINCIPAL_FORMS:
         # SPEC §11.4: anything not "hashed" is personal data, so that is the
         # only safe reading of a form nobody registered.
@@ -166,8 +158,41 @@ def _wire_principal(principal: Principal | None) -> _PrincipalWire | None:
             PRINCIPAL_FORM_RAW,
         )
         form = PRINCIPAL_FORM_RAW
-    return _PrincipalWire(
-        id=principal_id[:PRINCIPAL_ID_MAX_LEN], source=PRINCIPAL_SOURCE, form=form
+    return _PrincipalWire(id=value_id[:PRINCIPAL_ID_MAX_LEN], source=PRINCIPAL_SOURCE, form=form)
+
+
+def _wire_organization(organization: object) -> _PrincipalWire | None:
+    if organization is None:
+        return None
+    if not isinstance(organization, Organization):
+        logger.warning(
+            "baton-proxy: a Principal's organization is %s, not an Organization — "
+            "dropping it (events still emit)",
+            type(organization).__name__,
+        )
+        return None
+    return _wire_identity(organization.organization_id, organization.form, field="organization_id")
+
+
+def _wire_caller(
+    resolved: Principal | Organization | None,
+) -> tuple[_PrincipalWire | None, _PrincipalWire | None]:
+    """The resolver's answer as ``(principal, organization)`` wire objects. An
+    unusable one is dropped alone (SPEC §11.4)."""
+    if resolved is None:
+        return None, None
+    if isinstance(resolved, Organization):
+        return None, _wire_organization(resolved)
+    if not isinstance(resolved, Principal):
+        logger.warning(
+            "baton-proxy: resolver returned %s, not a Principal or Organization — "
+            "dropping it (events still emit)",
+            type(resolved).__name__,
+        )
+        return None, None
+    return (
+        _wire_identity(resolved.principal_id, resolved.form, field="principal_id"),
+        _wire_organization(resolved.organization),
     )
 
 
@@ -195,6 +220,9 @@ class _Event:
     # Who was resolved behind this event (SPEC §11.4) — the id plus the two
     # facts that classify it. None → the member is omitted WHOLE.
     principal: _PrincipalWire | None = None
+    # The company the caller belongs to, with ``principal``'s members (SPEC
+    # §11.4). None → omitted WHOLE.
+    organization: _PrincipalWire | None = None
     call_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
@@ -215,6 +243,8 @@ class _Event:
             d["runtime_meta"] = self.runtime_meta
         if self.principal is not None:
             d["principal"] = self.principal.to_json()
+        if self.organization is not None:
+            d["organization"] = self.organization.to_json()
         if self.call_id is not None:
             d["call_id"] = self.call_id
         return d
@@ -371,7 +401,7 @@ class Emitter:
         intent_source: str | None = None,
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
-        principal: Principal | None = None,
+        principal: Principal | Organization | None = None,
         call_id: str,
     ) -> None:
         # `call_intent` / `call_expected` / `call_workflow` are the values
@@ -439,7 +469,7 @@ class Emitter:
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
-        principal: Principal | None = None,
+        principal: Principal | Organization | None = None,
         call_id: str,
     ) -> None:
         # session_id/principal are additive: the stdio proxy omits them (1-process-
@@ -465,7 +495,7 @@ class Emitter:
         result: Any = None,
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
-        principal: Principal | None = None,
+        principal: Principal | Organization | None = None,
         call_id: str,
     ) -> None:
         """SPEC §11.4.3. ``result`` carries the full MCP envelope for a failure
@@ -733,7 +763,7 @@ class Emitter:
         tool_name: str | None = None,
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
-        principal: Principal | None = None,
+        principal: Principal | Organization | None = None,
         signal_type: str | None = None,
     ) -> None:
         """Annotation event per SPEC §11.4; nullable keys omitted when None.
@@ -774,7 +804,7 @@ class Emitter:
         payload: dict[str, Any],
         runtime_meta: dict[str, Any] | None,
         session_id: str | None = None,
-        principal: Principal | None = None,
+        principal: Principal | Organization | None = None,
         call_id: str | None = None,
     ) -> None:
         # `session_id` overrides the per-process session for callers that
@@ -785,7 +815,7 @@ class Emitter:
         if not self._config.emission_enabled or self._thread is None:
             return
 
-        principal_wire = _wire_principal(principal)
+        principal_wire, organization_wire = _wire_caller(principal)
 
         # Scrub PII from the payload before anything else touches it. Both
         # the file sink and any HTTP sink will see only the scrubbed copy,
@@ -817,6 +847,7 @@ class Emitter:
             payload=payload,
             runtime_meta=runtime_meta,
             principal=principal_wire,
+            organization=organization_wire,
             call_id=call_id,
         )
 

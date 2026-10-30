@@ -2,7 +2,7 @@
 
 Baton attaches the resolved principal (``principal``) to every event so the
 Console can group by ``(tenant_id, vendor_id, principal.id)``, at whatever grain
-the resolver named: a person, a service account or an organisation (SPEC
+the resolver named: a person or a service account (SPEC
 §11.4). The resolver decides everything about the value, including whether it
 is hashed; the emitter sends it on as stated.
 
@@ -29,6 +29,18 @@ PRINCIPAL_ID_MAX_LEN = 128
 
 
 @dataclass(frozen=True)
+class Organization:
+    """The company or workspace the caller belongs to, as the vendor sees it.
+
+    Sent as ``organization`` (SPEC §11.4), beside ``principal`` or alone. It is
+    never counted as a person. ``form`` describes ``organization_id`` alone.
+    """
+
+    organization_id: str
+    form: Literal["raw", "hashed"] = "raw"
+
+
+@dataclass(frozen=True)
 class Principal:
     """A resolved principal, as a resolver returns it.
 
@@ -48,12 +60,14 @@ class Principal:
     a pseudonym the resolver derived itself. A consumer treats anything not
     ``"hashed"`` as personal data, so leave it unset unless the resolver
     hashed the value."""
+    organization: Organization | None = None
 
 
 class IdentityResolver(Protocol):
     """Turns a modality-native carrier (gRPC headers / FastMCP context /
-    host-app callback / process env) into a ``Principal``. Returns ``None`` when
+    host-app callback / process env) into a ``Principal`` or an
+    ``Organization``. Returns ``None`` when
     no identity is available — the core then omits ``principal`` WHOLE
     (fail-open)."""
 
-    def resolve(self, carrier: Any) -> Principal | None: ...
+    def resolve(self, carrier: Any) -> Principal | Organization | None: ...

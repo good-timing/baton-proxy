@@ -13,7 +13,7 @@ import pytest
 
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter
-from baton_proxy.identity import Principal
+from baton_proxy.identity import Organization, Principal
 from baton_proxy.scrub import Scrubber
 
 
@@ -29,7 +29,7 @@ def _config(path: str) -> Config:
     )
 
 
-def _emit_one(tmp_path, *, principal: Principal | None) -> dict:
+def _emit_one(tmp_path, *, principal: Principal | Organization | None) -> dict:
     p = tmp_path / "events.jsonl"
     e = Emitter(_config(str(p)))
     e.start()
@@ -106,6 +106,54 @@ def test_no_principal_omits_the_member(tmp_path) -> None:
     ev = _emit_one(tmp_path, principal=None)
     assert "principal" not in ev
     assert "principal_id" not in ev
+
+
+ACME_WIRE = {"id": "org_acme", "source": "asserted", "form": "hashed"}
+U123_WIRE = {"id": "u123", "source": "asserted", "form": "raw"}
+
+
+@pytest.mark.parametrize(
+    ("returned", "principal", "organization"),
+    [
+        pytest.param(
+            Principal(principal_id="u123", organization=Organization("org_acme", form="hashed")),
+            U123_WIRE,
+            ACME_WIRE,
+            id="a-person-and-their-company",
+        ),
+        pytest.param(
+            Organization("org_acme", form="hashed"), None, ACME_WIRE, id="only-the-company"
+        ),
+        pytest.param(
+            Principal(principal_id=" ", organization=Organization("org_acme", form="hashed")),
+            None,
+            ACME_WIRE,
+            id="an-unusable-person-keeps-the-company",
+        ),
+        pytest.param(
+            Principal(principal_id="u123", organization=Organization("")),
+            U123_WIRE,
+            None,
+            id="an-unusable-company-keeps-the-person",
+        ),
+        pytest.param(
+            Principal(principal_id="u123", organization="org_acme"),  # type: ignore[arg-type]
+            U123_WIRE,
+            None,
+            id="a-company-that-is-not-an-Organization-keeps-the-person",
+        ),
+    ],
+)
+def test_the_organization_rides_beside_the_principal(
+    tmp_path, returned: Any, principal: Any, organization: Any
+) -> None:
+    """SPEC §11.4: either can be present without the other, and an absent one
+    is omitted whole."""
+    ev = _emit_one(tmp_path, principal=returned)
+    assert ev.get("principal") == principal
+    assert ev.get("organization") == organization
+    if organization is None:
+        assert "organization" not in ev
 
 
 # ---- scrub: user_name redacted, name-ish keys untouched --------------------

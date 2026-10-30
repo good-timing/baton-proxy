@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`Organization`**, the company or workspace the caller belongs to. The
+  emitter's `principal=` takes a `Principal` with an `organization`, or an
+  `Organization` alone, and sends it as a new optional envelope member beside
+  `principal` (SPEC §11.4). Either one is dropped alone when unusable. The
+  stdio proxy resolves no caller, so it sends neither; `baton-extmcp` is the
+  producer that uses this.
+
 ## [0.7.0] — 2026-10-30
 
 ### Removed
