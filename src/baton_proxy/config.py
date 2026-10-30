@@ -74,61 +74,11 @@ DEFAULT_INTENT_PARAM_MODE = "required"
 # retirement is not allowed to stop a wrapped server from starting.
 _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required"})
 
-# Valid values for BATON_PROACTIVE — whether the agent may FILE its own
-# pre-call annotation. Ported from baton-sdk's ``VendorConfig.proactive_mode``
-# (SPEC §14, "proactive_mode parity across producers").
-#
-#   on  — the instructions ask for a pre-call annotation, the tool is described
-#       as proactive-and-reactive, and the handler accepts an annotation with
-#       no what_happened.
-#   off (default) — no pre-call request, the tool is described
-#       as reactive-only, and the handler REFUSES an annotation with no
-#       what_happened, the way the SDK does. Refusing there rather than
-#       requiring what_happened in the schema keeps the agent from inventing a
-#       problem to get the call through, which would corrupt the one signal
-#       worth protecting.
-#
-# REACTIVE IS UNCONDITIONAL. The AFTER/IF clauses are byte-identical in both
-# modes, the tool is always registered, and a report (an annotation with
-# what_happened filled) is always accepted. `off` costs the agent's pre-call narration
-# and nothing else — suppressing the tool itself would also lose the reports,
-# which are the product.
-#
-# What the knob never touches: the tool itself, and the injected params, whose
-# intent rides every tool_call_start in both modes.
-#
-# WHY THE DEFAULT IS `off`:
-#
-#   1. The pre-call request COSTS the optional params. Measured live: with the
-#      paragraph rendered the agent stated its expectation once in the
-#      annotation and then omitted `expected_result` from all 5 calls; without
-#      it, 3/3 calls carried it. `user_goal` held at 8/8 either way because the
-#      schema advertises it as required. So the paragraph does not add intent,
-#      it moves it out of the per-call record.
-#   2. It costs 277 of 1,236 chars against Claude Code's ~2,087 cap on a field
-#      the proxy APPENDS to — on a 100-tool enterprise server (workfront
-#      rendered 4,408) our framing is what gets silently cut.
-#   3. It costs an approval INSIDE the work window. The first human-led try-kit
-#      run hit a permission prompt for `baton_annotate` mid-task, in the one
-#      session where nothing mentions Baton; one denial and the whole intent
-#      layer looked empty. Under `off` the tool is only reached on friction.
-#   4. It did not buy friction: across three real sessions with the paragraph
-#      rendered, every annotation was pre-call and ZERO friction signals were
-#      filed.
-#
-# The cost, and it is real: agent-authored proactives supply ~54% of turn
-# boundaries (SPEC §11.5 tier 2), so sessions collapse toward one turn until a
-# correlator keys on `call_workflow` instead. That field is now present on
-# 8 of 8 real calls, so the replacement signal is flowing before the boundary
-# it replaces is removed.
-DEFAULT_PROACTIVE_MODE = "off"
-_PROACTIVE_MODES: frozenset[str] = frozenset({"on", "off"})
-
 # Valid values for BATON_ANNOTATE — whether the proxy serves `baton_annotate`
 # at all, as baton-sdk's ``VendorConfig.report_mode``. ``off`` (the default)
 # serves no tool and leaves only the subagent sentence (and the event-file
 # line) in the instructions; each call's goal still rides `user_goal`. ``on``
-# serves the tool and its instructions, and BATON_PROACTIVE then applies.
+# serves the tool and its instructions.
 DEFAULT_REPORT_MODE = "off"
 _REPORT_MODES: frozenset[str] = frozenset({"on", "off"})
 
@@ -169,10 +119,6 @@ class Config:
     # Per-tool intent-param injection mode: optional | required | off.
     # See DEFAULT_INTENT_PARAM_MODE above.
     intent_param_mode: str = DEFAULT_INTENT_PARAM_MODE
-
-    # Whether the agent may file its own pre-call annotation: on | off.
-    # See DEFAULT_PROACTIVE_MODE above.
-    proactive_mode: str = DEFAULT_PROACTIVE_MODE
 
     # Whether `baton_annotate` is served: on | off. See DEFAULT_REPORT_MODE.
     report_mode: str = DEFAULT_REPORT_MODE
@@ -261,21 +207,14 @@ class Config:
                 f"BATON_INTENT_PARAM must be one of {sorted(_INTENT_PARAM_MODES)}; "
                 f"got {intent_param_mode!r}."
             )
-        proactive_mode = _env("BATON_PROACTIVE") or DEFAULT_PROACTIVE_MODE
-        if proactive_mode not in _PROACTIVE_MODES:
-            raise ValueError(
-                f"BATON_PROACTIVE must be one of {sorted(_PROACTIVE_MODES)}; "
-                f"got {proactive_mode!r}."
-            )
+        if _env("BATON_PROACTIVE"):
+            # Warned rather than refused, like BATON_INTENT_PARAM=off: an old
+            # config entry must not stop the wrapped server from starting.
+            warnings.append("baton-proxy: BATON_PROACTIVE is no longer read and has no effect.")
         report_mode = _env("BATON_ANNOTATE") or DEFAULT_REPORT_MODE
         if report_mode not in _REPORT_MODES:
             raise ValueError(
                 f"BATON_ANNOTATE must be one of {sorted(_REPORT_MODES)}; got {report_mode!r}."
-            )
-        if report_mode == "off" and proactive_mode == "on":
-            warnings.append(
-                "baton-proxy: BATON_PROACTIVE='on' has no effect with BATON_ANNOTATE='off', "
-                "because no annotation tool is served."
             )
         return cls(
             session_id=str(uuid.uuid4()),
@@ -285,7 +224,6 @@ class Config:
             consent_token=_env("BATON_CONSENT_TOKEN") or DEFAULT_CONSENT_TOKEN,
             vendor_id=vendor_id,
             intent_param_mode=intent_param_mode,
-            proactive_mode=proactive_mode,
             report_mode=report_mode,
             log_file=_env("BATON_PROXY_LOG_FILE"),
             startup_warnings=tuple(warnings),

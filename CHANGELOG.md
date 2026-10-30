@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+
+- **`BATON_PROACTIVE`.** The proxy no longer reads it. Setting it now logs one
+  startup warning and does nothing. `baton_annotate` takes only reports: a
+  call without `what_happened` is refused and records nothing, as it already
+  was by default. The text served with `BATON_ANNOTATE=on` or `off` is
+  unchanged.
+
 ## [0.6.19] — 2026-10-29
 
 baton-sdk 0.8.22's one numbered `user_goal` and 0.8.23's opt-in reports.

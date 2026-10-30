@@ -95,14 +95,14 @@ def _surface_hash(surface: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _build_injected_tool(tool_name: str, proactive_mode: str = "off") -> dict[str, Any]:
-    # `what_happened` is never listed (see `proactive_mode` in config.py).
-    # `tool_name` is listed when the tool only takes reports, so an agent with
+def _build_injected_tool(tool_name: str) -> dict[str, Any]:
+    # `what_happened` is never listed: a call without it is refused at the
+    # handler instead, because a schema that demands it makes the agent invent
+    # a problem to get the call through. `tool_name` is listed so an agent with
     # no tool to name says so; a report that omits it is still taken.
-    required = ["user_goal"] if proactive_mode == "on" else ["user_goal", "tool_name"]
     return {
         "name": tool_name,
-        "description": build_annotation_tool_description(proactive_mode),
+        "description": build_annotation_tool_description(),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -119,7 +119,7 @@ def _build_injected_tool(tool_name: str, proactive_mode: str = "off") -> dict[st
             # this one is appended, so it never enters the param registry — and
             # a call to this tool is answered here rather than forwarded, so it
             # never reaches the strip.
-            "required": required,
+            "required": ["user_goal", "tool_name"],
         },
     }
 
@@ -142,13 +142,9 @@ class _Injection:
     # `create`, from the one thing that settles it — whether the path is in the
     # text that shipped.
     event_line_dropped: bool = False
-    # Intent-param injection mode: "optional" | "required" | "off". Defaulted
+    # Intent-param injection mode: "optional" | "required". Defaulted
     # so tests that build _Injection directly keep their existing shape.
     intent_param_mode: str = "optional"
-    # Whether the agent may file a pre-call annotation: "on" | "off".
-    # Defaulted, like the field above, so tests that build _Injection directly
-    # keep their existing shape.
-    proactive_mode: str = "off"
 
     @property
     def names(self) -> set[str]:
@@ -160,7 +156,6 @@ class _Injection:
         event_file_path: str | None,
         *,
         intent_param_mode: str = "optional",
-        proactive_mode: str = "off",
         report_mode: str = "on",
     ) -> _Injection:
         """``event_file_path`` is the local event file, already resolved.
@@ -172,22 +167,15 @@ class _Injection:
         """
         suffix = build_instructions_suffix(
             ANNOTATE_TOOL_NAME,
-            proactive_mode,
             event_file_path=event_file_path,
-            intent_param_mode=intent_param_mode,
             report_mode=report_mode,
         )
-        tools = (
-            []
-            if report_mode == "off"
-            else [_build_injected_tool(ANNOTATE_TOOL_NAME, proactive_mode)]
-        )
+        tools = [] if report_mode == "off" else [_build_injected_tool(ANNOTATE_TOOL_NAME)]
         return cls(
             tools=tools,
             instructions_suffix=suffix,
             event_line_dropped=bool(event_file_path) and event_file_path not in suffix,
             intent_param_mode=intent_param_mode,
-            proactive_mode=proactive_mode,
         )
 
 
@@ -354,8 +342,8 @@ def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
     declares the name, left untouched, per skip-if-exists) — a retired name the
     tool declares is recorded "native" so a stale client's value for it is
     forwarded. Not a recognisable tool object -> empty dict, nothing recorded.
-    Mutates the tool in place. ``mode`` is "optional" or "required" — "off" is
-    gated by the caller. Mirrors baton-sdk's ``inject_goal_params``.
+    Mutates the tool in place. ``mode`` is "optional" or "required". Mirrors
+    baton-sdk's ``inject_goal_params``.
     """
     if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
         return {}
@@ -469,9 +457,8 @@ def _is_report(what_happened: Any) -> bool:
     return isinstance(what_happened, str) and bool(what_happened.strip())
 
 
-def _refuse_proactive(req: dict[str, Any]) -> dict[str, Any]:
-    """The response to an agent-filed annotation that is not a report, under
-    ``proactive_mode="off"``.
+def _refuse_pre_call_annotation(req: dict[str, Any]) -> dict[str, Any]:
+    """The response to an agent-filed annotation that is not a report.
 
     A normal result rather than a JSON-RPC error: an error reads as the server
     being broken and invites a retry loop. The text gives each sender its next
@@ -505,25 +492,11 @@ def _refuse_proactive(req: dict[str, Any]) -> dict[str, Any]:
 
 
 def _handle_injected_call(req: dict[str, Any]) -> dict[str, Any]:
-    """Synthesise a response for whichever injected tool was called.
-
-    The annotation event itself is enqueued by the caller before this is
-    invoked; this only builds the JSON-RPC envelope to send back. There is one
-    injected tool, so there is no name fork left — the shape stays
-    name-dispatched-by-default rather than asserting the name, because a bug
-    here MUST NOT break MCP traffic.
-    """
-    params = req.get("params") or {}
-    args = params.get("arguments") if isinstance(params, dict) else None
-    args = args or {}
-    if _is_report(args.get("what_happened")):
-        confirmation = "baton_annotate recorded your report"
-    else:
-        confirmation = "baton_annotate recorded proactive intent"
+    """The reply to a report the caller has already recorded."""
     return {
         "jsonrpc": "2.0",
         "id": req.get("id"),
-        "result": {"content": [{"type": "text", "text": confirmation}]},
+        "result": {"content": [{"type": "text", "text": "baton_annotate recorded your report"}]},
     }
 
 
@@ -732,53 +705,36 @@ class MessageProcessor:
             params = req.get("params", {}) or {}
             tool_name = params.get("name")
             if tool_name in self._injection.names:
-                # The proxy owns this tool — don't forward. For annotate
-                # calls, emit the annotation event before synthesising the
-                # response; that's the whole point of intercepting it.
-                if tool_name == ANNOTATE_TOOL_NAME:
-                    args = params.get("arguments", {}) or {}
-                    # proactive_mode="off": refuse the agent's OWN pre-call
-                    # annotation structurally, not by instruction text alone.
-                    # Before the enqueue on purpose: a refused annotation must
-                    # leave NO event.
-                    what_happened = args.get("what_happened")
-                    reporting = _is_report(what_happened)
-                    if self._injection.proactive_mode == "off" and not reporting:
-                        return _ClientAction(respond=_refuse_proactive(req))
-                    reported_tool = args.get("tool_name")
-                    ann_meta = (
-                        params.get("_meta") if isinstance(params.get("_meta"), dict) else None
-                    )
-                    ctx = args.get("context") if isinstance(args.get("context"), dict) else None
-                    try:
-                        self._emitter.enqueue_annotation(
-                            what_happened=what_happened if reporting else None,
-                            # A string is sent as given: "" and the word none
-                            # both say "no tool exists" and must not become null.
-                            tool_name=reported_tool if isinstance(reported_tool, str) else None,
-                            # The agent-facing `user_goal` is stored as the
-                            # wire key `intent`.
-                            intent=args.get("user_goal"),
-                            suggested_improvement=args.get("suggested_improvement"),
-                            context=ctx,
-                            runtime_meta=ann_meta,
-                        )
-                    except Exception:
-                        logger.exception("baton-proxy: enqueue annotation failed")
+                # The proxy owns this tool — don't forward. Emit the annotation
+                # event before synthesising the response; that's the whole
+                # point of intercepting it.
+                args = params.get("arguments", {}) or {}
+                # Refuse the agent's OWN pre-call annotation structurally,
+                # not by instruction text alone.
+                # Before the enqueue on purpose: a refused annotation must
+                # leave NO event.
+                what_happened = args.get("what_happened")
+                if not _is_report(what_happened):
+                    return _ClientAction(respond=_refuse_pre_call_annotation(req))
+                reported_tool = args.get("tool_name")
+                ann_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+                ctx = args.get("context") if isinstance(args.get("context"), dict) else None
                 try:
-                    response = _handle_injected_call(req)
+                    self._emitter.enqueue_annotation(
+                        what_happened=what_happened,
+                        # A string is sent as given: "" and the word none
+                        # both say "no tool exists" and must not become null.
+                        tool_name=reported_tool if isinstance(reported_tool, str) else None,
+                        # The agent-facing `user_goal` is stored as the
+                        # wire key `intent`.
+                        intent=args.get("user_goal"),
+                        suggested_improvement=args.get("suggested_improvement"),
+                        context=ctx,
+                        runtime_meta=ann_meta,
+                    )
                 except Exception:
-                    logger.exception("baton-proxy: synthesising injected response failed")
-                    # Fail-open: a synthesis bug must still return *something*
-                    # to the client rather than dangle the request id.
-                    response = {
-                        "jsonrpc": "2.0",
-                        "id": req.get("id"),
-                        "result": {
-                            "content": [{"type": "text", "text": "baton_annotate recorded"}]
-                        },
-                    }
-                return _ClientAction(respond=response)
+                    logger.exception("baton-proxy: enqueue annotation failed")
+                return _ClientAction(respond=_handle_injected_call(req))
 
             # Real tool call — emit start FIRST, then track for end/error.
             # Order matters: if enqueue throws we MUST NOT have a pending
@@ -888,8 +844,6 @@ class MessageProcessor:
         a retired name keeps it. Never raises; on any error the call proceeds
         with whatever state it has (fail-open).
         """
-        if self._injection.intent_param_mode == "off":
-            return None, None, None
         try:
             args = params.get("arguments")
             if not isinstance(args, dict):
@@ -1066,15 +1020,11 @@ class MessageProcessor:
                 tools=surface["tools"],
                 seam_augmentations={
                     "injected_tools": sorted(self._injection.names),
-                    "intent_param": (
-                        {
-                            "names": sorted(INTENT_PARAM_NAMES),
-                            "required_names": sorted(required_param_names(intent_param_mode=mode)),
-                            "mode": mode,
-                        }
-                        if mode != "off"
-                        else None
-                    ),
+                    "intent_param": {
+                        "names": sorted(INTENT_PARAM_NAMES),
+                        "required_names": sorted(required_param_names(intent_param_mode=mode)),
+                        "mode": mode,
+                    },
                     "instructions_suffix": bool(self._injection.instructions_suffix),
                 },
             )
@@ -1089,8 +1039,6 @@ class MessageProcessor:
         in the registry (upsert — see __init__). Fail-open: any error is logged
         and the response is forwarded as-is.
         """
-        if self._injection.intent_param_mode == "off":
-            return
         try:
             result = msg.get("result")
             if not isinstance(result, dict):
@@ -1325,7 +1273,6 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     injection = _Injection.create(
         event_file,
         intent_param_mode=config.intent_param_mode,
-        proactive_mode=config.proactive_mode,
         report_mode=config.report_mode,
     )
     # The instructions suffix DROPS the event-file line rather than breaching the
@@ -1334,13 +1281,11 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     # loop above: the alternative is an operator whose agent never learns where
     # the events are, with nothing anywhere saying why.
     if injection.event_line_dropped:
-        proactive = config.report_mode == "on" and config.proactive_mode == "on"
         logger.warning(
             "baton-proxy: the event file path (%s) did not fit the instructions "
             "length cap, so the agent will not be told where to read the captured "
-            "calls. Use a shorter sink path%s to restore it.",
+            "calls. Use a shorter sink path to restore it.",
             event_file,
-            ", or BATON_PROACTIVE=off," if proactive else "",
         )
     emitter = Emitter(config)
     emitter.start()
@@ -1484,13 +1429,11 @@ def run_proxy(argv: list[str]) -> int:
     """
     config, injection, emitter, processor = _bootstrap()
     logger.info(
-        "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, "
-        "proactive=%s, upstream=%s)",
+        "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, upstream=%s)",
         config.session_id,
         "on" if config.emission_enabled else "off",
         sorted(injection.names),
         injection.intent_param_mode,
-        injection.proactive_mode,
         " ".join(argv),
     )
 
@@ -1578,12 +1521,11 @@ def run_http_proxy(url: str) -> int:
     auth_token = os.environ.get("BATON_UPSTREAM_AUTH_TOKEN")
     logger.info(
         "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, "
-        "proactive=%s, upstream=%s, transport=http, auth=%s)",
+        "upstream=%s, transport=http, auth=%s)",
         config.session_id,
         "on" if config.emission_enabled else "off",
         sorted(injection.names),
         injection.intent_param_mode,
-        injection.proactive_mode,
         url,
         "bearer" if auth_token else "none",
     )

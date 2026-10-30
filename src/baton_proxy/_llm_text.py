@@ -6,16 +6,11 @@ the calling agent. Vendors moving from proxy (hosted-eval depth) to SDK
 (deep instrumentation depth) get the same field reference and the same
 behavioral framing — only the deployment shape differs.
 
-**Reports only** (``proactive_mode="off"``, the default): the instructions
-suffix is one sentence pointing at the annotation tool, and the tool's
-description holds the triggers, the recovery rule and the fields, so each rule
-is written once. The proxy APPENDS to the upstream server's instructions and
-Claude Code truncates the field at ~2,087 from the end, so a short suffix is
-also the one least likely to be cut.
-
-**Proactive** (``proactive_mode="on"``): the suffix carries the BEFORE/AFTER/IF
-triggers, because only text loaded at session start can ask for an annotation
-before the first tool call.
+The instructions suffix is one sentence pointing at the annotation tool, and
+the tool's description holds the triggers, the recovery rule and the fields, so
+each rule is written once. The proxy APPENDS to the upstream server's
+instructions and Claude Code truncates the field at ~2,087 from the end, so a
+short suffix is also the one least likely to be cut.
 
 Every trigger names a state the agent can check against its own behavior (an
 error, a missing field, a workaround), not a judgement it has to remember to
@@ -24,62 +19,12 @@ make.
 
 from __future__ import annotations
 
-# Proxy variant of the SDK template. Two adaptations vs the SDK shape:
-#   1. The proxy ATTACHES its text as a suffix to whatever instructions
-#      the upstream server already returns (vs the SDK, which renders the
-#      whole instructions field). The leading space lets the suffix
-#      concatenate cleanly onto a trailing-stop upstream value.
-#   2. There's no per-vendor display name plumbed through the proxy
-#      (the proxy is opaque to the wrapped server's identity), so the
-#      template uses neutral "on this server" phrasing instead of the SDK's
-#      "{vendor_display_name} tool".
-_HEAD_PROACTIVE = (
-    " This server is wrapped in the Baton usage and friction proxy. Use "
-    "`{annotation_tool_name}` to record what the user is trying to do "
-    "and how each tool call went, and to report when a tool you needed "
-    "does not exist, so the team behind this server can improve it. See "
-    "that tool's description for field-level detail.\n\n"
-)
-
-# The whole report suffix under proactive_mode="off". Holds no report rule:
-# each is written once, in the tool's description.
+# The whole report suffix. Holds no report rule: each is written once, in the
+# tool's description. The leading space lets it join a trailing-stop upstream
+# value.
 _REPORT_POINTER = (
     " Use `{annotation_tool_name}` to report a tool call on this server that went "
     "wrong, or a request no tool covers; its description says when and how."
-)
-
-# Rendered only when proactive_mode == "on". Gated rather than deleted: it
-# teaches the agent that intent is the annotation tool's job, which argues for
-# off by default, but agent-authored proactive annotations still mark turn
-# boundaries (SPEC §11.5 tier 2) on wraps whose operator chose them.
-_PROACTIVE_CLAUSE = (
-    "BEFORE invoking any tool on this server, you MUST call "
-    "`{annotation_tool_name}` with user_goal (REQUIRED).\n\n"
-)
-
-_REACTIVE_CLAUSES = (
-    "AFTER any tool on this server errors, times out, returns an "
-    "unhelpful or contradictory result, or the user shows signs of "
-    "giving up, you MUST call `{annotation_tool_name}` again with "
-    "what_happened (REQUIRED, your own words, NOT a category), tool_name "
-    "(REQUIRED) and suggested_improvement (REQUIRED whenever you can "
-    "articulate one).\n\n"
-    "IF a tool response lacks a structured field for what the user "
-    "asked about, OR you satisfied the user's intent via a workaround "
-    "because no tool matched what they asked for, OR the user asked "
-    "for something this server can't do — you MUST call "
-    "`{annotation_tool_name}` once per user request, not per call, with "
-    "what_happened and tool_name (none if no tool) AND still answer the "
-    "user with your best inference. Filing the annotation does NOT replace "
-    "answering."
-)
-
-
-_ANNOTATION_LEAD_PROACTIVE = (
-    "Record structured signal about a tool call on this server — what "
-    "the user is trying to do, and how it went. Populate proactively "
-    "before the call (user_goal) and reactively after if the result was "
-    "unhelpful (what_happened + tool_name + suggested_improvement).\n"
 )
 
 # The Console splits user_goal on "; success is" (SPEC §11.5.1 rule 2).
@@ -92,20 +37,6 @@ _CONTEXT_FIELD = (
     "error_class, downstream_blocked, confidence_in_intent. When no tool "
     "covers the request also missing_capability_field and "
     "requested_capability."
-)
-
-_PROACTIVE_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
-    _ANNOTATION_LEAD_PROACTIVE + "\n"
-    "Fields:\n"
-    "  - user_goal: {user_goal}\n"
-    "  - what_happened: REQUIRED on a report — omit on a proactive annotation. "
-    "1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
-    "what came back, and why it was unusable. Do NOT pick a category or "
-    "invent a label — describe it.\n"
-    "  - tool_name: REQUIRED on a report. The tool on this server that went "
-    "wrong. Write none if no tool exists for the request.\n"
-    "  - suggested_improvement: reactive-only — omit on a proactive. "
-    "A concrete sentence about what product change would have helped.\n" + _CONTEXT_FIELD
 )
 
 # The SDK's scored report-tool text, with "on this server" for the vendor name.
@@ -153,37 +84,13 @@ _INSTRUCTIONS_SUBAGENT_CLAUSE = (
 INTENT_INSTRUCTIONS = _INSTRUCTIONS_SUBAGENT_CLAUSE.strip()
 
 
-# The line that tells the agent where the session's own events are, rendered
-# only when there IS a local file to name. It replaces the retired
-# `baton_session_report` tool (2026-09-27): that tool rendered a fixed template
-# over this same file and classified nothing, so the agent reading the file
-# directly is the better answer AND the smaller surface.
+# Rendered only when there IS a local file to name. Its length comes from the
+# operator's BATON_EVENT_SINK, so it is the one piece DROPPED rather than allowed
+# to breach the cap — see build_instructions_suffix.
 #
-# ⚠ The one part of this suffix whose length the proxy does not control. A path
-# is whatever the operator's BATON_EVENT_SINK says, so this line is the only
-# piece that is DROPPED rather than allowed to breach the cap — see
-# build_instructions_suffix.
-# ⚠ WRITTEN TO A CLAIM IT CAN KEEP, and no longer to a length.
-#
-# It used to be written to a length, and the length was distorting it. The first
-# version said "This session's tool calls and results", which is false: the
-# default sink is ONE fixed path (`config.DEFAULT_EVENT_SINK`), so the file
-# accumulates across restarts AND across every server wrapped with the defaults,
-# and the try kit's file grows for as long as the wrap is installed. The second
-# version said "appended across sessions", which is true and still narrower than
-# the truth — other SERVERS append to it too.
-#
-# The honest sentence did not fit the 1,500-char cap under
-# `proactive_mode="on"`, which is what forced the rewording twice. It fits now
-# because the cap that applies to this line is the client's ~2,087 rather than
-# our self-imposed 1,500 — see `build_instructions_suffix` for why being LAST is
-# what earns it that.
-#
-# And it tells the agent how to actually narrow the file rather than only that it
-# cannot be trusted: every event carries `session_id` and `vendor_id`
-# (`emitter.py:155-160`), so the two things the file mixes are both filterable
-# from the file itself. The retired tool pre-filtered on `session_id`; naming the
-# field gets the same result without a renderer.
+# Do not narrow it to "this session's" calls: the default sink is one fixed path
+# (`config.DEFAULT_EVENT_SINK`) that every restart and every wrapped server
+# appends to, which is why it names the two fields that tell them apart.
 _EVENT_FILE_LINE = (
     "\n\nTool calls and results are captured as JSONL at {event_file_path}, "
     "newest last. Other sessions and other wrapped servers append to the same "
@@ -194,24 +101,17 @@ _EVENT_FILE_LINE = (
 
 def build_instructions_suffix(
     annotation_tool_name: str,
-    proactive_mode: str = "off",
+    *,
     event_file_path: str | None = None,
-    intent_param_mode: str = "required",
     report_mode: str = "on",
 ) -> str:
     """Build the proxy's instructions suffix.
 
-    ``proactive_mode="off"`` renders only the pointer to the annotation tool,
-    whose description holds the report rules; ``"on"`` renders the head, the
-    pre-call request and the AFTER/IF clauses. Any ``intent_param_mode`` but ``"off"``
-    adds the subagent sentence, since every wrapped tool then carries
+    Renders the pointer to the annotation tool, whose description holds the
+    report rules, then the subagent sentence, since every wrapped tool carries
     ``user_goal``. ``report_mode="off"`` drops the annotation text, leaving the
-    subagent sentence and the event-file line; its default here is ``"on"`` so
-    a caller that does not pass it gets the text this function always built.
-    Leg-for-leg the same selection baton-sdk's ``build_server_instructions``
-    makes — only the DEFAULT differs, and deliberately: the SDK wraps a server
-    its vendor owns, the proxy fronts servers its operator does not, so the
-    proxy ships at today's behaviour and the operator chooses.
+    subagent sentence and the event-file line. The same selection baton-sdk's
+    ``resolve_install_text`` makes.
 
     ``event_file_path`` names the local event file, LAST, after the report
     text. Claude Code truncates ``instructions`` at ~2,087 from the END and the
@@ -235,11 +135,9 @@ def build_instructions_suffix(
 
     ⚠ TWO CAPS, and the split is the point.
 
-    ``_INSTRUCTIONS_LENGTH_CAP`` (1,500) bounds the report text — the pointer, or
-    under ``proactive_mode="on"`` the head, pre-call request and AFTER/IF
-    clauses — and overflowing it RAISES. Its margin under the client's ~2,087
-    exists so that a server with instructions of its own does not have our
-    report text cut.
+    ``_INSTRUCTIONS_LENGTH_CAP`` (1,500) bounds the report text, and overflowing
+    it RAISES. Its margin under the client's ~2,087 exists so that a server with
+    instructions of its own does not have our report text cut.
 
     The event-file line is measured against ``_CLAUDE_CODE_TRUNCATION_CAP``
     instead, and it earns that by being LAST: truncation eats the end, so this
@@ -256,12 +154,11 @@ def build_instructions_suffix(
     if report_mode == "off":
         rendered = ""
     else:
-        rendered = _render_report_text(annotation_tool_name, proactive_mode)
+        rendered = _render_report_text(annotation_tool_name)
     # After `_render_report_text` caps its text: the sentence has a fixed
     # length, so it comes out of the headroom under the truncation point.
     # Before the event-file line, so truncation still takes that line first.
-    if intent_param_mode != "off":
-        rendered += _INSTRUCTIONS_SUBAGENT_CLAUSE
+    rendered += _INSTRUCTIONS_SUBAGENT_CLAUSE
     if event_file_path:
         # Spliced into the already-formatted report text: a `{` or `}` in the
         # operator's sink path would make `.format` on that template raise.
@@ -271,12 +168,8 @@ def build_instructions_suffix(
     return rendered
 
 
-def _render_report_text(annotation_tool_name: str, proactive_mode: str) -> str:
-    if proactive_mode == "on":
-        template = _HEAD_PROACTIVE + _PROACTIVE_CLAUSE + _REACTIVE_CLAUSES
-    else:
-        template = _REPORT_POINTER
-    rendered = template.format(annotation_tool_name=annotation_tool_name)
+def _render_report_text(annotation_tool_name: str) -> str:
+    rendered = _REPORT_POINTER.format(annotation_tool_name=annotation_tool_name)
     if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:
         raise ValueError(
             f"Rendered instructions suffix is {len(rendered)} chars, which "
@@ -287,18 +180,13 @@ def _render_report_text(annotation_tool_name: str, proactive_mode: str) -> str:
     return rendered
 
 
-def build_annotation_tool_description(proactive_mode: str = "off") -> str:
+def build_annotation_tool_description() -> str:
     """Build the annotation tool's ``description`` field.
 
-    ``proactive_mode="off"`` makes it the report tool, holding the report rules
-    the suffix only points at. Its ``user_goal`` line refers to the other tools'
-    template, which they always carry: config coerces ``BATON_INTENT_PARAM=off``
-    to the default.
+    It holds the report rules the suffix only points at. Its ``user_goal`` line
+    refers to the other tools' template, which they always carry: config coerces
+    ``BATON_INTENT_PARAM=off`` to the default.
     """
-    if proactive_mode == "on":
-        return _PROACTIVE_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
-            user_goal=_USER_GOAL_PARAM_BODY
-        )
     return _REPORT_TOOL_DESCRIPTION
 
 

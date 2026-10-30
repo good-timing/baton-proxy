@@ -12,17 +12,13 @@ so the two modules stay coherent. Load-bearing properties:
   will truncate mid-sentence.
 - Reports only (the default), the suffix is one pointer sentence and the
   report rules live in the tool's description; both texts are pinned whole.
-- Proactive, the suffix carries the BEFORE/AFTER/IF MUST/REQUIRED framing —
-  milder framing under-populates fields, and the IF clause is the
-  feature_gap mechanical trigger.
 - The agent describes the problem and the collector groups it (SPEC
   §11.5.5): no text offers ``signal_type`` or a category to pick.
 - The "annotation doesn't replace answering" guardrail is load-bearing —
   without it the agent treats the annotation as proxy-satisfaction and
   stops answering the user.
-- The three mechanical triggers for feature_gap (workaround used, no
-  tool matched, server can't do it) are the structural fix for the
-  error-vs-gap asymmetry; their wording must remain checkable.
+- The triggers (an error, no tool or field covering the request, a
+  workaround) are states the agent can check against its own behavior.
 """
 
 from __future__ import annotations
@@ -53,14 +49,11 @@ def test_instructions_under_truncation_cap() -> None:
     assert len(rendered) <= _INSTRUCTIONS_LENGTH_CAP
 
 
-@pytest.mark.parametrize("proactive_mode", ["off", "on"])
-def test_instructions_under_cap_with_long_annotation_tool_name(proactive_mode: str) -> None:
+def test_instructions_under_cap_with_long_annotation_tool_name() -> None:
     """A reasonably-long vendor-prefixed annotate name (per the
     `{vendor_id}_annotate` convention) must still fit under the cap."""
     rendered = build_instructions_suffix(
-        annotation_tool_name="very_long_vendor_display_name_annotate",
-        proactive_mode=proactive_mode,
-        intent_param_mode="off",
+        annotation_tool_name="very_long_vendor_display_name_annotate"
     )
     assert len(rendered) <= _INSTRUCTIONS_LENGTH_CAP
 
@@ -78,69 +71,17 @@ def test_instructions_raises_when_tool_name_exceeds_cap() -> None:
 # =============================================================================
 
 
-def test_instructions_carry_must_required_framing() -> None:
-    """The AFTER/IF MUST/REQUIRED framing drives annotation population —
-    milder phrasing empirically under-populates fields. Don't drop it
-    accidentally."""
-    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
-    assert "AFTER" in rendered
-    assert "MUST" in rendered
-    assert "REQUIRED" in rendered
-
-
-def test_the_pre_call_request_is_gated_on_proactive_mode() -> None:
-    """A knob rather than a deletion, leg-for-leg the same choice baton-sdk's
-    ``build_server_instructions`` makes, so one agent meeting both producers
-    reads one rule."""
-    on = build_instructions_suffix("baton_annotate", "on", intent_param_mode="off")
-    off = build_instructions_suffix("baton_annotate", "off", intent_param_mode="off")
-
-    assert "BEFORE" in on
-    assert "BEFORE" not in off
-    assert "with user_goal (REQUIRED)" in on
-    assert "user_goal" not in off
-    # "record what the user is trying to do" is a promise reports-only does not keep.
-    assert "record what the user is trying to do" in on
-    assert "report a tool call on this server that went wrong" in off
-
-
-def test_the_reactive_clauses_move_to_the_tool_when_reports_only() -> None:
-    """The AFTER and IF clauses are the product signal. With proactive on they
-    stay in the suffix; reports only, each rule is written once, in the tool's
-    description, and the suffix only points at it."""
-    on = build_instructions_suffix("baton_annotate", "on", intent_param_mode="off")
-    off = build_instructions_suffix("baton_annotate", "off", intent_param_mode="off")
-    for clause in ("AFTER any tool", "IF a tool response", "does NOT replace answering"):
-        assert clause in on
+def test_the_report_rules_live_in_the_tool_description() -> None:
+    """Each rule is written once, in the tool's description; the suffix only
+    points at it."""
+    suffix = build_instructions_suffix("baton_annotate")
     for rule in ("AFTER", "MUST", "once per user request", "wrapped in"):
-        assert rule not in off, rule
-    description = build_annotation_tool_description("off")
+        assert rule not in suffix, rule
+    description = build_annotation_tool_description()
     assert "right after a call errors, times out" in description
+    assert "no tool or field covers what they asked for" in description
     assert "or you had to work around one" in description
     assert "and still answer the user" in description
-
-
-def test_turning_proactive_off_is_what_buys_the_truncation_headroom() -> None:
-    """The proxy APPENDS its suffix and Claude Code truncates `instructions`
-    from the end, so on a server with long instructions of its own it is our
-    text that is cut."""
-    on = build_instructions_suffix("baton_annotate", "on", intent_param_mode="off")
-    off = build_instructions_suffix("baton_annotate", "off", intent_param_mode="off")
-    assert len(on) - len(off) > 100, (
-        f"the paragraph stopped costing anything: {len(on)} vs {len(off)}"
-    )
-    assert len(on) <= _INSTRUCTIONS_LENGTH_CAP
-
-
-def test_the_default_renders_no_pre_call_request() -> None:
-    """The proxy and the SDK agree on the legs AND on the default."""
-    from baton_proxy.config import DEFAULT_PROACTIVE_MODE
-
-    assert DEFAULT_PROACTIVE_MODE == "off"
-    assert "BEFORE" not in build_instructions_suffix("baton_annotate")
-    assert build_instructions_suffix("baton_annotate") == build_instructions_suffix(
-        "baton_annotate", DEFAULT_PROACTIVE_MODE
-    )
 
 
 # ``failure`` is left out: the text uses it as an ordinary word.
@@ -154,69 +95,25 @@ _OLD_KINDS = (
 )
 
 
-@pytest.mark.parametrize("proactive_mode", ["off", "on"])
-def test_no_agent_facing_text_offers_a_category_to_pick(proactive_mode: str) -> None:
+def test_no_agent_facing_text_offers_a_category_to_pick() -> None:
     for text in (
-        build_instructions_suffix("baton_annotate", proactive_mode),
-        build_annotation_tool_description(proactive_mode),
+        build_instructions_suffix("baton_annotate"),
+        build_annotation_tool_description(),
     ):
         assert "signal_type" not in text
         for kind in _OLD_KINDS:
             assert kind not in text
 
 
-@pytest.mark.parametrize("proactive_mode", ["off", "on"])
-def test_no_tool_is_asked_for_as_the_word_none(proactive_mode: str) -> None:
+def test_no_tool_is_asked_for_as_the_word_none() -> None:
     """Shown ``""`` or told "empty string", agents send the quote characters."""
-    instructions = build_instructions_suffix("baton_annotate", proactive_mode)
-    description = build_annotation_tool_description(proactive_mode)
+    instructions = build_instructions_suffix("baton_annotate")
+    description = build_annotation_tool_description()
 
-    if proactive_mode == "on":
-        assert "tool_name (none if no tool)" in instructions
-        assert "Write none if no tool exists" in description
-    else:
-        assert "or none if no tool exists" in description
+    assert "or none if no tool exists" in description
     for text in (instructions, description):
         assert '""' not in text
         assert "mpty string" not in text
-
-
-def test_a_missing_tool_is_reported_once_per_request() -> None:
-    assert "once per user request, not per call" in build_instructions_suffix(
-        "baton_annotate", "on"
-    )
-
-
-def test_instructions_carry_dont_replace_answering_guardrail() -> None:
-    """Without the 'doesn't replace answering' clause the agent treats
-    the annotation as proxy-satisfaction and stops answering the user —
-    documented failure mode from the SDK's iteration history."""
-    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
-    assert "does NOT replace answering" in rendered
-
-
-# =============================================================================
-# Mechanical triggers — the structural fix for the error-vs-gap asymmetry
-# =============================================================================
-
-
-def test_instructions_carry_error_mechanical_trigger() -> None:
-    """Errors must remain a mechanical trigger: an observable state the agent
-    can check at the end of any call."""
-    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
-    # Phrasing is in the AFTER block: "errors, times out, ...".
-    assert "errors" in rendered.lower()
-
-
-def test_instructions_carry_feature_gap_mechanical_triggers() -> None:
-    """Three observable conditions an agent can check against its own
-    behavior, on par with 'the call returned an error'. Without the workaround
-    trigger, an agent that routes around a missing capability files nothing."""
-    rendered = build_instructions_suffix(annotation_tool_name="baton_annotate", proactive_mode="on")
-    # The IF block carries the three concrete gap triggers. Check each.
-    assert "lacks a structured field" in rendered
-    assert "workaround" in rendered
-    assert "asked for something this server can't do" in rendered
 
 
 # =============================================================================
@@ -237,24 +134,6 @@ def test_description_carries_field_reference() -> None:
         "context:",
     ):
         assert field in description, f"field {field!r} missing from description"
-
-
-def test_description_does_not_duplicate_triggers() -> None:
-    """Proactive only: the suffix carries the triggers, so the description must
-    not repeat them. Reports only, the description holds them by design."""
-    description = build_annotation_tool_description("on")
-    assert "BEFORE" not in description
-    assert "AFTER" not in description
-    # It also shouldn't restate the MUST-call conditions.
-    assert "MUST call" not in description
-
-
-def test_a_tool_that_takes_notes_marks_the_report_fields_report_only() -> None:
-    description = build_annotation_tool_description("on")
-    assert (
-        "what_happened: REQUIRED on a report — omit on a proactive annotation. 1-2" in description
-    )
-    assert "suggested_improvement: reactive-only — omit on a proactive. A concrete" in description
 
 
 def test_a_reports_only_tool_does_not_describe_a_note() -> None:
@@ -340,17 +219,10 @@ def test_required_mode_escalates_user_goal_only() -> None:
     assert required_param_names(intent_param_mode="optional") == ()
 
 
-@pytest.mark.parametrize("proactive_mode", ["off", "on"])
-def test_the_subagent_sentence_follows_the_clauses_when_params_ride(proactive_mode: str) -> None:
+def test_the_subagent_sentence_follows_the_pointer_when_params_ride() -> None:
     """A main agent that never loads the tool schemas reads only this."""
-    rendered = build_instructions_suffix(
-        "baton_annotate", proactive_mode, intent_param_mode="required"
-    )
-    last = {"on": "answering.", "off": "when and how."}[proactive_mode]
-    assert rendered.endswith(last + "\n\n" + SUBAGENT_SENTENCE)
-    assert SUBAGENT_SENTENCE not in build_instructions_suffix(
-        "baton_annotate", proactive_mode, intent_param_mode="off"
-    )
+    rendered = build_instructions_suffix("baton_annotate")
+    assert rendered.endswith("when and how.\n\n" + SUBAGENT_SENTENCE)
 
 
 def test_reports_off_leaves_only_the_subagent_sentence_and_the_event_file_line() -> None:
@@ -358,7 +230,7 @@ def test_reports_off_leaves_only_the_subagent_sentence_and_the_event_file_line()
         "\n\n" + SUBAGENT_SENTENCE
     )
     with_file = build_instructions_suffix(
-        "baton_annotate", "on", event_file_path="/tmp/e.jsonl", report_mode="off"
+        "baton_annotate", event_file_path="/tmp/e.jsonl", report_mode="off"
     )
     assert with_file.startswith("\n\n" + SUBAGENT_SENTENCE)
     assert "/tmp/e.jsonl" in with_file
@@ -367,9 +239,7 @@ def test_reports_off_leaves_only_the_subagent_sentence_and_the_event_file_line()
 
 def test_the_event_file_line_stays_after_the_subagent_sentence() -> None:
     """Truncation eats the end, so the convenience line must be what it takes."""
-    rendered = build_instructions_suffix(
-        "baton_annotate", "on", event_file_path="/tmp/e.jsonl", intent_param_mode="required"
-    )
+    rendered = build_instructions_suffix("baton_annotate", event_file_path="/tmp/e.jsonl")
     assert rendered.index(SUBAGENT_SENTENCE) < rendered.index("/tmp/e.jsonl")
 
 
@@ -402,9 +272,7 @@ def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
     """
     surfaces = {
         "instructions suffix": build_instructions_suffix("baton_annotate"),
-        "proactive instructions suffix": build_instructions_suffix("baton_annotate", "on"),
         "annotation tool description": build_annotation_tool_description(),
-        "proactive annotation tool description": build_annotation_tool_description("on"),
     }
     for where, text in surfaces.items():
         for retired in RETIRED_AGENT_FACING_NAMES:
@@ -424,9 +292,7 @@ def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
 # `baton_session_report` rendered a fixed template over the local JSONL and
 # classified nothing; it was deleted 2026-09-27 and the answer is the agent
 # reading that file itself. Which only works if the agent is TOLD where the
-# file is: before this line, the startup log printed session, emission, tools,
-# intent mode, proactive mode and the upstream command, and not the sink path,
-# so nothing in front of the model named it.
+# file is.
 #
 # What these pin is the one property the rest of this module's cap discipline
 # does not cover: this is the only piece of the suffix whose length the proxy
@@ -444,15 +310,10 @@ _DEFAULT_SINK_PATH = find_file_sink_path(DEFAULT_EVENT_SINK)
 assert _DEFAULT_SINK_PATH, f"the default sink has no file leg: {DEFAULT_EVENT_SINK!r}"
 
 
-def test_the_event_file_line_names_the_path_in_both_modes() -> None:
-    """The default sink path must survive both proactive modes — `on` is the
-    tighter one and it is where a too-long line would vanish."""
-    for mode in ("off", "on"):
-        rendered = build_instructions_suffix(
-            "baton_annotate", mode, event_file_path=_DEFAULT_SINK_PATH
-        )
-        assert _DEFAULT_SINK_PATH in rendered, f"proactive_mode={mode!r} dropped the path"
-        assert len(rendered) <= _CLAUDE_CODE_TRUNCATION_CAP
+def test_the_event_file_line_names_the_default_path() -> None:
+    rendered = build_instructions_suffix("baton_annotate", event_file_path=_DEFAULT_SINK_PATH)
+    assert _DEFAULT_SINK_PATH in rendered
+    assert len(rendered) <= _CLAUDE_CODE_TRUNCATION_CAP
 
 
 def test_no_path_renders_no_line_and_no_stray_paragraph() -> None:
@@ -460,45 +321,27 @@ def test_no_path_renders_no_line_and_no_stray_paragraph() -> None:
     there is nothing to name. The suffix must be byte-identical to what it was
     before this parameter existed — an empty paragraph would spend the budget
     saying nothing."""
-    without = build_instructions_suffix("baton_annotate", "off")
-    assert build_instructions_suffix("baton_annotate", "off", event_file_path=None) == without
-    assert build_instructions_suffix("baton_annotate", "off", event_file_path="") == without
+    without = build_instructions_suffix("baton_annotate")
+    assert build_instructions_suffix("baton_annotate", event_file_path=None) == without
+    assert build_instructions_suffix("baton_annotate", event_file_path="") == without
     assert "captured as JSONL" not in without
     assert "\n\n\n" not in without
 
 
-def test_the_line_sits_after_both_must_clauses() -> None:
-    """⚠ LAST, which is the reverse of where this line first shipped, and the
-    reason is what being cut DISPLACES rather than whether it survives.
-
-    The proxy APPENDS its suffix to the upstream server's own `instructions`, and
-    Claude Code truncates the result from the END at ~2,087. So on a server
-    carrying roughly 920-1,040 chars of its own text the cut falls inside our
-    suffix — and with this line first, what got cut was the tail of "Filing the
-    annotation does NOT replace answering", which this module's docstring calls
-    load-bearing: without it the agent treats the annotation as satisfying the
-    user and stops answering. Below that band nothing is cut; above it the
-    guardrail goes either way. So last strictly dominates: the only thing it
-    costs is the convenience line, which is the right thing to lose.
-    """
-    rendered = build_instructions_suffix("baton_annotate", "on", event_file_path=_DEFAULT_SINK_PATH)
-    where = rendered.index(_DEFAULT_SINK_PATH)
-    assert where > rendered.index("AFTER any tool")
-    assert where > rendered.index("IF a tool response")
-    assert where > rendered.index("BEFORE invoking any tool")
-    # The guardrail this ordering exists to protect, named so a reword of it
-    # re-points here rather than retiring the reason silently.
-    assert where > rendered.index("does NOT replace answering")
+def test_the_line_sits_after_the_report_text() -> None:
+    """The proxy APPENDS its suffix to the upstream server's own `instructions`,
+    and Claude Code truncates the result from the END at ~2,087. Last means the
+    convenience line is what a cut takes, never the report pointer."""
+    rendered = build_instructions_suffix("baton_annotate", event_file_path=_DEFAULT_SINK_PATH)
+    assert rendered.index(_DEFAULT_SINK_PATH) > rendered.index("its description says when and how")
 
 
 def test_the_line_does_not_run_into_the_clause_before_it() -> None:
-    """The report text ends with no break of its own, so the line's separator
-    has to lead."""
-    rendered = build_instructions_suffix(
-        "baton_annotate", "off", event_file_path=_DEFAULT_SINK_PATH, intent_param_mode="off"
-    )
-    assert "when and how.\n\nTool calls" in rendered, repr(rendered[-260:])
-    assert "how.Tool" not in rendered
+    """The subagent clause ends with no break of its own, so the line's
+    separator has to lead."""
+    rendered = build_instructions_suffix("baton_annotate", event_file_path=_DEFAULT_SINK_PATH)
+    assert "this server's tools.\n\nTool calls" in rendered, repr(rendered[-260:])
+    assert "tools.Tool" not in rendered
 
 
 def test_the_line_does_not_claim_the_file_holds_only_this_session() -> None:
@@ -513,9 +356,7 @@ def test_the_line_does_not_claim_the_file_holds_only_this_session() -> None:
     reaches the model. An agent told the file is this session's would report an
     earlier session's failures, and another server's arguments, as this one's.
     """
-    rendered = build_instructions_suffix(
-        "baton_annotate", "off", event_file_path=_DEFAULT_SINK_PATH
-    )
+    rendered = build_instructions_suffix("baton_annotate", event_file_path=_DEFAULT_SINK_PATH)
     assert "This session's" not in rendered
     assert "this session" not in rendered.lower()
     # What it says instead has to be the true shape, not merely a hedge. ⚠ The
@@ -536,26 +377,20 @@ def test_a_path_too_long_to_fit_is_dropped_not_raised() -> None:
     it is not a misconfiguration the way a 500-character tool name is. What must
     survive the drop is everything else: the suffix comes back WHOLE, not
     truncated to make room.
-
-    ⚠ This became a RARE branch on 2026-09-27, when the line's cap moved from the
-    self-imposed 1,500 to the client's 2,087 — it takes a ~490-char path now,
-    where it used to take 36. Kept, and kept reachable, because the input is
-    still unbounded: nothing stops an operator's sink path being long.
     """
-    long_path = "/" + "a" * 600 + "/events.jsonl"
-    rendered = build_instructions_suffix("baton_annotate", "on", event_file_path=long_path)
+    long_path = "/" + "a" * 1600 + "/events.jsonl"
+    rendered = build_instructions_suffix("baton_annotate", event_file_path=long_path)
     assert long_path not in rendered
-    assert rendered == build_instructions_suffix("baton_annotate", "on")
+    assert rendered == build_instructions_suffix("baton_annotate")
 
 
-def test_the_off_mode_default_still_fits_a_deep_path() -> None:
+def test_a_deep_path_still_fits() -> None:
     """The control for the test above: the drop must be caused by the BUDGET and
     not by the path, so a merely DEEP path — the shape a real operator has — must
-    still render, and in the TIGHTER of the two modes. Without this, a bug that
-    dropped the line unconditionally would pass the drop test and be
-    invisible."""
+    still render. Without this, a bug that dropped the line unconditionally would
+    pass the drop test and be invisible."""
     long_path = "/Users/someone/Library/Application Support/baton/deeply/nested/events.jsonl"
-    rendered = build_instructions_suffix("baton_annotate", "on", event_file_path=long_path)
+    rendered = build_instructions_suffix("baton_annotate", event_file_path=long_path)
     assert long_path in rendered
 
 
@@ -572,7 +407,7 @@ def test_a_path_with_braces_does_not_raise_through_the_formatter() -> None:
     substitutes in, so both are safe there.
     """
     for path in ("/tmp/a{b}c.jsonl", "/tmp/{}.jsonl", "/tmp/only{.jsonl"):
-        rendered = build_instructions_suffix("baton_annotate", "off", event_file_path=path)
+        rendered = build_instructions_suffix("baton_annotate", event_file_path=path)
         assert path in rendered, path
 
 
@@ -587,15 +422,11 @@ def test_the_line_leaves_room_for_a_real_operators_path() -> None:
     is `NAME_MAX` territory and comfortably past any sink path an operator types.
     """
     fixed = len(_EVENT_FILE_LINE.replace("{event_file_path}", ""))
-    # The subagent sentence sits before this line, so under proactive_mode="on"
-    # the line gets less room than in the default mode.
-    for mode, needed in (("off", 256), ("on", 160)):
-        room = _CLAUDE_CODE_TRUNCATION_CAP - len(build_instructions_suffix("baton_annotate", mode))
-        room -= fixed
-        assert room >= needed, (
-            f"only {room} chars of path fit with proactive_mode={mode!r} (the line is "
-            f"{fixed}); a real operator's sink path would be dropped"
-        )
+    room = _CLAUDE_CODE_TRUNCATION_CAP - len(build_instructions_suffix("baton_annotate")) - fixed
+    assert room >= 256, (
+        f"only {room} chars of path fit (the line is {fixed}); a real operator's sink "
+        "path would be dropped"
+    )
 
 
 def test_the_base_keeps_the_reserve_and_the_event_line_is_exempt() -> None:
@@ -604,40 +435,41 @@ def test_the_base_keeps_the_reserve_and_the_event_line_is_exempt() -> None:
 
     The 1,500 cap's job is that a server with instructions of its OWN does not
     have our NORMATIVE text cut: it holds 587 back under the client's ~2,087 for
-    the upstream string. That reserve belongs to the base — head, optional
-    pre-call clause, both MUST clauses — and the base must stay inside it.
+    the upstream string. That reserve belongs to the base — the report text —
+    and the base must stay inside it.
 
     The event-file line is exempt, and being LAST is what earns it: truncation
-    takes the end, so this line's bytes can only ever displace this line. Holding
-    it to 1,500 as well bought nothing and cost the sentence its accuracy — it
-    left 160 chars, and the honest wording does not fit 160.
+    takes the end, so this line's bytes can only ever displace this line.
     """
-    for mode in ("off", "on"):
-        base = build_instructions_suffix("baton_annotate", mode, intent_param_mode="off")
-        assert len(base) <= _INSTRUCTIONS_LENGTH_CAP, f"the BASE overflowed in {mode!r}"
-        reserve = _CLAUDE_CODE_TRUNCATION_CAP - len(base)
-        assert reserve >= 500, (
-            f"proactive_mode={mode!r}: only {reserve} chars left for the upstream "
-            "server's own instructions; the BASE has grown into its reserve"
-        )
-        whole = build_instructions_suffix("baton_annotate", mode, _DEFAULT_SINK_PATH)
-        assert len(whole) <= _CLAUDE_CODE_TRUNCATION_CAP
+    base = build_instructions_suffix("baton_annotate")
+    assert len(base) <= _INSTRUCTIONS_LENGTH_CAP
+    reserve = _CLAUDE_CODE_TRUNCATION_CAP - len(base)
+    assert reserve >= 500, (
+        f"only {reserve} chars left for the upstream server's own instructions; "
+        "the BASE has grown into its reserve"
+    )
+    whole = build_instructions_suffix("baton_annotate", event_file_path=_DEFAULT_SINK_PATH)
+    assert len(whole) <= _CLAUDE_CODE_TRUNCATION_CAP
 
 
 def test_the_exemption_is_real_and_not_just_unexercised() -> None:
     """The control for the test above. If the line happened to fit inside 1,500
     anyway, every assertion there would pass while the exemption did nothing —
-    and a later reword back to the single cap would be invisible. Under `on` the
-    whole suffix must actually EXCEED 1,500 to prove the line is being measured
-    against the client's cap instead."""
-    whole = build_instructions_suffix("baton_annotate", "on", _DEFAULT_SINK_PATH)
+    and a later reword back to the single cap would be invisible. A long tool
+    name fills the base close to 1,500, so the whole suffix must actually EXCEED
+    1,500 to prove the line is being measured against the client's cap instead."""
+    tool_name = "t" * 1050
+    base = build_instructions_suffix(tool_name)
+    assert len(base) <= _INSTRUCTIONS_LENGTH_CAP
+    whole = build_instructions_suffix(tool_name, event_file_path=_DEFAULT_SINK_PATH)
+    assert _DEFAULT_SINK_PATH in whole
     assert len(whole) > _INSTRUCTIONS_LENGTH_CAP, (
         f"the whole suffix is {len(whole)}, inside the 1,500 base cap — the "
         "two-tier split is not being exercised by this test"
     )
 
 
-def test_the_try_kits_own_events_path_renders_in_both_modes() -> None:
+def test_the_try_kits_own_events_path_renders() -> None:
     """⚠ Every other budget test here uses the 22-char default path, so all of
     them stay green while the line silently stops rendering for the TRIAL — the
     surface a prospect actually meets, and the one that used to get the retired
@@ -652,6 +484,5 @@ def test_the_try_kits_own_events_path_renders_in_both_modes() -> None:
 
     kit_path = "/Users/someone/code/a-deeply-named-evaluation-checkout/try/events.jsonl"
     assert find_file_sink_path(f"stderr:,file://{kit_path}") == kit_path
-    for mode in ("off", "on"):
-        rendered = build_instructions_suffix("baton_annotate", mode, event_file_path=kit_path)
-        assert kit_path in rendered, f"the kit's path is dropped under proactive_mode={mode!r}"
+    rendered = build_instructions_suffix("baton_annotate", event_file_path=kit_path)
+    assert kit_path in rendered

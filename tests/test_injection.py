@@ -127,9 +127,7 @@ def test_the_default_installs_handshake_names_its_event_file() -> None:
 
     The unit tests in test_llm_text.py pin the rendering. This pins the wiring —
     that `find_file_sink_path` runs over the REAL default sink spec and its
-    answer reaches `InitializeResult`. Before this, nothing in front of the model
-    named the path: the startup log prints session, emission, tools, intent mode,
-    proactive mode and the upstream command, and not the sink.
+    answer reaches `InitializeResult`.
     """
     from baton_proxy.config import DEFAULT_EVENT_SINK
     from baton_proxy.sinks import find_file_sink_path
@@ -351,34 +349,6 @@ def test_a_reports_only_tool_lists_tool_name_as_required() -> None:
     assert "signal_type" not in schema["properties"]
 
 
-def test_a_tool_that_also_takes_notes_requires_only_the_goal() -> None:
-    from baton_proxy.proxy import _build_injected_tool
-
-    schema = _build_injected_tool("baton_annotate", proactive_mode="on")["inputSchema"]
-
-    assert schema["required"] == ["user_goal"]
-
-
-def test_the_confirmation_says_which_kind_of_annotation_was_recorded() -> None:
-    from baton_proxy.proxy import _handle_injected_call
-
-    def confirm(arguments: dict[str, str]) -> str:
-        resp = _handle_injected_call(
-            {
-                "jsonrpc": "2.0",
-                "id": 99,
-                "method": "tools/call",
-                "params": {"name": "baton_annotate", "arguments": arguments},
-            },
-        )
-        assert resp["id"] == 99
-        return resp["result"]["content"][0]["text"]
-
-    assert "proactive intent" in confirm({"user_goal": "the 3 most recent issues"})
-    assert "report" in confirm({"user_goal": "g", "what_happened": "it returned nothing"})
-    assert "proactive intent" in confirm({"user_goal": "g", "what_happened": "   "})
-
-
 def test_handle_injected_call_null_params_does_not_crash() -> None:
     """JSON-RPC permits params: null. dict.get's default fires on missing
     keys, not on explicit None, so the chained get pattern must coerce."""
@@ -393,7 +363,7 @@ def test_handle_injected_call_null_params_does_not_crash() -> None:
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call"},
     )
     assert resp["id"] == 1
-    assert "proactive intent" in resp["result"]["content"][0]["text"]
+    assert "recorded your report" in resp["result"]["content"][0]["text"]
 
     resp = _handle_injected_call(
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": None},
@@ -491,40 +461,45 @@ def test_baton_annotate_emits_annotation_event_end_to_end() -> None:
     assert ann["consent_token"] == "c"
 
 
-def test_a_dropped_event_file_line_is_logged_to_the_operator(tmp_path: Path) -> None:
+def test_a_dropped_event_file_line_is_logged_to_the_operator() -> None:
     """⚠ The one failure mode with no other witness. The line is DROPPED rather
     than raised when the path does not fit, so an operator whose agent never
-    learns where the events are has nothing to tell them why. `BATON_PROACTIVE=on`
-    leaves 35 chars for a path, which most real paths exceed.
+    learns where the events are has nothing to tell them why.
 
     Read off the proxy's REAL stderr, not `caplog`: the warning fires in
     `_bootstrap` after `_configure_logging`, and a caplog assertion would pass
     against a handler configuration that never reaches an operator.
     """
-    # A REAL directory: `FileSink` opens the path at startup, so a made-up one
-    # fails the proxy before it ever renders instructions — which is how the
-    # first draft of this test "passed" its warning assertion and then found no
-    # initialize response to check against.
-    #
-    # ⚠ Nested rather than one long name, and built to a MEASURED target rather
-    # than eyeballed: the line's cap moved to the client's 2,087 on 2026-09-27,
-    # so overflowing now needs ~490 chars of path where it used to need 36, and
-    # each single path COMPONENT is capped at 255 by the filesystem.
-    deep = tmp_path
-    for _ in range(3):
-        deep = deep / ("d" * 200)
-        deep.mkdir()
-    long_path = str(deep / "events.jsonl")
-    assert len(long_path) > 490, f"{len(long_path)} chars is no longer enough to overflow"
-    by_id = _run_proxy_with_env(
-        {"BATON_EVENT_SINK": f"stderr:,file://{long_path}", "BATON_PROACTIVE": "on", **REPORTS_ON}
+    # A path long enough to overflow cannot be opened as a real file, so the
+    # emitter is stubbed instead.
+    long_path = "/tmp/" + "d" * 1600 + "/events.jsonl"
+    script = (
+        "import sys\n"
+        "import baton_proxy.proxy as p\n"
+        "class _Emitter:\n"
+        "    def __init__(self, config): pass\n"
+        "    def start(self): pass\n"
+        "p.Emitter = _Emitter\n"
+        "_, injection, _, _ = p._bootstrap()\n"
+        "sys.stdout.write(injection.instructions_suffix)\n"
     )
-    stderr = by_id["stderr"]
-    assert "did not fit the instructions length cap" in stderr, stderr[-900:]
-    assert "or BATON_PROACTIVE=off" in stderr
-    assert long_path in stderr
+    env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
+    env.update(
+        PYTHONPATH=str(REPO / "src"),
+        BATON_VENDOR_ID="v",
+        BATON_EVENT_SINK=f"stderr:,file://{long_path}",
+        **REPORTS_ON,
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=10
+    )
+    assert proc.returncode == 0, proc.stderr[-900:]
+    assert "did not fit the instructions length cap" in proc.stderr, proc.stderr[-900:]
+    assert "Use a shorter sink path to restore it." in proc.stderr
+    assert long_path in proc.stderr
     # ...and it really was dropped, so the warning is not crying wolf.
-    assert long_path not in _instructions(by_id)
+    assert "baton_annotate" in proc.stdout
+    assert long_path not in proc.stdout
 
 
 def test_a_path_that_fits_logs_nothing() -> None:

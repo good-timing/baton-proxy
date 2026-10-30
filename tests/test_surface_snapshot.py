@@ -166,13 +166,6 @@ def test_snapshot_instructions_captured_before_suffix_injection() -> None:
     assert emitter.snapshots()[0]["instructions"] == "Vendor-authored instructions."
 
 
-def test_off_mode_records_null_intent_param() -> None:
-    proc, emitter = _processor(mode="off")
-    proc.handle_server_message(_initialize_response())
-    _drive_list(proc, [_tool("alpha")], msg_id=2)
-    assert emitter.snapshots()[0]["seam_augmentations"]["intent_param"] is None
-
-
 def test_snapshot_without_initialize_has_null_server_meta() -> None:
     # Proxy respawned mid-session: no initialize crossed us. Snapshot still
     # emits; server meta is null rather than fabricated.

@@ -4829,7 +4829,7 @@ def _annotate_branch() -> str:
     a field of the same name — green while the disclosure it guards has gone
     stale, which is the failure shape this file keeps finding."""
     src = (REPO_ROOT / "src" / "baton_proxy" / "proxy.py").read_text(encoding="utf-8")
-    start = src.index("if tool_name == ANNOTATE_TOOL_NAME:")
+    start = src.index("if tool_name in self._injection.names:")
     return src[start : src.index("_handle_injected_call(", start)]
 
 

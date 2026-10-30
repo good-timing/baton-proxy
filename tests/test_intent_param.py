@@ -40,7 +40,6 @@ from baton_proxy._llm_text import (
 from baton_proxy.config import (
     _INTENT_PARAM_MODES,
     DEFAULT_INTENT_PARAM_MODE,
-    DEFAULT_PROACTIVE_MODE,
     Config,
 )
 from baton_proxy.proxy import (
@@ -169,16 +168,13 @@ class _FakeEmitter:
 
 
 def _processor(
-    mode: str = "optional", proactive: str = DEFAULT_PROACTIVE_MODE, report: str = "off"
+    mode: str = "optional", report: str = "off"
 ) -> tuple[MessageProcessor, _FakeEmitter]:
-    """``proactive`` and ``report`` default to the shipped defaults so most
-    tests exercise what an operator actually runs. Tests that call
-    ``baton_annotate`` ask for ``report="on"``, and those that drive an
-    AGENT-authored pre-call annotation also for ``proactive="on"``."""
+    """``report`` defaults to the shipped default so most tests exercise what an
+    operator actually runs. Tests that call ``baton_annotate`` ask for
+    ``report="on"``."""
     emitter = _FakeEmitter()
-    injection = _Injection.create(
-        None, intent_param_mode=mode, proactive_mode=proactive, report_mode=report
-    )
+    injection = _Injection.create(None, intent_param_mode=mode, report_mode=report)
     return MessageProcessor(emitter, injection, "test-session"), emitter  # type: ignore[arg-type]
 
 
@@ -246,21 +242,6 @@ def test_registry_skips_proxy_own_tools() -> None:
     assert "alpha" in registry
 
 
-def test_off_mode_injects_and_strips_nothing() -> None:
-    proc, emitter = _processor(mode="off")
-    out = proc.handle_server_message(_tools_list_response([_tool("alpha")]))
-    upstream = [t for t in out["result"]["tools"] if t["name"] == "alpha"][0]
-    assert USER_GOAL_PARAM_NAME not in upstream["inputSchema"]["properties"]
-
-    action = proc.handle_client_message(
-        _call("alpha", {"x": "1", USER_GOAL_PARAM_NAME: INTENT_TEXT})
-    )
-    # Off means fully off: no strip, param forwards as-is.
-    assert action.forward["params"]["arguments"][USER_GOAL_PARAM_NAME] == INTENT_TEXT
-    starts = [c for c in emitter.calls if c[0] == "tool_call_start"]
-    assert starts[0][1]["call_intent"] is None
-
-
 def test_strip_and_capture_sends_no_annotation() -> None:
     proc, emitter = _processor()
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
@@ -289,9 +270,8 @@ def test_strip_and_capture_sends_no_annotation() -> None:
     assert EXPECTED_RESULT_PARAM_NAME not in start["params"]
 
 
-@pytest.mark.parametrize("proactive", ["on", "off"])
-def test_an_injected_intent_sends_no_annotation(proactive: str) -> None:
-    proc, emitter = _processor(proactive=proactive, report="on")
+def test_an_injected_intent_sends_no_annotation() -> None:
+    proc, emitter = _processor(report="on")
     proc.handle_server_message(_tools_list_response([_tool("alpha"), _tool("beta")]))
 
     for msg_id, tool, goal in ((10, "alpha", "first goal"), (11, "beta", "second goal")):
@@ -313,12 +293,18 @@ def test_an_injected_intent_sends_no_annotation(proactive: str) -> None:
     assert all(s["intent_source"] == INTENT_SOURCE_PARAM for s in starts)
 
 
-def test_an_agent_note_is_the_only_annotation_in_the_session() -> None:
-    proc, emitter = _processor(proactive="on", report="on")
+def test_an_agent_report_is_the_only_annotation_in_the_session() -> None:
+    proc, emitter = _processor(report="on")
     proc.handle_server_message(_tools_list_response([_tool("alpha")]))
 
     proc.handle_client_message(_call("alpha", {USER_GOAL_PARAM_NAME: INTENT_TEXT}, msg_id=9))
-    proc.handle_client_message(_call("baton_annotate", {"user_goal": "the user's goal"}, msg_id=10))
+    proc.handle_client_message(
+        _call(
+            "baton_annotate",
+            {"user_goal": "the user's goal", "what_happened": "alpha came back empty"},
+            msg_id=10,
+        )
+    )
 
     annotations = [c[1] for c in emitter.calls if c[0] == "annotation"]
     assert len(annotations) == 1
@@ -758,8 +744,10 @@ def test_the_annotation_records_no_retired_field(retired: dict[str, str]) -> Non
     """The annotate tool takes only `user_goal` of the intent fields. A stale
     client's report that still sends a retired one is taken, and the field is
     dropped."""
-    proc, emitter = _processor(proactive="on", report="on")
-    proc.handle_client_message(_call("baton_annotate", {"user_goal": "the goal", **retired}))
+    proc, emitter = _processor(report="on")
+    proc.handle_client_message(
+        _annotate({"user_goal": "the goal", "what_happened": "it failed", **retired})
+    )
 
     annotations = [c[1] for c in emitter.calls if c[0] == "annotation"]
     assert len(annotations) == 1
@@ -830,34 +818,22 @@ def test_a_call_without_the_label_passes_none_to_the_emitter() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# proactive_mode — the knob ported from the SDK (SPEC §14                      #
-# "proactive_mode parity").                                                    #
-#                                                                              #
-# It governs TWO legs and not a third. On/off changes the annotation tool's    #
-# description lead and whether the handler accepts an agent-filed pre-call     #
-# annotation. It does NOT govern the instructions' BEFORE paragraph, which D7  #
-# drops in both modes — the proxy's `on` therefore differs from the SDK's `on` #
-# on purpose, and that divergence is what these tests hold still.              #
+# The annotation tool takes only reports: an agent-filed annotation with no    #
+# what_happened is refused at the handler and leaves no event.                 #
 # --------------------------------------------------------------------------- #
-
-
-def _proactive_processor(mode: str) -> tuple[MessageProcessor, _FakeEmitter]:
-    emitter = _FakeEmitter()
-    injection = _Injection.create(None, proactive_mode=mode)
-    return MessageProcessor(emitter, injection, "test-session"), emitter  # type: ignore[arg-type]
 
 
 def _annotate(arguments: dict[str, Any], msg_id: int = 20) -> dict[str, Any]:
     return _call("baton_annotate", arguments, msg_id=msg_id)
 
 
-def test_proactive_off_refuses_an_agent_filed_pre_call_annotation() -> None:
+def test_an_agent_filed_pre_call_annotation_is_refused() -> None:
     """The SDK refuses at the handler rather than by instruction text alone,
     because text is only a request."""
-    proc, emitter = _proactive_processor("off")
+    proc, emitter = _processor(report="on")
     action = proc.handle_client_message(_annotate({"user_goal": INTENT_TEXT}))
 
-    assert action.respond is not None, "a refused proactive must still be answered"
+    assert action.respond is not None, "a refused annotation must still be answered"
     assert action.forward is None, "the annotation tool is never forwarded upstream"
     text = action.respond["result"]["content"][0]["text"]
     # The same text as baton-sdk and baton-ts, word for word.
@@ -877,8 +853,8 @@ def test_proactive_off_refuses_an_agent_filed_pre_call_annotation() -> None:
 
 
 @pytest.mark.parametrize("account", ["", "   ", None, 7])
-def test_proactive_off_refuses_a_blank_account_rather_than_recording_it(account: Any) -> None:
-    proc, emitter = _proactive_processor("off")
+def test_a_blank_account_is_refused_rather_than_recorded(account: Any) -> None:
+    proc, emitter = _processor(report="on")
     action = proc.handle_client_message(
         _annotate({"user_goal": INTENT_TEXT, "what_happened": account})
     )
@@ -892,7 +868,7 @@ def test_proactive_off_refuses_a_blank_account_rather_than_recording_it(account:
 def test_a_category_word_alone_is_not_a_report() -> None:
     """An agent holding an older tool listing may still send ``signal_type``.
     It is not what makes a report, and it is never passed on."""
-    proc, emitter = _proactive_processor("off")
+    proc, emitter = _processor(report="on")
     refused = proc.handle_client_message(
         _annotate({"user_goal": INTENT_TEXT, "signal_type": "failure"})
     )
@@ -906,9 +882,8 @@ def test_a_category_word_alone_is_not_a_report() -> None:
     assert "signal_type" not in emitter.calls[0][1]
 
 
-def test_proactive_off_still_takes_the_report() -> None:
-    """`off` costs the agent's pre-call narration and nothing else."""
-    proc, emitter = _proactive_processor("off")
+def test_a_report_is_taken() -> None:
+    proc, emitter = _processor(report="on")
     action = proc.handle_client_message(
         _annotate(
             {
@@ -937,7 +912,7 @@ def test_proactive_off_still_takes_the_report() -> None:
 )
 def test_the_reported_tool_is_recorded_as_given(sent: dict[str, Any], recorded: Any) -> None:
     """``""`` says "no tool exists" and must not turn into "not stated"."""
-    proc, emitter = _proactive_processor("off")
+    proc, emitter = _processor(report="on")
     proc.handle_client_message(
         _annotate({"user_goal": INTENT_TEXT, "what_happened": "it failed", **sent})
     )
@@ -945,64 +920,32 @@ def test_the_reported_tool_is_recorded_as_given(sent: dict[str, Any], recorded: 
     assert emitter.calls[0][1]["tool_name"] == recorded
 
 
-def test_proactive_on_accepts_the_agents_pre_call_annotation() -> None:
-    """`on` is not the default, but it is a supported mode, and it is the one an operator picks
-    to keep proactive turn boundaries until the `call_workflow` correlator
-    lands."""
-    from baton_proxy.config import DEFAULT_PROACTIVE_MODE
-
-    assert DEFAULT_PROACTIVE_MODE == "off"
-    proc, emitter = _proactive_processor("on")
-    action = proc.handle_client_message(_annotate({"user_goal": INTENT_TEXT}))
-    assert action.respond is not None
-    assert "reactive-only" not in action.respond["result"]["content"][0]["text"]
-    assert [kind for kind, _ in emitter.calls] == ["annotation"]
-
-
-def test_the_tool_description_changes_with_the_mode_but_the_fields_do_not() -> None:
-    """The other leg. `off` reframes the tool as reactive-only; both modes
-    list the same fields, because the fields themselves do not change — only
-    whether the agent may open with them."""
+def test_the_tool_lists_its_fields_and_no_retired_one() -> None:
     from baton_proxy.proxy import _build_injected_tool
 
-    on = _build_injected_tool("baton_annotate", "on")["description"]
-    off = _build_injected_tool("baton_annotate", "off")["description"]
-
-    assert "Populate proactively" in on
-    assert "Do not call it before a tool call" in off
-    assert "Populate proactively" not in off
+    tool = _build_injected_tool("baton_annotate")
+    assert "Do not call it before a tool call" in tool["description"]
     for field in ("user_goal", "what_happened", "tool_name"):
-        assert field in on and field in off
+        assert field in tool["description"]
     for retired in ("expected_result", "overall_task"):
-        assert retired not in on and retired not in off
-    # `user_goal` stays required in BOTH: a friction report still has to say
-    # what was being attempted.
-    assert "user_goal" in _build_injected_tool("baton_annotate", "off")["inputSchema"]["required"]
+        assert retired not in tool["description"]
+    # A friction report still has to say what was being attempted.
+    assert "user_goal" in tool["inputSchema"]["required"]
 
 
-def test_the_injection_carries_the_mode_into_the_rendered_suffix() -> None:
+def test_the_injection_carries_the_report_mode_into_the_rendered_suffix() -> None:
     """The wiring, not the text — `test_llm_text.py` owns what each mode says.
-    What is pinned here is that `_Injection` actually passes the mode through,
+    What is pinned here is that `_Injection` actually passes the modes through,
     because a knob that renders correctly and is never handed the value is the
     silent-no-op shape this repo keeps finding."""
     from baton_proxy._llm_text import build_instructions_suffix
 
-    on = _Injection.create(None, proactive_mode="on", intent_param_mode="required")
-    off = _Injection.create(None, proactive_mode="off", intent_param_mode="required")
-    no_params = _Injection.create(None, intent_param_mode="off")
-    no_reports = _Injection.create(None, proactive_mode="on", report_mode="off")
-    assert on.instructions_suffix == build_instructions_suffix(
-        "baton_annotate", "on", intent_param_mode="required"
-    )
-    assert off.instructions_suffix == build_instructions_suffix(
-        "baton_annotate", "off", intent_param_mode="required"
-    )
-    assert "BEFORE" in on.instructions_suffix
-    assert "BEFORE" not in off.instructions_suffix
-    assert "subagent" in off.instructions_suffix
-    assert "subagent" not in no_params.instructions_suffix
+    reports = _Injection.create(None, intent_param_mode="required")
+    no_reports = _Injection.create(None, report_mode="off")
+    assert reports.instructions_suffix == build_instructions_suffix("baton_annotate")
+    assert "subagent" in reports.instructions_suffix
     assert no_reports.instructions_suffix == build_instructions_suffix(
-        "baton_annotate", "on", intent_param_mode="optional", report_mode="off"
+        "baton_annotate", report_mode="off"
     )
     assert "baton_annotate" not in no_reports.instructions_suffix
     assert no_reports.tools == []

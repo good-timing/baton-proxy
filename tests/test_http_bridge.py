@@ -63,8 +63,7 @@ REQUESTS: list[dict[str, Any]] = [
             "arguments": {
                 # `what_happened` present on purpose: this request exists to prove
                 # the BRIDGE answers a proxy-owned tool without forwarding it,
-                # and under the 2026-09-01 default (`proactive_mode="off"`) a
-                # pre-call annotation is refused by the handler. A refusal is
+                # and a pre-call annotation is refused by the handler. A refusal is
                 # still a well-formed response, so the transport check would
                 # pass either way — but it would stop testing what it names.
                 "what_happened": "the call came back unusable",

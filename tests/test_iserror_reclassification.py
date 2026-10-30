@@ -70,7 +70,7 @@ class _FakeEmitter:
 
 def _processor() -> tuple[MessageProcessor, _FakeEmitter]:
     emitter = _FakeEmitter()
-    injection = _Injection.create(None, intent_param_mode="optional", proactive_mode="off")
+    injection = _Injection.create(None, intent_param_mode="optional")
     return MessageProcessor(emitter, injection, "test-session"), emitter  # type: ignore[arg-type]
 
 
@@ -91,12 +91,12 @@ def _reply(result: Any, msg_id: int = 10) -> dict[str, Any]:
 def test_baton_own_refusal_is_never_filed_as_a_vendor_failure() -> None:
     """⚠ The proxy synthesises ``isError: True`` for its OWN refusals.
 
-    ``_refuse_unknown_signal`` and ``_refuse_proactive`` both answer the agent
-    with a 200 carrying the flag — deliberately, because a JSON-RPC error reads
-    as the server being broken and invites a retry loop. If either ever reached
+    ``_refuse_pre_call_annotation`` answers the agent with a 200 carrying the
+    flag — deliberately, because a JSON-RPC error reads as the server being
+    broken and invites a retry loop. If it ever reached
     ``handle_server_message``, the detector added here would file Baton's own
     refusal as a vendor tool failure: fabricated friction, on the exact lane
-    the proactive gate exists to keep clean.
+    the refusal exists to keep clean.
 
     It cannot today — the injected branch answers with ``respond=`` and returns
     before the call is ever tracked as pending, so there is no server message
@@ -327,9 +327,7 @@ def test_the_envelope_survives_the_emitter_onto_the_wire(tmp_path: Path) -> None
         )
     )
     emitter.start()
-    proc = MessageProcessor(
-        emitter, _Injection.create(None, intent_param_mode="optional", proactive_mode="off"), "s"
-    )
+    proc = MessageProcessor(emitter, _Injection.create(None, intent_param_mode="optional"), "s")
     proc.handle_client_message(_call("delete_project"))
     proc.handle_server_message(_reply(ENVELOPE))
     emitter.stop()

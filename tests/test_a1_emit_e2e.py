@@ -45,7 +45,7 @@ REQUESTS: list[dict[str, Any]] = [
         },
     },
     {"jsonrpc": "2.0", "method": "notifications/initialized"},
-    # Proactive annotation (github) before reading a resource
+    # Pre-call annotation (github), refused: it has no what_happened
     {
         "jsonrpc": "2.0",
         "id": 2,
@@ -61,7 +61,7 @@ REQUESTS: list[dict[str, Any]] = [
     },
     # resources/list — expect resource_list_start + resource_list_end (count=2)
     {"jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": {}},
-    # Proactive annotation (sentry) before reading resources
+    # Pre-call annotation (sentry), refused: it has no what_happened
     {
         "jsonrpc": "2.0",
         "id": 4,
@@ -103,7 +103,7 @@ REQUESTS: list[dict[str, Any]] = [
             },
         },
     },
-    # Proactive annotation (github) before prompt operations
+    # Pre-call annotation (github), refused: it has no what_happened
     {
         "jsonrpc": "2.0",
         "id": 8,
@@ -158,12 +158,6 @@ def _collect_events() -> list[dict[str, Any]]:
             "PYTHONPATH": str(REPO / "src"),
             "BATON_VENDOR_ID": "github",
             "BATON_EVENT_SINK": "stderr:",
-            # This script drives PRE-CALL annotations (no what_happened), which
-            # the default (`off`) refuses at the handler. Set
-            # explicitly rather than tracking the default: the A1 suite exists
-            # to prove the annotation path works end to end over a real
-            # subprocess, and it should say which mode it is proving.
-            "BATON_PROACTIVE": "on",
             "BATON_ANNOTATE": "on",
         }
     )
@@ -319,22 +313,18 @@ def test_all_a1_events_carry_vendor_id(events: list[dict]) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Annotation events also appear (proactive + reactive intents from real data)  #
+# Annotation events also appear: reports only, the pre-call ones are refused   #
 # --------------------------------------------------------------------------- #
 
 
 def test_annotations_emitted_with_real_intents(events: list[dict]) -> None:
     annotations = _of(events, "annotation")
-    assert len(annotations) >= 4, f"expected >=4 annotations, got {len(annotations)}"
+    assert len(annotations) == 2, f"expected 2 annotations, got {len(annotations)}"
     intents = {a["payload"].get("intent") for a in annotations}
-    assert (
-        "Read a github UI resource to verify proxy captures resource_read_start/end lifecycle events in A1"
-        in intents
-    )
-    assert (
-        "Inventory existing teams and projects in goodtiming-inc before creating a baton project."
-        in intents
-    )
+    assert intents == {
+        "Read a github UI resource to verify proxy captures resource_read_start/end lifecycle events in A1",
+        "Get the latest release for good-timing/baton-proxy to find the current release version",
+    }
 
 
 def test_both_reports_are_present(events: list[dict]) -> None:

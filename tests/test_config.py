@@ -158,36 +158,6 @@ def test_from_env_treats_empty_vendor_id_as_unset(
 # value that changed nothing.
 
 
-def test_from_env_proactive_defaults_to_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Shipped `on` on 2026-09-01 and flipped to `off` the same day, on the
-    evidence of the D7 verification run — the pre-call request does not add
-    intent, it moves it out of the per-call record (`expected_result` went
-    3/3 to 0/5 when the paragraph rendered, while `user_goal` held at 8/8
-    because the schema advertises it). It also costs 277 chars against a cap
-    the proxy appends into, and an approval prompt inside the work window.
-    Now matches the SDK's default as well as its legs."""
-    _scrub_baton_env(monkeypatch)
-    _set_required_env(monkeypatch)
-    assert Config.from_env().proactive_mode == "off"
-
-
-def test_from_env_proactive_off_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    _scrub_baton_env(monkeypatch)
-    _set_required_env(monkeypatch)
-    monkeypatch.setenv("BATON_PROACTIVE", "off")
-    assert Config.from_env().proactive_mode == "off"
-
-
-def test_from_env_proactive_rejects_unknown_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Same reason `BATON_TENANT_TYPE` used to raise: silently reading `BATON_PROACTIVE=false`
-    as `on` leaves an operator believing they turned something off."""
-    _scrub_baton_env(monkeypatch)
-    _set_required_env(monkeypatch)
-    monkeypatch.setenv("BATON_PROACTIVE", "false")
-    with pytest.raises(ValueError, match="BATON_PROACTIVE"):
-        Config.from_env()
-
-
 def test_from_env_annotate_defaults_to_off(monkeypatch: pytest.MonkeyPatch) -> None:
     _scrub_baton_env(monkeypatch)
     _set_required_env(monkeypatch)
@@ -204,14 +174,33 @@ def test_from_env_annotate_rejects_unknown_values(monkeypatch: pytest.MonkeyPatc
         Config.from_env()
 
 
-def test_proactive_without_reports_is_warned_about(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("value", ["on", "off", "false"])
+@pytest.mark.parametrize("annotate", ["on", "off"])
+def test_a_set_baton_proactive_is_warned_about_once_and_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch, value: str, annotate: str
+) -> None:
+    from baton_proxy.proxy import _Injection
+    from baton_proxy.sinks import find_file_sink_path
+
+    def served(cfg: Config) -> _Injection:
+        return _Injection.create(
+            find_file_sink_path(cfg.event_sink),
+            intent_param_mode=cfg.intent_param_mode,
+            report_mode=cfg.report_mode,
+        )
+
     _scrub_baton_env(monkeypatch)
     _set_required_env(monkeypatch)
-    monkeypatch.setenv("BATON_PROACTIVE", "on")
-    warned = Config.from_env().startup_warnings
-    assert any("BATON_PROACTIVE='on' has no effect" in w for w in warned), warned
-    monkeypatch.setenv("BATON_ANNOTATE", "on")
-    assert not any("has no effect" in w for w in Config.from_env().startup_warnings)
+    monkeypatch.setenv("BATON_ANNOTATE", annotate)
+    unset = Config.from_env()
+    monkeypatch.setenv("BATON_PROACTIVE", value)
+    cfg = Config.from_env()
+
+    assert len(cfg.startup_warnings) == len(unset.startup_warnings) + 1
+    proactive = [w for w in cfg.startup_warnings if "BATON_PROACTIVE" in w]
+    assert len(proactive) == 1
+    assert "no longer read" in proactive[0]
+    assert served(cfg) == served(unset)
 
 
 def test_intent_param_off_is_ignored_with_a_warning_and_the_proxy_starts(
