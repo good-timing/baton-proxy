@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The scrubber's patterns use SPEC §7's fixed sets. A digit is `0`–`9`, a word boundary is ASCII, and whitespace is space, tab, LF, CR, FF and `U+00A0`. So `"éjane@example.com"` is now scrubbed, as in `baton-ts`, and a card or phone number in other digits, such as Arabic-Indic, is no longer matched. Any space outside the set, such as a thin space (`U+2009`), an em space or a vertical tab, no longer separates a phone number or a bearer token, so such a value is no longer redacted.
+
 ## [0.7.1] — 2026-10-30
 
 ### Added
@@ -858,7 +864,7 @@ Initial public release on PyPI.
 - Consent guard: refuses to start when an `http(s)://` sink is paired with the placeholder `BATON_CONSENT_TOKEN=local`, or when an `http(s)://` sink is configured without `BATON_API_KEY`.
 - Fail-open delivery: emission runs on a background thread; Console outage never blocks the MCP pipe.
 
-[Unreleased]: https://github.com/good-timing/baton-proxy/compare/v0.6.11...HEAD
+[Unreleased]: https://github.com/good-timing/baton-proxy/compare/v0.7.1...HEAD
 [0.6.11]: https://github.com/good-timing/baton-proxy/compare/v0.6.10...v0.6.11
 [0.1.2]: https://github.com/good-timing/baton-proxy/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/good-timing/baton-proxy/compare/v0.1.0...v0.1.1

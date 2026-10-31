@@ -3,8 +3,8 @@
 The proxy emits whatever the wrapped MCP server returns — including tool
 params and results that may carry customer PII (emails in Notion search
 results, bearer tokens in error bodies, API keys pasted into chat tools).
-Persona B's trust pitch is that nothing unscrubbed ever leaves the
-customer's machine; this module is what makes that true. Every event
+It is pattern matching, not a guarantee: a name or a street address passes
+through. Every event
 payload runs through ``Scrubber`` in ``Emitter._enqueue`` before it lands
 in the queue, so both the local JSONL sink AND any HTTP sink see only
 scrubbed values.
@@ -21,14 +21,14 @@ scrubbed values.
 - cc — 13-19 digit candidates filtered by Luhn
 
 Plus field-name overrides: any dict key matching
-``{email, phone, ssn, api_key, token, secret, password}`` (case-insensitive)
+``REDACT_FIELD_NAMES`` (case-insensitive)
 force-redacts its string value regardless of pattern.
 
 Differs from LangSmith's approach (off by default, bring-your-own regex)
 by shipping rules on by default — the right tradeoff for Persona B's
 consumer/SMB audience that won't write masking code.
 
-Mirrored in ``baton.scrub`` once the SDK port lands (P1 in the MVP plan).
+baton-sdk's ``baton.scrub`` ships the same patterns; SPEC §7 is the rule for both.
 """
 
 from __future__ import annotations
@@ -53,25 +53,38 @@ REDACT_FIELD_NAMES: frozenset[str] = frozenset(
     {"email", "phone", "ssn", "api_key", "token", "secret", "password", "user_name"}
 )
 
+# SPEC §7's fixed sets: digits are 0-9 and word boundaries are ASCII
+# (re.ASCII), and whitespace is this class, because no runtime's \s matches it.
+# Pinned by the SPEC §7 tests in tests/test_scrub.py.
+_WS_CHARS = " \t\n\r\f\u00a0"
+_WS = f"[{_WS_CHARS}]"
+_PHONE_SEP = f"[{_WS_CHARS}.\\-]"
+
 # Ordered list of (category, pattern). Order matters where patterns can
 # overlap: JWT must run before bearer because a bare JWT can look
 # bearer-shaped. sk_key / aws_key run before email because their token
 # bodies could otherwise match the email local-part regex.
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b")),
-    ("bearer", re.compile(r"\bBearer\s+[A-Za-z0-9_\-.+/=]{16,}", re.IGNORECASE)),
-    ("sk_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b")),
-    ("aws_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("email", re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b", re.ASCII)),
+    ("bearer", re.compile(rf"\bBearer{_WS}+[A-Za-z0-9_\-.+/=]{{16,}}", re.IGNORECASE | re.ASCII)),
+    ("sk_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b", re.ASCII)),
+    ("aws_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b", re.ASCII)),
+    ("email", re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b", re.ASCII)),
     # Phone: optional ``+1``, optional area-code parens, separators
-    # ``-`` / ``.`` / space, 10 digits. Conservative — won't catch every
+    # ``-``, ``.`` or whitespace, 10 digits. Conservative — won't catch every
     # international format, but won't trip on every 10-digit identifier.
-    ("phone", re.compile(r"\b(?:\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}\b")),
+    (
+        "phone",
+        re.compile(
+            rf"\b(?:\+?1{_PHONE_SEP}?)?\(?\d{{3}}\)?{_PHONE_SEP}?\d{{3}}{_PHONE_SEP}?\d{{4}}\b",
+            re.ASCII,
+        ),
+    ),
 )
 
 # Credit-card candidates — Luhn-filtered before redacting to keep false
 # positives down on long numeric IDs (timestamps, order numbers).
-_CC_CANDIDATE = re.compile(r"\b\d{13,19}\b")
+_CC_CANDIDATE = re.compile(r"\b\d{13,19}\b", re.ASCII)
 
 
 def _luhn_valid(digits: str) -> bool:
