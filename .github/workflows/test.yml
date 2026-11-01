@@ -10,6 +10,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  spec-pin:
+    # Warns, never fails: a stale pin is how SDKs drift apart unnoticed, but
+    # bumping it is its own change with its own vectors to pass. Not on PRs,
+    # so the same warning does not sit on every unrelated one.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .gitmodules
+          sparse-checkout-cone-mode: false
+      - name: Does the baton-spec pin differ from baton-spec main?
+        run: |
+          pinned=$(git ls-tree HEAD baton-spec | awk '$1 == "160000" { print $3 }')
+          url=$(git config -f .gitmodules submodule.baton-spec.url || true)
+          latest=$(timeout 30 git ls-remote "$url" refs/heads/main | awk '$2 == "refs/heads/main" { print $1 }' || true)
+          if [ -z "$pinned" ] || [ -z "$latest" ]; then
+            echo "::warning title=baton-spec pin not checked::could not read the pin or $url"
+          elif [ "$pinned" != "$latest" ]; then
+            echo "::warning title=baton-spec pin differs from main::pinned $pinned, baton-spec main is $latest"
+          fi
+
   test:
     runs-on: ubuntu-latest
     strategy:
