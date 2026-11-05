@@ -4,7 +4,7 @@
 JSON-RPC response whose ``CallToolResult`` body sets the error flag; a JSON-RPC
 ``error`` member means a protocol fault, not a tool failure. A producer that
 classifies on the ``error`` member alone files tool failures as successes.
-SPEC §6.1 and §11.4.3 (``baton/docs/SPEC.md``) carry the rule.
+SPEC §6.1 and §11.4.3 (``baton-spec/SPEC.md``) carry the rule.
 
 ⚠ **One spelling here, and it is ``isError``.** SPEC §11.4.3's producer rule
 asks an *in-process* sensor to duck-type both ``is_error`` and ``isError``,
