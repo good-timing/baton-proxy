@@ -27,7 +27,7 @@ _REPORT_POINTER = (
     "wrong, or a request no tool covers; its description says when and how."
 )
 
-# The Console splits user_goal on "; success is" (SPEC §11.5.1 rule 2).
+# The format SPEC §5.1.1 gives for user_goal.
 _USER_GOAL_FORMAT = "'<n>: <what this call is for>; success is <what its result should show>'"
 
 # Keep the key list: without it, agents leave context empty.
@@ -210,10 +210,9 @@ RETIRED_PARAM_NAMES = (EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME)
 # pins its own copy in its own suite (this suite ships in the Try Kit, where a
 # clone has no siblings to read), so change all three together.
 #
-# The leading number says which user message the call answers, and the
-# Console cuts a turn where it changes (SPEC §11.5.1 rule 2). Only the leading
-# label tracks ``intent_param_mode``, so it agrees with the schema's ``required``
-# list.
+# The leading number says which user message the call answers (SPEC §5.1.1).
+# Only the leading label tracks ``intent_param_mode``, so it agrees with the
+# schema's ``required`` list.
 #
 # Do not reword without scoring the result on live agents.
 _USER_GOAL_PARAM_BODY = (
