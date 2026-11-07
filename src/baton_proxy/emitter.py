@@ -42,7 +42,7 @@ from baton_proxy.identity import (
     Principal,
 )
 from baton_proxy.scrub import Scrubber
-from baton_proxy.sinks import Sink, make_sink
+from baton_proxy.sinks import Sink, is_remote_spec, make_sink
 
 logger = logging.getLogger(__name__)
 
@@ -336,10 +336,7 @@ class Emitter:
         """
         if not self._config.using_placeholder_consent:
             return
-        assert self._config.event_sink is not None
-        # Any sink that leaves the machine is "remote" — http(s) and s3.
-        parts = [p.strip() for p in self._config.event_sink.split(",") if p.strip()]
-        if any(p.startswith(("http://", "https://", "s3://")) for p in parts):
+        if is_remote_spec(self._config.event_sink):
             raise ValueError(
                 "Refusing to ship events to a remote sink (http/https/s3) with "
                 "placeholder BATON_CONSENT_TOKEN='local' — set BATON_CONSENT_TOKEN "
@@ -361,9 +358,7 @@ class Emitter:
         """
         if not self._config.using_placeholder_vendor:
             return
-        assert self._config.event_sink is not None
-        parts = [p.strip() for p in self._config.event_sink.split(",") if p.strip()]
-        if any(p.startswith(("http://", "https://", "s3://")) for p in parts):
+        if is_remote_spec(self._config.event_sink):
             raise ValueError(
                 "Refusing to ship events to a remote sink (http/https/s3) with "
                 "the placeholder BATON_VENDOR_ID='local' — set BATON_VENDOR_ID "

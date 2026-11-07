@@ -1668,6 +1668,10 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("wrap", "unwrap"):
+        from baton_proxy.wrap import cli
+
+        return cli(argv)
 
     parser = argparse.ArgumentParser(
         prog="baton-proxy",
@@ -1675,6 +1679,10 @@ def main(argv: list[str] | None = None) -> int:
             "MCP proxy. Wraps a stdio MCP server (subprocess) OR bridges to an "
             "HTTPS Streamable-HTTP MCP server (--url), injects an annotation "
             "tool into the handshake, and emits friction events to a collector."
+        ),
+        epilog=(
+            "To edit a client config for you: `baton-proxy wrap <name>` and "
+            "`baton-proxy unwrap <name>` (see `baton-proxy wrap -h`)."
         ),
     )
     parser.add_argument(

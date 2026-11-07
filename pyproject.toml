@@ -56,6 +56,7 @@ ignore = ["E501"]
 # printed entry and the receipt are what a reviewer checks). T20 (no-print)
 # guards library code, which this is not.
 "try/kit.py" = ["T201"]
+"src/baton_proxy/wrap.py" = ["T201"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

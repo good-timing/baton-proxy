@@ -270,6 +270,19 @@ def _split_spec(url_spec: str | None) -> list[str]:
     return [p.strip() for p in url_spec.split(",") if p.strip()]
 
 
+SINK_SCHEMES = frozenset({"stderr", "file", "http", "https", "s3"})
+
+
+def spec_schemes(url_spec: str | None) -> list[str]:
+    """The scheme of each leg, as ``_make_one`` reads it (urlparse lowercases it)."""
+    return [urllib.parse.urlparse(p).scheme for p in _split_spec(url_spec)]
+
+
+def is_remote_spec(url_spec: str | None) -> bool:
+    """True when any leg of the spec sends events off the machine (http, https, s3)."""
+    return any(s in ("http", "https", "s3") for s in spec_schemes(url_spec))
+
+
 def find_file_sink_path(event_sink_url: str | None) -> str | None:
     """Return the first ``file://`` path in a (possibly comma-separated) sink
     URL spec, or None if no file sink is present.

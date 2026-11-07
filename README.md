@@ -60,6 +60,17 @@ The token goes in the entry's `env`, not your shell: the MCP client starts the p
 
 Either form is started by your MCP client, not by you: the proxy speaks JSON-RPC on stdin, so running it straight from a shell just waits for input.
 
+### Or let the proxy edit the config
+
+```sh
+baton-proxy wrap my-server                                   # an entry already in Claude Desktop's config
+baton-proxy wrap linear --url https://mcp.linear.app/mcp     # a new server that signs in with OAuth
+baton-proxy wrap my-server --client code                     # ~/.claude.json; close Claude Code first
+baton-proxy unwrap my-server                                 # put the original entry back
+```
+
+`wrap` writes absolute paths, because Claude Desktop starts servers with a short `PATH`. A server that signs in with OAuth runs through `npx -y mcp-remote`, which opens a browser on first start and keeps the token itself, so Node.js must be installed. A connector added in the Claude app is not in any config file: `--url` adds a separate local entry, so turn the app's connector off. To send events to a Console, pass `--sink https://… --api-key … --vendor … --consent …`; `wrap` refuses a remote sink without them, as the proxy would at start. `--dry-run` shows the entry first.
+
 ## Where events go
 
 `BATON_EVENT_SINK` takes a comma-separated list, and the URL scheme picks the sink: `stderr:` writes JSON Lines to stderr, `file:///tmp/events.jsonl` appends one JSON object per event, and `https://collector.example.com` POSTs to `{url}/v0/events`. The default is `stderr:,file:///tmp/baton-proxy.jsonl`, so a bare install writes only to your own machine.
