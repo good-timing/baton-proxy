@@ -7,7 +7,7 @@ handshake, and emits friction events to a collector.
 See README.md for usage.
 """
 
-__version__ = "0.7.2"
+__version__ = "0.7.3"
 
 # The product/version token, single-sourced here so the emitter's `sdk_version`
 # field and the HTTP bridge's outbound `User-Agent` header can never drift.
