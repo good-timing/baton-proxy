@@ -1,4 +1,9 @@
-"""`baton-proxy wrap` / `unwrap`: put one MCP server behind the proxy by rewriting the client config."""
+"""`baton-proxy wrap` / `unwrap` / `wrap-entry`: put one MCP server behind the proxy.
+
+`wrap` and `unwrap` edit Claude Desktop's or Claude Code's config. `wrap-entry`
+edits nothing: it turns one entry into its wrapped form, for an agent to write
+into any other client's config.
+"""
 
 from __future__ import annotations
 
@@ -12,19 +17,21 @@ import sys
 import tempfile
 import urllib.parse
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 _PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
 _SHOWN_ENV = frozenset({"BATON_EVENT_SINK", "BATON_TENANT_ID", "BATON_VENDOR_ID", "PATH"})
 _VAR_REF = re.compile(r"^\$\{[^}]*\}$")
 # http keys that carry auth the proxy cannot: dropping them would lose it silently.
 _UNCARRIED_AUTH = ("headersHelper", "oauth")
-_DSN_KEY = re.compile(r"baton_(?:pk|sk)_[A-Za-z0-9_%-]{8,}")
+_KEY = r"baton_(?:pk|sk)_[A-Za-z0-9_%-]"
+_DSN_KEY = re.compile(_KEY + "{8,}")
+_KEY_IN_TEXT = re.compile(_KEY + "+")
 _DSN_WORKSPACE = re.compile(r"ten_(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{32})")
 _DSN_SERVER = re.compile(r"[a-zA-Z0-9_-]{1,48}")
 # No underscore in a host, so a key pasted into the host slot is refused, not printed as the sink.
 _DSN_AUTHORITY = re.compile(
-    r"(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])(?::(\d{1,5}))?"
+    r"(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?"
 )
 _CONSOLE_CONSENT = "customer-consented"
 
@@ -93,6 +100,15 @@ def _args(entry: dict[str, Any]) -> list[str]:
     return [str(a) for a in args]
 
 
+def _env(entry: dict[str, Any]) -> dict[str, str]:
+    env = entry.get("env")
+    if env is None:
+        return {}
+    if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
+        raise Refused("this entry's `env` is not an object of strings")
+    return {str(k): v for k, v in env.items()}
+
+
 def _is_wrapped(entry: dict[str, Any]) -> bool:
     cmd = [str(entry.get("command", "")), *_args(entry)]
     return any(os.path.basename(piece) in _PROXY_NAMES for token in cmd for piece in token.split())
@@ -122,7 +138,7 @@ def _proxy_entry(base: dict[str, Any], python: str, args: list[str]) -> dict[str
     entry = {k: v for k, v in base.items() if k not in ("type", "url", "headers")}
     entry["command"] = python
     entry["args"] = ["-m", "baton_proxy", *args]
-    entry["env"] = {str(k): str(v) for k, v in (base.get("env") or {}).items()}
+    entry["env"] = _env(base)
     return entry
 
 
@@ -132,7 +148,7 @@ def _mcp_remote_entry(
     if npx is None:
         raise Refused(
             "this server signs in with OAuth, which goes through `npx mcp-remote`,\n"
-            "  and npx is not on PATH. Install Node.js, then run wrap again."
+            "  and npx is not on PATH. Install Node.js, then run it again."
         )
     entry = _proxy_entry(base, python, ["--", npx, "-y", "mcp-remote", url])
     env = entry["env"]
@@ -157,6 +173,7 @@ def build_wrapped_entry(
         return _mcp_remote_entry(url, {}, python, npx)
     if _is_wrapped(original):
         raise Refused("this entry is already wrapped by baton-proxy")
+    _env(original)  # refuses a non-string env before anything is built
     if _is_stdio(original):
         wrapped = dict(original)
         wrapped["command"] = python
@@ -168,7 +185,10 @@ def build_wrapped_entry(
         )
     entry_url = original.get("url")
     if not isinstance(entry_url, str) or not entry_url.strip():
-        raise Refused("this entry has neither a command nor a url")
+        raise Refused(
+            "this entry has neither a command nor a url. Pass it in the mcpServers shape:\n"
+            "  command/args/env, or url/headers (another client's serverUrl or httpUrl goes in url)"
+        )
     entry_url = entry_url.strip()
     uncarried = [k for k in _UNCARRIED_AUTH if k in original]
     if uncarried:
@@ -206,11 +226,15 @@ def apply_wrap(
         raise Refused(f"no server named {name!r}. Servers in this config: {names}")
     if original is not None and not isinstance(original, dict):
         raise Refused(f"{name!r} is not an object")
-    wrapped = build_wrapped_entry(original, url=url, python=python, npx=npx)
-    if baton_env:
-        wrapped["env"] = {**(wrapped.get("env") or {}), **baton_env}
+    wrapped = _with_env(build_wrapped_entry(original, url=url, python=python, npx=npx), baton_env)
     servers[name] = wrapped
     return _dumps_like(data, config_text), original, wrapped
+
+
+def _with_env(entry: dict[str, Any], baton_env: dict[str, str] | None) -> dict[str, Any]:
+    if baton_env:
+        entry["env"] = {**(entry.get("env") or {}), **baton_env}
+    return entry
 
 
 def _normal_form(entry: Any) -> Any:
@@ -340,10 +364,15 @@ def _project_path(value: str) -> str:
     return os.path.abspath(os.path.expanduser(value))
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse echoes a stray argument whole, and a DSN given without --dsn carries the key."""
+
+    def error(self, message: str) -> NoReturn:
+        super().error(_KEY_IN_TEXT.sub("<key not shown>", message))
+
+
 def _parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="baton-proxy", description="Put an MCP server behind baton-proxy."
-    )
+    p = _Parser(prog="baton-proxy", description="Put an MCP server behind baton-proxy.")
     sub = p.add_subparsers(dest="cmd", required=True)
     for cmd in ("wrap", "unwrap"):
         s = sub.add_parser(cmd)
@@ -358,37 +387,50 @@ def _parser() -> argparse.ArgumentParser:
         help="The DSN from the Console's Settings. Without one, events stay on this machine.",
     )
     w.add_argument("--dry-run", action="store_true", help="Print the entry; write nothing.")
+    e = sub.add_parser(
+        "wrap-entry",
+        help="Wrap one entry read from stdin and print it; edits no file.",
+        description=(
+            "Reads one server entry as JSON on stdin, in the mcpServers shape "
+            "(command/args/env, or url/headers), and prints the wrapped entry for "
+            "you to write into your client's config. Keep the original to undo. "
+            "The output holds the DSN's key and any bearer token in full."
+        ),
+    )
+    e.add_argument("--url", help="Make a new remote server's entry instead (mcp-remote).")
+    e.add_argument("--dsn", help="The DSN from the Console's Settings.")
     return p
 
 
 def _dsn_env(raw: str) -> dict[str, str]:
     """The BATON_* values a Console DSN carries. The refusal never echoes it: it holds the key."""
+    not_a_dsn = Refused(
+        "the --dsn is not a Console DSN, which looks like "
+        "https://baton_pk_...@host/ten_.../<server>. Copy it whole from Settings."
+    )
     raw = raw.strip()
     if any(c.isspace() or not c.isprintable() for c in raw):
         raise Refused("the --dsn has a space or line break inside it; paste it as one line")
     try:
         parts = urllib.parse.urlsplit(raw)
-        hostname = parts.hostname
+        port = parts.port
     except ValueError:
-        parts, hostname = None, None
-    key, at, authority = parts.netloc.rpartition("@") if parts else ("", "", "")
-    segments = [seg for seg in parts.path.split("/") if seg] if parts else []
-    host = _DSN_AUTHORITY.fullmatch(authority)
+        raise not_a_dsn from None
+    if port == 0:
+        raise not_a_dsn
+    key, at, authority = parts.netloc.rpartition("@")
+    segments = [seg for seg in parts.path.split("/") if seg]
     if (
-        parts is None
-        or parts.scheme not in ("https", "http")
-        or not (at and _DSN_KEY.fullmatch(key) and hostname and host)
-        or int(host.group(1) or 1) not in range(1, 65536)
+        parts.scheme not in ("https", "http")
+        or not (at and _DSN_KEY.fullmatch(key) and parts.hostname)
+        or not _DSN_AUTHORITY.fullmatch(authority)
         or parts.query
         or parts.fragment
         or len(segments) != 2
         or not _DSN_WORKSPACE.fullmatch(segments[0])
         or not _DSN_SERVER.fullmatch(segments[1])
     ):
-        raise Refused(
-            "the --dsn is not a Console DSN, which looks like "
-            "https://baton_pk_...@host/ten_.../<server>. Copy it whole from Settings."
-        )
+        raise not_a_dsn
     return {
         "BATON_EVENT_SINK": f"{parts.scheme}://{authority}",
         "BATON_API_KEY": key,
@@ -398,14 +440,38 @@ def _dsn_env(raw: str) -> dict[str, str]:
     }
 
 
+def _baton_env(args: argparse.Namespace) -> dict[str, str]:
+    return _dsn_env(args.dsn) if args.dsn is not None else {}
+
+
 def cli(argv: list[str]) -> int:
     args = _parser().parse_args(argv)
-    config = (args.config or client_config_path(args.client)).expanduser().resolve()
     try:
+        if args.cmd == "wrap-entry":
+            return _wrap_entry(args)
+        config = (args.config or client_config_path(args.client)).expanduser().resolve()
         return _wrap(args, config) if args.cmd == "wrap" else _unwrap(args, config)
     except (Refused, OSError) as e:
         print(f"baton-proxy {args.cmd}: {e}", file=sys.stderr)
         return 1
+
+
+def _wrap_entry(args: argparse.Namespace) -> int:
+    text = sys.stdin.read()
+    original = _parse(text, "the entry on stdin") if text.strip() else None
+    if original is None and args.url is None:
+        raise Refused("pass a server entry as JSON on stdin, or --url for a new remote server")
+    if original is not None and args.url is not None:
+        raise Refused("pass an entry on stdin or --url, not both")
+    baton_env = _baton_env(args)
+    wrapped = build_wrapped_entry(
+        original, url=args.url, python=launch_python(sys.executable), npx=_find_npx()
+    )
+    # A client that types its entries (VS Code) needs one on the stdio entry that replaced an http one.
+    if original is not None and "type" in original:
+        wrapped["type"] = "stdio"
+    print(json.dumps(_with_env(wrapped, baton_env), indent=2))
+    return 0
 
 
 def _wrap(args: argparse.Namespace, config: Path) -> int:
@@ -423,7 +489,7 @@ def _wrap(args: argparse.Namespace, config: Path) -> int:
         npx=_find_npx(),
         url=args.url,
         project=args.project,
-        baton_env=_dsn_env(args.dsn) if args.dsn is not None else {},
+        baton_env=_baton_env(args),
     )
     print(f"{args.name} in {config}:\n{_shown(wrapped)}")
     if args.dry_run:

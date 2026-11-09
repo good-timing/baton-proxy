@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **`baton-proxy wrap <name>` and `baton-proxy unwrap <name>`.** They rewrite one entry in Claude Desktop's config, or in `~/.claude.json` with `--client code`, so you do not edit the JSON by hand. A stdio entry is wrapped as `-- <command>`, and an http entry with a bearer token goes through `--url`. An http entry with no credential, or a new server given with `--url`, runs through `npx -y mcp-remote`, which does the OAuth sign-in in a browser and keeps the token. The original entry is saved, and `unwrap` puts it back exactly.
 - **`wrap --dsn`** takes the DSN from the Console's Settings page and writes the address, the key, the workspace id, the server id and the consent token from it. It is the only way `wrap` sends events to a Console; without it, events stay on this machine.
+- **`baton-proxy wrap-entry`** turns one server entry, read as JSON on stdin, into its wrapped form and prints it. It edits no file, so it works for any client: you or your agent write the result into that client's config. It takes `--url` for a new remote server and `--dsn` for the Console, and refuses what `wrap` refuses.
 
 ## [0.7.2] — 2026-11-01
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -474,3 +475,110 @@ def test_a_state_file_that_cannot_be_written_leaves_the_config_alone(home, cfg):
     (home / ".baton-proxy").write_text("a file where the directory should be")
     assert run(cfg, "wrap", "fs") == 1
     assert cfg.read_text() == before
+
+
+def _entry(monkeypatch, capsys, stdin: str, *argv: str) -> tuple[int, str, str]:
+    monkeypatch.setattr(wrap.sys, "stdin", io.StringIO(stdin))
+    code = proxy_main(["wrap-entry", *argv])
+    out = capsys.readouterr()
+    return code, out.out, out.err
+
+
+def test_wrap_entry_prints_the_wrapped_entry_and_writes_nothing(home, monkeypatch, capsys):
+    stdin = json.dumps({"command": "npx", "args": ["-y", "@v/fs"], "env": {"ROOT": "/x"}})
+    code, out, _ = _entry(monkeypatch, capsys, stdin, "--dsn", DSN)
+    assert code == 0
+    entry = json.loads(out)
+    assert entry["command"] == wrap.launch_python(wrap.sys.executable)
+    assert entry["args"] == ["-m", "baton_proxy", "--", "npx", "-y", "@v/fs"]
+    assert entry["env"]["ROOT"] == "/x"
+    # The agent writes this into the client's file, so the key is in it whole.
+    assert entry["env"]["BATON_API_KEY"] == KEY
+    assert entry["env"]["BATON_VENDOR_ID"] == "srv-1f2e3d4c"
+    assert list(home.iterdir()) == []
+
+
+def test_wrap_entry_makes_a_new_remote_entry_from_url(home, monkeypatch, capsys):
+    code, out, _ = _entry(monkeypatch, capsys, "", "--url", "https://mcp.linear.app/mcp")
+    assert code == 0
+    assert json.loads(out)["args"][-3:] == ["-y", "mcp-remote", "https://mcp.linear.app/mcp"]
+
+
+def test_wrap_entry_bridges_a_bearer_entry(home, monkeypatch, capsys):
+    stdin = json.dumps({"url": "https://a/mcp", "headers": {"Authorization": "Bearer ${T}"}})
+    code, out, _ = _entry(monkeypatch, capsys, stdin)
+    assert code == 0
+    entry = json.loads(out)
+    assert entry["args"] == ["-m", "baton_proxy", "--url", "https://a/mcp"]
+    assert entry["env"] == {"BATON_UPSTREAM_AUTH_TOKEN": "${T}"}
+
+
+@pytest.mark.parametrize(
+    ("stdin", "argv", "said"),
+    [
+        (json.dumps({"type": "sse", "url": "https://x/sse"}), (), "sse"),
+        (json.dumps({"url": "https://x/mcp", "headers": {"X-Key": "k"}}), (), "X-Key"),
+        (
+            json.dumps({"command": "python", "args": ["-m", "baton_proxy", "--", "x"]}),
+            (),
+            "already",
+        ),
+        ("{not json", (), "not valid JSON"),
+        ("[]", (), "not a JSON object"),
+        ("", (), "--url"),
+        (json.dumps({"command": "npx"}), ("--url", "https://x/mcp"), "not both"),
+        (json.dumps({"command": "npx"}), ("--dsn", "nope"), "not a Console DSN"),
+    ],
+)
+def test_wrap_entry_refuses_with_the_reason_and_prints_no_entry(
+    home, monkeypatch, capsys, stdin, argv, said
+):
+    code, out, err = _entry(monkeypatch, capsys, stdin, *argv)
+    assert code == 1
+    assert out == ""
+    assert said in err
+
+
+def test_wrap_entry_from_a_uvx_cache_prints_no_entry(home, monkeypatch, capsys):
+    monkeypatch.setattr(wrap.sys, "executable", "/u/.cache/uv/archive-v0/x/bin/python")
+    code, out, err = _entry(monkeypatch, capsys, json.dumps({"command": "npx"}))
+    assert code == 1
+    assert out == ""
+    assert "temporary cache" in err
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"command": "npx", "env": "x"},
+        {"command": "npx", "env": ["A=1"]},
+        {"url": "https://a/mcp", "env": "x", "headers": {"Authorization": "Bearer t"}},
+        {"url": "https://a/mcp", "env": {"A": None}, "headers": {"Authorization": "Bearer t"}},
+    ],
+)
+def test_wrap_entry_refuses_an_env_that_is_not_strings(home, monkeypatch, capsys, entry):
+    code, out, err = _entry(monkeypatch, capsys, json.dumps(entry), "--dsn", DSN)
+    assert code == 1
+    assert out == ""
+    assert "env" in err
+
+
+def test_a_mistyped_flag_does_not_print_the_dsns_key(home, monkeypatch, capsys):
+    monkeypatch.setattr(wrap.sys, "stdin", io.StringIO(json.dumps({"command": "npx"})))
+    with pytest.raises(SystemExit):
+        proxy_main(["wrap-entry", "--dns", DSN])
+    out = capsys.readouterr()
+    assert KEY not in out.out + out.err
+
+
+def test_a_typed_http_entry_comes_back_typed_stdio(home, monkeypatch, capsys):
+    stdin = json.dumps({"type": "http", "url": "https://a/mcp"})
+    code, out, _ = _entry(monkeypatch, capsys, stdin)
+    assert code == 0
+    assert json.loads(out)["type"] == "stdio"
+
+
+def test_another_clients_url_key_is_named_in_the_refusal(home, monkeypatch, capsys):
+    code, _, err = _entry(monkeypatch, capsys, json.dumps({"serverUrl": "https://a/mcp"}))
+    assert code == 1
+    assert "url" in err and "mcpServers shape" in err

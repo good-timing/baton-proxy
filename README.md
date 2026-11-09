@@ -70,6 +70,15 @@ baton-proxy wrap my-server --dsn 'https://baton_pk_…'        # send events to 
 baton-proxy unwrap my-server                                 # put the original entry back
 ```
 
+Any other client (Cursor, VS Code, Windsurf, Codex and so on): `wrap-entry` reads one server entry as JSON on stdin and prints the wrapped entry, and edits no file. Write the result into that client's own config yourself, or let your agent do it, and keep the original to undo:
+
+```sh
+echo '{"command": "npx", "args": ["-y", "@vendor/server"]}' | baton-proxy wrap-entry --dsn '<dsn>'
+baton-proxy wrap-entry --url https://mcp.linear.app/mcp --dsn '<dsn>' < /dev/null   # a new remote server
+```
+
+The printed entry holds the DSN's key and any bearer token in full, because it is what goes into the config.
+
 `wrap` writes absolute paths, because Claude Desktop starts servers with a short `PATH`. A server that signs in with OAuth runs through `npx -y mcp-remote`, which opens a browser on first start and keeps the token itself, so Node.js must be installed. A connector added in the Claude app is not in any config file: `--url` adds a separate local entry, so turn the app's connector off. To send events to a Console, add a server on its Settings page and pass its DSN: `--dsn 'https://baton_pk_…@baton.goodtiming.ai/ten_…/<server>'`. The DSN carries the address, the key and both ids. Without `--dsn`, events stay on this machine. `--dry-run` shows the entry first.
 
 ## Where events go

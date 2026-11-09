@@ -1668,7 +1668,7 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in ("wrap", "unwrap"):
+    if argv and argv[0] in ("wrap", "unwrap", "wrap-entry"):
         from baton_proxy.wrap import cli
 
         return cli(argv)
@@ -1682,7 +1682,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
         epilog=(
             "To edit a client config for you: `baton-proxy wrap <name>` and "
-            "`baton-proxy unwrap <name>` (see `baton-proxy wrap -h`)."
+            "`baton-proxy unwrap <name>` (see `baton-proxy wrap -h`). For any other "
+            "client, `baton-proxy wrap-entry` wraps one entry and edits no file."
         ),
     )
     parser.add_argument(
