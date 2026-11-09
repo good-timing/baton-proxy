@@ -14,13 +14,19 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from baton_proxy.sinks import SINK_SCHEMES, is_remote_spec, spec_schemes
-
 _PROXY_NAMES = frozenset({"baton-proxy", "baton_proxy"})
 _SHOWN_ENV = frozenset({"BATON_EVENT_SINK", "BATON_TENANT_ID", "BATON_VENDOR_ID", "PATH"})
 _VAR_REF = re.compile(r"^\$\{[^}]*\}$")
 # http keys that carry auth the proxy cannot: dropping them would lose it silently.
 _UNCARRIED_AUTH = ("headersHelper", "oauth")
+_DSN_KEY = re.compile(r"baton_(?:pk|sk)_[A-Za-z0-9_%-]{8,}")
+_DSN_WORKSPACE = re.compile(r"ten_(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{32})")
+_DSN_SERVER = re.compile(r"[a-zA-Z0-9_-]{1,48}")
+# No underscore in a host, so a key pasted into the host slot is refused, not printed as the sink.
+_DSN_AUTHORITY = re.compile(
+    r"(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])(?::(\d{1,5}))?"
+)
+_CONSOLE_CONSENT = "customer-consented"
 
 
 class Refused(Exception):
@@ -347,39 +353,49 @@ def _parser() -> argparse.ArgumentParser:
         s.add_argument("--project", type=_project_path, help="A project path in ~/.claude.json.")
     w = sub.choices["wrap"]
     w.add_argument("--url", help="Add a new remote server (signed in through mcp-remote).")
-    w.add_argument("--sink", help="BATON_EVENT_SINK, e.g. https://baton.goodtiming.ai")
-    w.add_argument("--api-key", help="BATON_API_KEY, required with an http(s) sink.")
-    w.add_argument("--vendor", help="BATON_VENDOR_ID, required with a remote sink.")
-    w.add_argument("--consent", help="BATON_CONSENT_TOKEN, required with a remote sink.")
-    w.add_argument("--tenant", help="BATON_TENANT_ID")
+    w.add_argument(
+        "--dsn",
+        help="The DSN from the Console's Settings. Without one, events stay on this machine.",
+    )
     w.add_argument("--dry-run", action="store_true", help="Print the entry; write nothing.")
     return p
 
 
-def _baton_env(args: argparse.Namespace) -> dict[str, str]:
-    """The BATON_* values to write, refusing a set the proxy would refuse at start."""
-    schemes = spec_schemes(args.sink)
-    unknown = sorted(set(schemes) - SINK_SCHEMES)
-    if unknown:
-        raise Refused(f"the proxy has no sink for {', '.join(map(repr, unknown))}")
-    http_sink = any(s in ("http", "https") for s in schemes)
-    if http_sink and not args.api_key:
-        raise Refused("an http(s) sink needs --api-key; the proxy will not start without one")
-    if args.api_key and not http_sink:
-        raise Refused("--api-key is only used by an http(s) --sink")
-    if is_remote_spec(args.sink):
-        missing = [f for f in ("vendor", "consent") if not getattr(args, f)]
-        if missing:
-            flags = " and ".join(f"--{f}" for f in missing)
-            raise Refused(f"a remote sink needs {flags}; the proxy will not start without them")
-    pairs = {
-        "BATON_EVENT_SINK": args.sink,
-        "BATON_API_KEY": args.api_key,
-        "BATON_TENANT_ID": args.tenant,
-        "BATON_VENDOR_ID": args.vendor,
-        "BATON_CONSENT_TOKEN": args.consent,
+def _dsn_env(raw: str) -> dict[str, str]:
+    """The BATON_* values a Console DSN carries. The refusal never echoes it: it holds the key."""
+    raw = raw.strip()
+    if any(c.isspace() or not c.isprintable() for c in raw):
+        raise Refused("the --dsn has a space or line break inside it; paste it as one line")
+    try:
+        parts = urllib.parse.urlsplit(raw)
+        hostname = parts.hostname
+    except ValueError:
+        parts, hostname = None, None
+    key, at, authority = parts.netloc.rpartition("@") if parts else ("", "", "")
+    segments = [seg for seg in parts.path.split("/") if seg] if parts else []
+    host = _DSN_AUTHORITY.fullmatch(authority)
+    if (
+        parts is None
+        or parts.scheme not in ("https", "http")
+        or not (at and _DSN_KEY.fullmatch(key) and hostname and host)
+        or int(host.group(1) or 1) not in range(1, 65536)
+        or parts.query
+        or parts.fragment
+        or len(segments) != 2
+        or not _DSN_WORKSPACE.fullmatch(segments[0])
+        or not _DSN_SERVER.fullmatch(segments[1])
+    ):
+        raise Refused(
+            "the --dsn is not a Console DSN, which looks like "
+            "https://baton_pk_...@host/ten_.../<server>. Copy it whole from Settings."
+        )
+    return {
+        "BATON_EVENT_SINK": f"{parts.scheme}://{authority}",
+        "BATON_API_KEY": key,
+        "BATON_TENANT_ID": segments[0],
+        "BATON_VENDOR_ID": segments[1],
+        "BATON_CONSENT_TOKEN": _CONSOLE_CONSENT,
     }
-    return {k: v for k, v in pairs.items() if v}
 
 
 def cli(argv: list[str]) -> int:
@@ -407,7 +423,7 @@ def _wrap(args: argparse.Namespace, config: Path) -> int:
         npx=_find_npx(),
         url=args.url,
         project=args.project,
-        baton_env=_baton_env(args),
+        baton_env=_dsn_env(args.dsn) if args.dsn is not None else {},
     )
     print(f"{args.name} in {config}:\n{_shown(wrapped)}")
     if args.dry_run:
@@ -428,7 +444,7 @@ def _wrap(args: argparse.Namespace, config: Path) -> int:
             "added as a connector in the Claude app, turn that one off, or the\n"
             "agent sees both and may use the one Baton cannot see."
         )
-    print(f"Undo: {_unwrap_command(args, config)}")
+    print(f"Undo: {_unwrap_command(args, config, wrapped['command'])}")
     return 0
 
 
@@ -436,8 +452,8 @@ def _backup_path(config: Path) -> Path:
     return config.with_name(config.name + ".baton-backup")
 
 
-def _unwrap_command(args: argparse.Namespace, config: Path) -> str:
-    parts = ["baton-proxy", "unwrap", args.name]
+def _unwrap_command(args: argparse.Namespace, config: Path, python: str) -> str:
+    parts = [python, "-m", "baton_proxy", "unwrap", args.name]
     if args.config:
         parts += ["--config", str(config)]
     elif args.client != "desktop":

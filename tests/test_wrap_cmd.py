@@ -245,41 +245,75 @@ def test_refusal_exits_1_and_leaves_the_file(cfg, capsys):
     assert capsys.readouterr().err
 
 
-CONSOLE = ("--sink", "https://c.example", "--vendor", "acme", "--consent", "tok")
+KEY = "baton_pk_" + "A" * 43
+DSN = f"https://{KEY}@baton.example.com/ten_0a1b2c3d/srv-1f2e3d4c"
 
 
-def test_api_key_is_never_printed(cfg, capsys):
+def test_dsn_writes_every_value_the_console_needs(cfg, capsys):
     _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
-    key = "baton_sk_secretsecretsecret"
-    assert run(cfg, "wrap", "fs", *CONSOLE, "--api-key", key) == 0
-    out = capsys.readouterr()
-    assert key not in out.out + out.err
+    assert run(cfg, "wrap", "fs", "--dsn", DSN) == 0
     env = json.loads(cfg.read_text())["mcpServers"]["fs"]["env"]
-    assert env["BATON_API_KEY"] == key
-    assert env["BATON_VENDOR_ID"] == "acme"
-    assert env["BATON_CONSENT_TOKEN"] == "tok"
+    assert env == {
+        "BATON_EVENT_SINK": "https://baton.example.com",
+        "BATON_API_KEY": KEY,
+        "BATON_TENANT_ID": "ten_0a1b2c3d",
+        "BATON_VENDOR_ID": "srv-1f2e3d4c",
+        "BATON_CONSENT_TOKEN": "customer-consented",
+    }
+    out = capsys.readouterr()
+    assert KEY not in out.out + out.err
+
+
+def test_dsn_tolerates_doubled_slashes_and_a_port(cfg):
+    _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
+    dsn = f"http://{KEY}@localhost:8080//ten_0a1b2c3d//srv-1/"
+    assert run(cfg, "wrap", "fs", "--dsn", dsn) == 0
+    env = json.loads(cfg.read_text())["mcpServers"]["fs"]["env"]
+    assert (env["BATON_EVENT_SINK"], env["BATON_VENDOR_ID"]) == ("http://localhost:8080", "srv-1")
+
+
+def test_without_a_dsn_no_baton_value_is_written(cfg):
+    _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
+    assert run(cfg, "wrap", "fs") == 0
+    assert "env" not in json.loads(cfg.read_text())["mcpServers"]["fs"]
+
+
+@pytest.mark.parametrize("flag", ["--sink", "--api-key", "--tenant", "--vendor", "--consent"])
+def test_the_dsn_is_the_only_way_to_name_a_console(cfg, flag):
+    before = _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
+    with pytest.raises(SystemExit):
+        run(cfg, "wrap", "fs", flag, "x")
+    assert cfg.read_text() == before
 
 
 @pytest.mark.parametrize(
-    ("argv", "missing"),
+    "bad",
     [
-        (("--sink", "https://c.example", "--vendor", "v", "--consent", "c"), "--api-key"),
-        (("--sink", "https://c.example", "--api-key", "k", "--consent", "c"), "--vendor"),
-        (("--sink", "https://c.example", "--api-key", "k", "--vendor", "v"), "--consent"),
-        (("--sink", "s3://bucket/x", "--vendor", "v"), "--consent"),
-        (("--api-key", "k"), "--api-key"),
+        KEY,
+        "https://baton.example.com/ten_0a1b2c3d/srv-1",
+        f"https://{KEY}@baton.example.com/ten_0a1b2c3d",
+        f"https://{KEY}@baton.example.com/api/ten_0a1b2c3d/srv-1",
+        f"https://{KEY}@baton.example.com/acme/srv-1",
+        f"https://{KEY}@baton.example.com/ten_0a1b2c3d/srv 1",
+        f"https://{KEY}@baton.example.com/ten_0a1b2c3d/srv-\n1",
+        f"ftp://{KEY}@baton.example.com/ten_0a1b2c3d/srv-1",
+        f"https://{KEY}@baton.example.com/ten_0a1b2c3d/srv-1?x=1",
+        f"https://{KEY}:pw@baton.example.com/ten_0a1b2c3d/srv-1",
+        "https://notakey@baton.example.com/ten_0a1b2c3d/srv-1",
+        f"https://{KEY}@{KEY}.x/ten_0a1b2c3d/srv-1",
+        f"https://{KEY}@h.example.com\\evil/ten_0a1b2c3d/srv-1",
+        f"https://{KEY}@h.example.com:abc/ten_0a1b2c3d/srv-1",
+        f"https://{KEY}@h.example.com:99999/ten_0a1b2c3d/srv-1",
+        "",
     ],
 )
-def test_a_sink_the_proxy_would_refuse_at_start_is_refused_at_wrap(cfg, capsys, argv, missing):
+def test_a_malformed_dsn_is_refused_without_printing_the_key(cfg, capsys, bad):
     before = _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
-    assert run(cfg, "wrap", "fs", *argv) == 1
+    assert run(cfg, "wrap", "fs", "--dsn", bad) == 1
     assert cfg.read_text() == before
-    assert missing in capsys.readouterr().err
-
-
-def test_a_local_sink_needs_no_vendor_or_consent(cfg):
-    _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
-    assert run(cfg, "wrap", "fs", "--sink", "file:///tmp/e.jsonl") == 0
+    err = capsys.readouterr().err
+    assert "dsn" in err.lower()
+    assert KEY not in err
 
 
 def test_desktop_is_the_default_config_on_macos(home, monkeypatch):
@@ -351,7 +385,10 @@ def test_undo_hint_names_the_client_and_project(home, capsys, monkeypatch):
     _write(claude, {"projects": {proj: {"mcpServers": {"fs": {"command": "npx"}}}}})
     monkeypatch.chdir(home)
     assert proxy_main(["wrap", "fs", "--client", "code", "--project", "repo/"]) == 0
-    assert f"baton-proxy unwrap fs --client code --project {proj}" in capsys.readouterr().out
+    # The python the entry runs, not "baton-proxy": that may be an older install without unwrap.
+    python = wrap.launch_python(wrap.sys.executable)
+    hint = f"Undo: {python} -m baton_proxy unwrap fs --client code --project {proj}"
+    assert hint in capsys.readouterr().out
     assert proxy_main(["unwrap", "fs", "--client", "code", "--project", proj]) == 0
 
 
@@ -398,15 +435,6 @@ def test_http_auth_the_proxy_cannot_carry_is_refused(key):
     entry = {"type": "http", "url": "https://x/mcp", key: {"x": 1}}
     with pytest.raises(wrap.Refused, match=key):
         _apply({"mcpServers": {"s": entry}}, "s")
-
-
-@pytest.mark.parametrize(
-    ("sink", "expect"), [("HTTPS://c.example", "--api-key"), ("htps://c.example", "no sink")]
-)
-def test_sink_schemes_are_read_as_the_proxy_reads_them(cfg, capsys, sink, expect):
-    _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
-    assert run(cfg, "wrap", "fs", "--sink", sink, "--vendor", "v", "--consent", "c") == 1
-    assert expect in capsys.readouterr().err
 
 
 def test_unwrap_of_an_entry_removed_by_hand_clears_its_record(home, cfg):

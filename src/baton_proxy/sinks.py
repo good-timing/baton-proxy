@@ -270,9 +270,6 @@ def _split_spec(url_spec: str | None) -> list[str]:
     return [p.strip() for p in url_spec.split(",") if p.strip()]
 
 
-SINK_SCHEMES = frozenset({"stderr", "file", "http", "https", "s3"})
-
-
 def spec_schemes(url_spec: str | None) -> list[str]:
     """The scheme of each leg, as ``_make_one`` reads it (urlparse lowercases it)."""
     return [urllib.parse.urlparse(p).scheme for p in _split_spec(url_spec)]

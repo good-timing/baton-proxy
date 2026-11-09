@@ -66,10 +66,11 @@ Either form is started by your MCP client, not by you: the proxy speaks JSON-RPC
 baton-proxy wrap my-server                                   # an entry already in Claude Desktop's config
 baton-proxy wrap linear --url https://mcp.linear.app/mcp     # a new server that signs in with OAuth
 baton-proxy wrap my-server --client code                     # ~/.claude.json; close Claude Code first
+baton-proxy wrap my-server --dsn 'https://baton_pk_…'        # send events to the Console
 baton-proxy unwrap my-server                                 # put the original entry back
 ```
 
-`wrap` writes absolute paths, because Claude Desktop starts servers with a short `PATH`. A server that signs in with OAuth runs through `npx -y mcp-remote`, which opens a browser on first start and keeps the token itself, so Node.js must be installed. A connector added in the Claude app is not in any config file: `--url` adds a separate local entry, so turn the app's connector off. To send events to a Console, pass `--sink https://… --api-key … --vendor … --consent …`; `wrap` refuses a remote sink without them, as the proxy would at start. `--dry-run` shows the entry first.
+`wrap` writes absolute paths, because Claude Desktop starts servers with a short `PATH`. A server that signs in with OAuth runs through `npx -y mcp-remote`, which opens a browser on first start and keeps the token itself, so Node.js must be installed. A connector added in the Claude app is not in any config file: `--url` adds a separate local entry, so turn the app's connector off. To send events to a Console, add a server on its Settings page and pass its DSN: `--dsn 'https://baton_pk_…@baton.goodtiming.ai/ten_…/<server>'`. The DSN carries the address, the key and both ids. Without `--dsn`, events stay on this machine. `--dry-run` shows the entry first.
 
 ## Where events go
 
