@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **`wrap --dsn` accepts a test key (`baton_tk_`),** and never repeats one in an error, as for `baton_pk_` and `baton_sk_` keys. It used to refuse a DSN carrying one.
+- **An older key with no type letters (`baton_` and 43 characters) is never repeated in an error.** These keys were issued before `baton_pk_` and `baton_sk_`. `wrap --dsn` still refuses a DSN carrying one, as before.
 
 ## [0.7.3] — 2026-11-09
 

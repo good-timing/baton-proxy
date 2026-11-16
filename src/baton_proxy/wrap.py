@@ -24,9 +24,11 @@ _SHOWN_ENV = frozenset({"BATON_EVENT_SINK", "BATON_TENANT_ID", "BATON_VENDOR_ID"
 _VAR_REF = re.compile(r"^\$\{[^}]*\}$")
 # http keys that carry auth the proxy cannot: dropping them would lose it silently.
 _UNCARRIED_AUTH = ("headersHelper", "oauth")
-_KEY = r"baton_(?:pk|sk|tk)_[A-Za-z0-9_%-]"
+_TAIL = r"[A-Za-z0-9_%-]"
+_KEY = r"baton_(?:pk|sk|tk)_" + _TAIL
 _DSN_KEY = re.compile(_KEY + "{8,}")
-_KEY_IN_TEXT = re.compile(_KEY + "+")
+# An older key has no type letters. It is hidden here, but a DSN still needs a typed key.
+_KEY_IN_TEXT = re.compile(_KEY + "+|baton_" + _TAIL + "{43,}")
 _DSN_WORKSPACE = re.compile(r"ten_(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{32})")
 _DSN_SERVER = re.compile(r"[a-zA-Z0-9_-]{1,48}")
 # No underscore in a host, so a key pasted into the host slot is refused, not printed as the sink.

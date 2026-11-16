@@ -248,6 +248,7 @@ def test_refusal_exits_1_and_leaves_the_file(cfg, capsys):
 
 KEY = "baton_pk_" + "A" * 43
 TEST_KEY = "baton_tk_" + "E" * 43
+OLD_KEY = "baton_" + "L" * 43
 DSN = f"https://{KEY}@baton.example.com/ten_0a1b2c3d/srv-1f2e3d4c"
 
 
@@ -267,12 +268,19 @@ def test_dsn_writes_every_value_the_console_needs(cfg, capsys, key):
     assert key not in out.out + out.err
 
 
-@pytest.mark.parametrize("key", [KEY, TEST_KEY], ids=["publishable", "test"])
+@pytest.mark.parametrize("key", [KEY, TEST_KEY, OLD_KEY], ids=["publishable", "test", "old"])
 def test_a_dsn_given_without_dsn_flag_is_not_echoed(cfg, capsys, key):
     _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
     with pytest.raises(SystemExit):
         run(cfg, "wrap", "fs", DSN.replace(KEY, key))
     assert key not in capsys.readouterr().err
+
+
+def test_a_dsn_with_an_untyped_key_is_refused_without_printing_it(cfg, capsys):
+    before = _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
+    assert run(cfg, "wrap", "fs", "--dsn", DSN.replace(KEY, OLD_KEY)) == 1
+    assert cfg.read_text() == before
+    assert OLD_KEY not in capsys.readouterr().err
 
 
 def test_dsn_tolerates_doubled_slashes_and_a_port(cfg):
@@ -574,7 +582,7 @@ def test_wrap_entry_refuses_an_env_that_is_not_strings(home, monkeypatch, capsys
     assert "env" in err
 
 
-@pytest.mark.parametrize("key", [KEY, TEST_KEY], ids=["publishable", "test"])
+@pytest.mark.parametrize("key", [KEY, TEST_KEY, OLD_KEY], ids=["publishable", "test", "old"])
 def test_a_mistyped_flag_does_not_print_the_dsns_key(home, monkeypatch, capsys, key):
     monkeypatch.setattr(wrap.sys, "stdin", io.StringIO(json.dumps({"command": "npx"})))
     with pytest.raises(SystemExit):
