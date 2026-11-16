@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`wrap --dsn` accepts a test key (`baton_tk_`),** and never repeats one in an error, as for `baton_pk_` and `baton_sk_` keys. It used to refuse a DSN carrying one.
+
 ## [0.7.3] — 2026-11-09
 
 ### Added

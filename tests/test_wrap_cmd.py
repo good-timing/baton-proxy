@@ -247,22 +247,32 @@ def test_refusal_exits_1_and_leaves_the_file(cfg, capsys):
 
 
 KEY = "baton_pk_" + "A" * 43
+TEST_KEY = "baton_tk_" + "E" * 43
 DSN = f"https://{KEY}@baton.example.com/ten_0a1b2c3d/srv-1f2e3d4c"
 
 
-def test_dsn_writes_every_value_the_console_needs(cfg, capsys):
+@pytest.mark.parametrize("key", [KEY, TEST_KEY], ids=["publishable", "test"])
+def test_dsn_writes_every_value_the_console_needs(cfg, capsys, key):
     _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
-    assert run(cfg, "wrap", "fs", "--dsn", DSN) == 0
+    assert run(cfg, "wrap", "fs", "--dsn", DSN.replace(KEY, key)) == 0
     env = json.loads(cfg.read_text())["mcpServers"]["fs"]["env"]
     assert env == {
         "BATON_EVENT_SINK": "https://baton.example.com",
-        "BATON_API_KEY": KEY,
+        "BATON_API_KEY": key,
         "BATON_TENANT_ID": "ten_0a1b2c3d",
         "BATON_VENDOR_ID": "srv-1f2e3d4c",
         "BATON_CONSENT_TOKEN": "customer-consented",
     }
     out = capsys.readouterr()
-    assert KEY not in out.out + out.err
+    assert key not in out.out + out.err
+
+
+@pytest.mark.parametrize("key", [KEY, TEST_KEY], ids=["publishable", "test"])
+def test_a_dsn_given_without_dsn_flag_is_not_echoed(cfg, capsys, key):
+    _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
+    with pytest.raises(SystemExit):
+        run(cfg, "wrap", "fs", DSN.replace(KEY, key))
+    assert key not in capsys.readouterr().err
 
 
 def test_dsn_tolerates_doubled_slashes_and_a_port(cfg):
@@ -308,13 +318,14 @@ def test_the_dsn_is_the_only_way_to_name_a_console(cfg, flag):
         "",
     ],
 )
-def test_a_malformed_dsn_is_refused_without_printing_the_key(cfg, capsys, bad):
+@pytest.mark.parametrize("key", [KEY, TEST_KEY], ids=["publishable", "test"])
+def test_a_malformed_dsn_is_refused_without_printing_the_key(cfg, capsys, bad, key):
     before = _write(cfg, {"mcpServers": {"fs": {"command": "npx"}}})
-    assert run(cfg, "wrap", "fs", "--dsn", bad) == 1
+    assert run(cfg, "wrap", "fs", "--dsn", bad.replace(KEY, key)) == 1
     assert cfg.read_text() == before
     err = capsys.readouterr().err
     assert "dsn" in err.lower()
-    assert KEY not in err
+    assert key not in err
 
 
 def test_desktop_is_the_default_config_on_macos(home, monkeypatch):
@@ -563,12 +574,13 @@ def test_wrap_entry_refuses_an_env_that_is_not_strings(home, monkeypatch, capsys
     assert "env" in err
 
 
-def test_a_mistyped_flag_does_not_print_the_dsns_key(home, monkeypatch, capsys):
+@pytest.mark.parametrize("key", [KEY, TEST_KEY], ids=["publishable", "test"])
+def test_a_mistyped_flag_does_not_print_the_dsns_key(home, monkeypatch, capsys, key):
     monkeypatch.setattr(wrap.sys, "stdin", io.StringIO(json.dumps({"command": "npx"})))
     with pytest.raises(SystemExit):
-        proxy_main(["wrap-entry", "--dns", DSN])
+        proxy_main(["wrap-entry", "--dns", DSN.replace(KEY, key)])
     out = capsys.readouterr()
-    assert KEY not in out.out + out.err
+    assert key not in out.out + out.err
 
 
 def test_a_typed_http_entry_comes_back_typed_stdio(home, monkeypatch, capsys):

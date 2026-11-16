@@ -24,7 +24,7 @@ _SHOWN_ENV = frozenset({"BATON_EVENT_SINK", "BATON_TENANT_ID", "BATON_VENDOR_ID"
 _VAR_REF = re.compile(r"^\$\{[^}]*\}$")
 # http keys that carry auth the proxy cannot: dropping them would lose it silently.
 _UNCARRIED_AUTH = ("headersHelper", "oauth")
-_KEY = r"baton_(?:pk|sk)_[A-Za-z0-9_%-]"
+_KEY = r"baton_(?:pk|sk|tk)_[A-Za-z0-9_%-]"
 _DSN_KEY = re.compile(_KEY + "{8,}")
 _KEY_IN_TEXT = re.compile(_KEY + "+")
 _DSN_WORKSPACE = re.compile(r"ten_(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{32})")
