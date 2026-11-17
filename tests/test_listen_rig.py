@@ -100,6 +100,7 @@ def rig(tmp_path: Path, request):
         procs.append(
             subprocess.Popen(
                 [sys.executable, str(Path(__file__).parent / "rig_upstream.py"), str(uport)],
+                env=_env(),
                 stderr=subprocess.DEVNULL,
                 text=True,
             )
@@ -185,17 +186,17 @@ def test_parallel_cases_run_at_once_through_the_listener(rig):
 
 
 def test_a_call_in_flight_at_ctrl_c_is_on_disk_with_its_outcome(rig):
-    async def interrupted() -> None:
+    async def interrupted() -> str:
         task = asyncio.ensure_future(_case(rig["proxied"], 0, "slow", {"seconds": 2, GOAL: "1"}))
         await asyncio.sleep(1)
         rig["listener"].send_signal(signal.SIGINT)
-        await asyncio.to_thread(rig["listener"].wait, 15)
+        _, err = await asyncio.to_thread(rig["listener"].communicate, None, 15)
         # The mcp client waits on a stream whose server is gone; it is not what is tested.
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+        return err
 
-    asyncio.run(interrupted())
-    _, stderr = rig["listener"].communicate(timeout=15)
+    stderr = asyncio.run(interrupted())
     assert rig["listener"].returncode == 0, stderr
     assert "Traceback" not in stderr, stderr
     events = [json.loads(line) for line in rig["events"].read_text().splitlines()]

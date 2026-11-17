@@ -19,13 +19,10 @@ from baton_proxy.listen import (
 )
 from baton_proxy.overlay import Overlay, OverlayError, load_overlay, overlay_label
 from baton_proxy.proxy import ANNOTATE_TOOL_NAME, _inject_goal_params
-from baton_proxy.transport_http import (
-    DEFAULT_PROTOCOL_VERSION,
-    SESSION_HEADER,
-    env_timeout,
-    read_messages,
-)
+from baton_proxy.transport_http import SESSION_HEADER, env_timeout, read_messages
 
+# What current MCP clients send, so the check lists the surface they are shown.
+PROTOCOL_VERSION = "2025-06-18"
 _MAX_PAGES = 50
 
 
@@ -62,7 +59,7 @@ def list_tools(url: str, headers: dict[str, str]) -> tuple[list[dict[str, Any]],
         return answer
 
     init = {
-        "protocolVersion": DEFAULT_PROTOCOL_VERSION,
+        "protocolVersion": PROTOCOL_VERSION,
         "capabilities": {},
         "clientInfo": {"name": "baton-proxy-check", "version": "1"},
     }

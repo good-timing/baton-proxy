@@ -464,3 +464,19 @@ def test_a_replace_applies_over_a_description_that_is_not_text():
     (tool,) = overlay.apply_to_tools([{"name": "a", "description": {"text": "structured"}}])
     assert tool["description"] == "New."
     assert overlay.unmatched() == []
+
+
+def test_the_first_listing_report_counts_tools_changed_not_actions():
+    overlay = parse_overlay(
+        {
+            "actions": [
+                {"target": {"tool": "a"}, "append": "One."},
+                {"target": {"tool": "a"}, "append": "Two."},
+                {"target": {"tool": "b"}, "remove": True},
+                {"target": {"tool": "gone"}, "append": "Never listed."},
+            ]
+        }
+    )
+    overlay.apply_to_tools([{"name": "a", "description": "x"}, {"name": "b"}, {"name": "c"}])
+    assert overlay.report_once() == (2, ["actions[3] append gone"])
+    assert overlay.report_once() is None

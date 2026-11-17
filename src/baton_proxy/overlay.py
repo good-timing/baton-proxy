@@ -27,6 +27,7 @@ import copy
 import hashlib
 import json
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -147,7 +148,7 @@ class Overlay:
                 a.label for a in self.actions if a.tool is not None and a.index not in self._applied
             ]
 
-    def _mark(self, indexes: Any) -> None:
+    def _mark(self, indexes: Iterable[int]) -> None:
         with self._lock:
             self._applied.update(indexes)
 

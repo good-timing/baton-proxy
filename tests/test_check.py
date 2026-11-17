@@ -93,3 +93,16 @@ def test_a_failure_is_named_by_type_and_never_quotes_the_url(capsys):
 def test_a_header_without_a_colon_is_refused():
     with pytest.raises(SystemExit):
         check.main(["--listener", "l", "--url", "u", "--header", "x-api-key"])
+
+
+def test_the_check_speaks_the_protocol_current_clients_do(monkeypatch):
+    sent = []
+
+    def post(url, msg, headers, timeout_s):
+        sent.append(msg)
+        raise check.CheckFailed("stop after the first message")
+
+    monkeypatch.setattr(check, "forward_post", post)
+    with pytest.raises(check.CheckFailed):
+        check.list_tools("http://127.0.0.1:1/mcp", {})
+    assert sent[0]["params"]["protocolVersion"] == "2025-06-18"
