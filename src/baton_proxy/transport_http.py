@@ -30,9 +30,12 @@ import math
 import os
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from typing import Any
 
 from baton_proxy import USER_AGENT as _USER_AGENT
+from baton_proxy._jsonrpc import answers, owed_answer_id
+from baton_proxy._no_redirect import no_redirect_urlopen
 
 logger = logging.getLogger("baton_proxy")
 
@@ -53,7 +56,7 @@ logger = logging.getLogger("baton_proxy")
 # conventional received-protocol placeholder; "baton-proxy" is the intermediary
 # pseudonym. Composes with User-Agent (which identifies the originating client)
 # rather than replacing it — UA says "who", Via says "an intermediary is here".
-_VIA = "1.1 baton-proxy"
+VIA = "1.1 baton-proxy"
 
 # Generous default so a slow-but-healthy upstream (e.g. a database MCP running
 # a real query) isn't mistaken for a hang. Overridable via env. The point of an
@@ -65,8 +68,17 @@ _DEFAULT_TIMEOUT_S = 60.0
 # what was actually negotiated.
 _DEFAULT_PROTOCOL_VERSION = "2025-03-26"
 
-_SESSION_HEADER = "Mcp-Session-Id"
+SESSION_HEADER = "Mcp-Session-Id"
 _PROTOCOL_HEADER = "MCP-Protocol-Version"
+
+
+POST_HEADERS = {
+    "Content-Type": "application/json",
+    # Either framing, so the server may choose SSE for a streamed answer.
+    "Accept": "application/json, text/event-stream",
+    # Named UA: the urllib default is Cloudflare-banned (see _USER_AGENT).
+    "User-Agent": _USER_AGENT,
+}
 
 
 class StreamableHttpClient:
@@ -88,26 +100,17 @@ class StreamableHttpClient:
         self._url = url
         self._auth_token = auth_token
         if timeout_s is None:
-            timeout_s = _env_timeout()
+            timeout_s = env_timeout()
         self._timeout_s = timeout_s
         self._session_id: str | None = None
         self._protocol_version = _DEFAULT_PROTOCOL_VERSION
 
     def _headers(self, is_initialize: bool) -> dict[str, str]:
-        headers = {
-            "Content-Type": "application/json",
-            # Advertise willingness to receive either framing so the server may
-            # choose SSE for streamed responses.
-            "Accept": "application/json, text/event-stream",
-            # Named UA — the urllib default is Cloudflare-banned (see _USER_AGENT).
-            "User-Agent": _USER_AGENT,
-            # Announce the intermediary hop (see _VIA).
-            "Via": _VIA,
-        }
+        headers = {**POST_HEADERS, "Via": VIA}
         if self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"
         if self._session_id is not None:
-            headers[_SESSION_HEADER] = self._session_id
+            headers[SESSION_HEADER] = self._session_id
         # The negotiated protocol version is pinned only after initialize.
         if not is_initialize:
             headers[_PROTOCOL_HEADER] = self._protocol_version
@@ -132,7 +135,7 @@ class StreamableHttpClient:
         )
 
         try:
-            resp = urllib.request.urlopen(req, timeout=self._timeout_s)
+            resp = no_redirect_urlopen(req, timeout=self._timeout_s)
         except urllib.error.HTTPError as e:
             # 4xx/5xx — surface as a failure so the bridge fails open. Read a
             # snippet of the body for the log/error message.
@@ -146,20 +149,11 @@ class StreamableHttpClient:
             # (the initialize response). Header is transport-level, independent
             # of whether the body is JSON or SSE.
             if self._session_id is None:
-                sid = resp.headers.get(_SESSION_HEADER)
+                sid = resp.headers.get(SESSION_HEADER)
                 if sid:
                     self._session_id = sid
 
-            status = getattr(resp, "status", 200)
-            if status == 202:
-                # Accepted notification / no response payload.
-                return []
-
-            content_type = (resp.headers.get("Content-Type") or "").lower()
-            if "text/event-stream" in content_type:
-                messages = _parse_sse(resp)
-            else:
-                messages = _parse_json_body(resp)
+            messages = read_messages(resp, owed_answer_id(message))
 
         if is_initialize:
             self._capture_protocol_version(messages)
@@ -175,7 +169,7 @@ class StreamableHttpClient:
                     return
 
 
-def _env_timeout() -> float:
+def env_timeout() -> float:
     raw = os.environ.get("BATON_UPSTREAM_TIMEOUT")
     if not raw:
         return _DEFAULT_TIMEOUT_S
@@ -204,6 +198,28 @@ def _safe_read_snippet(resp: Any, limit: int = 500) -> str:
         return "<unreadable body>"
 
 
+def is_event_stream(resp: Any) -> bool:
+    return "text/event-stream" in (resp.headers.get("Content-Type") or "").lower()
+
+
+def read_messages(resp: Any, req_id: Any = None) -> list[dict[str, Any]]:
+    """The JSON-RPC messages in a 2xx answer: none for a 202, else JSON or SSE by Content-Type.
+
+    An SSE answer is read up to the message answering ``req_id``, since a server may
+    leave the stream open after it.
+    """
+    if getattr(resp, "status", 200) == 202:
+        return []
+    if not is_event_stream(resp):
+        return _parse_json_body(resp)
+    messages = []
+    for msg in iter_sse(resp):
+        messages.append(msg)
+        if answers(msg, req_id):
+            break
+    return messages
+
+
 def _parse_json_body(resp: Any) -> list[dict[str, Any]]:
     """Parse a single ``application/json`` body into a list of JSON-RPC messages.
 
@@ -222,25 +238,24 @@ def _parse_json_body(resp: Any) -> list[dict[str, Any]]:
     return _normalize(parsed)
 
 
-def _parse_sse(resp: Any) -> list[dict[str, Any]]:
-    """Collect JSON-RPC messages from an SSE stream on the POST response.
+def iter_sse(resp: Any) -> Iterator[dict[str, Any]]:
+    """Yield JSON-RPC messages from an SSE stream on the POST response as each frame ends.
 
-    Reads to end-of-stream (the server closes after delivering the response to
-    a client-initiated request). Concatenates multi-line ``data:`` fields per
+    Runs until the stream ends; a caller waiting on one answer stops at it.
+    Concatenates multi-line ``data:`` fields per
     the SSE spec; parses each complete frame's data as one JSON-RPC message.
     Malformed frames are skipped, not raised.
     """
-    messages: list[dict[str, Any]] = []
     data_lines: list[str] = []
     # SSE default event type when no `event:` field is present is "message".
     event_type = "message"
 
-    def flush() -> None:
+    def flush() -> list[dict[str, Any]]:
         nonlocal event_type
         current = event_type
         event_type = "message"  # reset for the next frame, per the SSE spec
         if not data_lines:
-            return
+            return []
         payload = "\n".join(data_lines)
         data_lines.clear()
         # Only `message` events carry JSON-RPC per the MCP Streamable HTTP
@@ -248,19 +263,19 @@ def _parse_sse(resp: Any) -> list[dict[str, Any]]:
         # (with a data payload) on the same stream; parsing those as JSON-RPC
         # would inject a bogus message to the client — skip them.
         if current != "message":
-            return
+            return []
         try:
             parsed = json.loads(payload)
         except ValueError:
             logger.warning("baton-proxy: skipping malformed SSE data frame")
-            return
-        messages.extend(_normalize(parsed))
+            return []
+        return _normalize(parsed)
 
     for raw_line in resp:
         line = raw_line.decode("utf-8", "replace").rstrip("\r\n")
         if line == "":
             # Blank line = end of one event; flush the accumulated data.
-            flush()
+            yield from flush()
             continue
         if line.startswith(":"):
             # SSE comment / keep-alive; ignore.
@@ -274,8 +289,7 @@ def _parse_sse(resp: Any) -> list[dict[str, Any]]:
             event_type = value or "message"
         # Other fields (id, retry) are irrelevant to JSON-RPC payloads.
     # Flush a trailing frame not terminated by a blank line.
-    flush()
-    return messages
+    yield from flush()
 
 
 def _normalize(parsed: Any) -> list[dict[str, Any]]:

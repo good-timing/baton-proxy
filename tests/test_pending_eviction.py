@@ -228,10 +228,49 @@ def test_an_unhashable_id_from_the_upstream_or_transport_is_ignored(bad_id: Any)
 
 
 def test_client_action_requires_exactly_one_field() -> None:
-    """The respond/forward invariant is structural, so misuse fails loudly."""
+    """The respond/forward/drop invariant is structural, so misuse fails loudly."""
     _ClientAction(respond={"a": 1})  # ok
     _ClientAction(forward={"a": 1})  # ok
+    _ClientAction(drop=True)  # ok
+    with pytest.raises(ValueError):
+        _ClientAction(respond={"a": 1}, drop=True)
     with pytest.raises(ValueError):
         _ClientAction()  # neither set
     with pytest.raises(ValueError):
         _ClientAction(respond={"a": 1}, forward={"b": 2})  # both set
+
+
+def test_a_server_request_with_a_pending_calls_id_leaves_that_call_open() -> None:
+    emitter = _RecordingEmitter()
+    proc = _bare_processor(emitter)
+    proc.handle_client_message(_tools_call("t1", id=4))
+    sampling = {"jsonrpc": "2.0", "id": 4, "method": "sampling/createMessage", "params": {}}
+
+    assert proc.handle_server_message(sampling) == sampling
+    assert emitter.errors == []
+    proc.drain_pending("proxy_upstream_closed", "gone")
+    assert [e["tool_name"] for e in emitter.errors] == ["t1"]
+
+
+class _RaisingProcessor:
+    def handle_client_message(self, req: dict[str, Any]) -> Any:
+        raise RuntimeError("processor bug")
+
+
+@pytest.mark.parametrize(
+    ("msg", "answered"),
+    [
+        ({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "x"}}, True),
+        ({"jsonrpc": "2.0", "method": "notifications/cancelled"}, False),
+        ({"jsonrpc": "2.0", "id": "srv-1", "result": {}}, False),
+    ],
+)
+def test_a_processing_failure_answers_a_request_and_forwards_anything_else(msg, answered) -> None:
+    from baton_proxy.proxy import client_action
+
+    action = client_action(_RaisingProcessor(), msg)
+    if answered:
+        assert action.forward is None and action.respond["error"]["code"] == -32603
+        assert action.respond["id"] == msg["id"]
+    else:
+        assert action.respond is None and action.forward is msg

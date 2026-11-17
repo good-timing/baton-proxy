@@ -20,13 +20,15 @@ api_key) raises at start() — never a silent no-emit.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import re
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections import OrderedDict
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -58,6 +60,7 @@ _QUEUE_MAXSIZE = 1000
 # carry it unconditionally, so a console reading the field back learned that
 # Baton was in the path and nothing about the app the person was working in.
 _AGENT_RUNTIME = "mcp-proxy"
+_MAX_SESSION_RUNTIMES = 4096
 
 
 def detect_agent_runtime(meta: Mapping[str, Any] | None) -> str | None:
@@ -286,6 +289,9 @@ class Emitter:
         # attribute: one str assignment, written once on the transport's reader
         # thread before the first event exists, read on every enqueue after.
         self._agent_runtime: str | None = None
+        self._bound = threading.local()
+        self._runtime_by_session: OrderedDict[str, str] = OrderedDict()
+        self._runtime_lock = threading.Lock()
 
     def start(self) -> None:
         if not self._config.emission_enabled:
@@ -298,6 +304,16 @@ class Emitter:
         self._sink = make_sink(self._config.event_sink, api_key=self._config.api_key)
         self._thread = threading.Thread(target=self._drain, name="baton-proxy-emitter", daemon=True)
         self._thread.start()
+
+    @contextlib.contextmanager
+    def bound_session(self, session_id: str) -> Iterator[None]:
+        """Events enqueued on this thread inside the block belong to ``session_id``."""
+        previous = getattr(self._bound, "session_id", None)
+        self._bound.session_id = session_id
+        try:
+            yield
+        finally:
+            self._bound.session_id = previous
 
     def set_agent_runtime(self, name: str) -> None:
         """Latch the client the MCP handshake named itself.
@@ -317,14 +333,22 @@ class Emitter:
         OBSERVED, and inventing one for a client we did not recognise is the
         fabrication this whole field is being fixed to stop.
 
-        Process-wide, which is what the stdio proxy is: one process per client
-        session. A hosted adapter multiplexing many sessions through one
-        process would need this keyed per session — that is why the per-event
-        signal outranks this latch rather than the other way round.
+        Process-wide for the stdio proxy, which is one process per client
+        session. Inside ``bound_session`` it is kept for that session only, so a
+        host serving many sessions labels each with its own client.
         """
         folded = name.strip().lower()
-        if folded:
+        if not folded:
+            return
+        bound = getattr(self._bound, "session_id", None)
+        if bound is None:
             self._agent_runtime = folded
+            return
+        with self._runtime_lock:
+            self._runtime_by_session[bound] = folded
+            self._runtime_by_session.move_to_end(bound)
+            while len(self._runtime_by_session) > _MAX_SESSION_RUNTIMES:
+                self._runtime_by_session.popitem(last=False)
 
     def _guard_remote_consent(self) -> None:
         """Refuse to ship events to a remote sink while the consent token is
@@ -806,9 +830,11 @@ class Emitter:
         # carry their own session identity per event (the ExtMCP adapter keys
         # every event on the gateway's mcp-session-id header, not a process
         # uuid). Defaults to the config's process-lifetime session for the
-        # stdio-proxy path, which is 1-process-per-user.
+        # stdio-proxy path, which is 1-process-per-user, unless the calling
+        # thread is inside ``bound_session``.
         if not self._config.emission_enabled or self._thread is None:
             return
+        session_id = session_id or getattr(self._bound, "session_id", None)
 
         principal_wire, organization_wire = _wire_caller(principal)
 
@@ -826,7 +852,14 @@ class Emitter:
         # the one that sent it; then the handshake latch, which is the only
         # signal that exists before event 1; then the transport's name, which
         # is the honest answer when nothing named a client.
-        agent_runtime = detect_agent_runtime(runtime_meta) or self._agent_runtime or _AGENT_RUNTIME
+        with self._runtime_lock:
+            session_runtime = self._runtime_by_session.get(session_id) if session_id else None
+        agent_runtime = (
+            detect_agent_runtime(runtime_meta)
+            or session_runtime
+            or self._agent_runtime
+            or _AGENT_RUNTIME
+        )
 
         event = _Event(
             event_id=str(uuid.uuid4()),

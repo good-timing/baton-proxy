@@ -36,6 +36,8 @@ import urllib.request
 from abc import ABC, abstractmethod
 from typing import Any
 
+from baton_proxy._no_redirect import no_redirect_urlopen
+
 logger = logging.getLogger(__name__)
 
 # Per-POST timeout — keep tight so the drain thread doesn't block forever
@@ -156,7 +158,7 @@ class HttpSink(Sink):
         )
         # Let the caller (Emitter._deliver) see HTTP / URL errors and log
         # them once per failure; don't double-log here.
-        with urllib.request.urlopen(req, timeout=_POST_TIMEOUT_S) as resp:
+        with no_redirect_urlopen(req, timeout=_POST_TIMEOUT_S) as resp:
             if resp.status >= 400:
                 raise urllib.error.HTTPError(
                     url, resp.status, f"HTTP {resp.status}", resp.headers, None

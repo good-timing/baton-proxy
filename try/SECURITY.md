@@ -167,9 +167,11 @@ What a reviewer should know about the edit:
   A server holding its own sign-in session can treat its first wrapped start as
   a new one and open a browser tab. The consent screen names a `localhost` port.
   That port is opened by your server, running as a child of the proxy, and the
-  access you grant goes to the same third party it always did. The proxy opens
-  no listening port of its own; `test_nothing_of_ours_opens_a_listening_port`
-  sweeps `src/` and `kit.py` for the constructs that would.
+  access you grant goes to the same third party it always did. A wrap opens
+  no listening port of its own. Only `baton-proxy listen` opens one, and the kit
+  never writes or runs that command. `test_nothing_of_ours_opens_a_listening_port`
+  sweeps `src/` and `kit.py` for the constructs that would, and allows only the
+  one server `listen.py` builds.
 
 ### Remote entries, specifically
 
@@ -370,14 +372,15 @@ new destination is introduced.
 
 The proxy contains code that can open a network connection or start a process,
 because the same source serves production deployments. Here is the complete
-list, four call sites. All four are the proxy's; the kit contributes none.
+list, five call sites. All five are the proxy's; the kit contributes none.
 
 | # | site | what it does | why it is inert here |
 |---|---|---|---|
-| 1 | `sinks.py` · `HttpSink.write` | POSTs events to `{url}/v0/events` | Built only when `BATON_EVENT_SINK` is an `http(s)://` URL. The try config sets a `file://` URL. It also raises at startup without `BATON_API_KEY`, which the try config does not set. |
+| 1 | `sinks.py` · `HttpSink.write` | POSTs events to `{url}/v0/events`, never following a redirect, so the API key is never sent to another host | Built only when `BATON_EVENT_SINK` is an `http(s)://` URL. The try config sets a `file://` URL. It also raises at startup without `BATON_API_KEY`, which the try config does not set. |
 | 2 | `sinks.py` · `S3Sink` | PUTs one object per event to an S3 bucket | Built only for an `s3://` sink. Requires `boto3`, an optional extra this package does not install (`dependencies = []`). |
-| 3 | `transport_http.py` · `StreamableHttpClient.post` | Speaks MCP over HTTPS to an upstream server, with `User-Agent` and `Via` headers that name the proxy (§2) | Only in `--url` mode. For a stdio wrap this is unreachable. For a remote wrap it is the path in use, and it connects to the URL your own config already named. Never to us. |
+| 3 | `transport_http.py` · `StreamableHttpClient.post` | Speaks MCP over HTTPS to an upstream server, with `User-Agent` and `Via` headers that name the proxy (§2). It never follows a redirect, so the token is never sent to another host. | Only in `--url` mode. For a stdio wrap this is unreachable. For a remote wrap it is the path in use, and it connects to the URL your own config already named. Never to us. |
 | 4 | `proxy.py` · `subprocess.Popen` | Starts the upstream MCP server | Runs exactly the command your config already contained. Not reached for a remote wrap. |
+| 5 | `listen.py` · `_open` | Forwards a caller's MCP request to the `--url` server, never following a redirect. The callers arrive on the `--listen` address, through the one `ThreadingHTTPServer` that `make_server` builds; §9's grep does not show that inbound socket, and the sweep named in §2 does. | Only under `baton-proxy listen`, which the kit never writes into a config. A wrap does not import it. |
 
 There is no telemetry, no version check, no crash reporting, no auto-update. The
 proxy does not phone home on startup, on failure, or on exit.
@@ -561,8 +564,8 @@ The claims above are mechanical. Re-derive them:
 #    -3-gabc1234 means commits past the tag, which is not what you reviewed.
 git describe --tags
 
-# 1. Every network- or process-capable call site, proxy AND kit. Expect five
-#    matches: the four in the §4 table plus one comment line in
+# 1. Every network- or process-capable call site, proxy AND kit. Expect six
+#    matches: the five in the §4 table plus one comment line in
 #    transport_http.py, and none of them under try/. The excludes are your own
 #    captured data, which can contain any string; drop them on a fresh clone.
 grep -rnE "urlopen\(|Popen\(|subprocess\.run\(|boto3\.client\(" --exclude=events.jsonl --exclude=state.json --exclude='config-backup.*' src/ try/

@@ -246,7 +246,7 @@ def test_error_response_forgets_tracked_id() -> None:
     proc.handle_server_message(_list_response([_tool("alpha")], msg_id=2))
     assert emitter.snapshots() == []
     with proc._surface_lock:
-        assert 2 not in proc._toollist_first_page_ids
+        assert 2 not in proc._toollist_ids
 
 
 def test_tracking_dict_bounded() -> None:
@@ -256,8 +256,8 @@ def test_tracking_dict_bounded() -> None:
     for i in range(MAX_PENDING_TOOLLISTS + 10):
         proc.handle_client_message(_list_request(msg_id=1000 + i))
     with proc._surface_lock:
-        assert len(proc._toollist_first_page_ids) == MAX_PENDING_TOOLLISTS
-        assert 1000 not in proc._toollist_first_page_ids  # oldest evicted
+        assert len(proc._toollist_ids) == MAX_PENDING_TOOLLISTS
+        assert 1000 not in proc._toollist_ids  # oldest evicted
 
 
 # --------------------------------------------------------------------------- #

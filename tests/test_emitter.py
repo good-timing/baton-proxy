@@ -632,3 +632,54 @@ def test_set_agent_runtime_case_folds_and_ignores_empty(tmp_path: Path) -> None:
 
     events = [json.loads(line) for line in sink_path.read_text().splitlines() if line.strip()]
     assert [ev["agent_runtime"] for ev in events] == ["claude-code", "claude-code"]
+
+
+def test_a_bound_session_names_only_its_own_threads_events(tmp_path: Path) -> None:
+    sink_path = tmp_path / "events.jsonl"
+    e = Emitter(_config_file(str(sink_path)))
+    e.start()
+
+    def call_as(session_id: str, tool: str) -> None:
+        with e.bound_session(session_id):
+            e.enqueue_tool_list_start()
+            e.enqueue_tool_call_start(tool_name=tool, params={}, call_id=tool)
+
+    threads = [threading.Thread(target=call_as, args=(sid, f"t-{sid}")) for sid in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    e.enqueue_tool_list_start()
+    assert _wait_for(lambda: sink_path.exists() and len(sink_path.read_text().splitlines()) >= 5)
+    e.stop()
+
+    events = [json.loads(line) for line in sink_path.read_text().splitlines()]
+    by_tool = {
+        ev["payload"]["tool_name"]: ev["session_id"]
+        for ev in events
+        if "tool_name" in ev["payload"]
+    }
+    assert by_tool == {"t-a": "a", "t-b": "b"}
+    assert events[-1]["session_id"] == "test-session"
+
+
+def test_each_bound_session_keeps_its_own_client_name(tmp_path: Path) -> None:
+    sink_path = tmp_path / "events.jsonl"
+    e = Emitter(_config_file(str(sink_path)))
+    e.start()
+    for sid, client in (("a", "claude-code"), ("b", "cursor")):
+        with e.bound_session(sid):
+            e.set_agent_runtime(client)
+    for sid in ("a", "b"):
+        with e.bound_session(sid):
+            e.enqueue_tool_list_start()
+    e.enqueue_tool_list_start()
+    assert _wait_for(lambda: sink_path.exists() and len(sink_path.read_text().splitlines()) >= 3)
+    e.stop()
+
+    events = [json.loads(line) for line in sink_path.read_text().splitlines()]
+    assert [(ev["session_id"], ev["agent_runtime"]) for ev in events] == [
+        ("a", "claude-code"),
+        ("b", "cursor"),
+        ("test-session", "mcp-proxy"),
+    ]

@@ -35,7 +35,9 @@ Run standalone for manual poking:  ``python fixture_http_server.py [port]``
 from __future__ import annotations
 
 import json
+import socket
 import sys
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -60,6 +62,14 @@ _SLOW_SLEEP_S = 3.0
 # that answers it. Exercises the bridge's "don't leave the client hanging" path.
 _NO_RESPONSE_TOOL = "noresponse"
 
+# A tools/call for this name gets only a server request that reuses the call's id.
+_ASKS_TOOL = "asks"
+
+# A tools/call for this name streams a server request, waits for the client's
+# answer on a separate POST, then streams the call's result: an elicitation.
+_ELICITS_TOOL = "elicits"
+_ELICIT_ID = "srv-elicit-1"
+
 _SESSION_HEADER = "Mcp-Session-Id"
 
 
@@ -79,6 +89,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Set-Cookie", "lb=backend-2; Path=/")
         if session_id is not None:
             self.send_header(_SESSION_HEADER, session_id)
         self.end_headers()
@@ -126,6 +137,7 @@ class _Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization")
         if auth is not None:
             self.server.authorizations.append(auth)  # type: ignore[attr-defined]
+        self.server.requests.append((self.path, list(self.headers.items())))  # type: ignore[attr-defined]
 
         # --- Auth gate -----------------------------------------------------
         required = getattr(self.server, "require_auth", None)
@@ -172,6 +184,30 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_status(202)
             return
 
+        if method is None and req.get("id") == _ELICIT_ID:
+            self.server.elicit_answer = req  # type: ignore[attr-defined]
+            self.server.elicit_answered.set()  # type: ignore[attr-defined]
+            self._send_status(202)
+            return
+
+        if method == "tools/call" and (req.get("params") or {}).get("name") == _ELICITS_TOOL:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            ask = {"jsonrpc": "2.0", "id": _ELICIT_ID, "method": "elicitation/create"}
+            self.wfile.write(f"event: message\ndata: {json.dumps(ask)}\n\n".encode())
+            self.wfile.flush()
+            self.server.elicit_answered.wait(5)  # type: ignore[attr-defined]
+            done = {"jsonrpc": "2.0", "id": req["id"], "result": {"content": []}}
+            self.wfile.write(f"event: message\ndata: {json.dumps(done)}\n\n".encode())
+            return
+
+        if method == "tools/call" and (req.get("params") or {}).get("name") == _ASKS_TOOL:
+            ask = {"jsonrpc": "2.0", "id": req["id"], "method": "sampling/createMessage"}
+            self._send_sse(200, ask)
+            return
+
         result = result_for(req)
 
         # Notification — no response body.
@@ -188,6 +224,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_sse(200, result, session_id=session_id)
         else:
             self._send_json(200, result, session_id=session_id)
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def serve(
@@ -217,6 +259,9 @@ def serve(
     httpd.last_user_agent = None  # type: ignore[attr-defined]
     httpd.last_via = None  # type: ignore[attr-defined]
     httpd.authorizations = []  # type: ignore[attr-defined]
+    httpd.requests = []  # type: ignore[attr-defined]
+    httpd.elicit_answered = threading.Event()  # type: ignore[attr-defined]
+    httpd.elicit_answer = None  # type: ignore[attr-defined]
     return httpd
 
 

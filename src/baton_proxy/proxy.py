@@ -38,6 +38,7 @@ import signal
 import subprocess
 import sys
 import threading
+import urllib.parse
 import uuid
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -45,6 +46,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from baton_proxy import __version__
+from baton_proxy._jsonrpc import answers, owed_answer_id
 from baton_proxy._llm_text import (
     INTENT_PARAM_NAMES,
     RETIRED_PARAM_NAMES,
@@ -57,6 +59,7 @@ from baton_proxy._llm_text import (
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter, utc_now_ms
 from baton_proxy.mcp_error import RETURNED_ERROR_TYPE, error_text, is_error_result
+from baton_proxy.overlay import Overlay, OverlayError, load_overlay
 from baton_proxy.sinks import find_file_sink_path
 
 logger = logging.getLogger("baton_proxy")
@@ -67,6 +70,10 @@ MAX_PENDING = 256
 EVICTED_ERROR_TYPE = "proxy_pending_evicted"
 REUSED_ID_ERROR_TYPE = "proxy_request_id_reused"
 INVALID_ID_ERROR_TYPE = "proxy_request_id_invalid"
+HIDDEN_TOOL_ERROR_TYPE = "proxy_tool_hidden"
+UPSTREAM_UNREACHABLE_ERROR_TYPE = "proxy_upstream_unreachable"
+NO_RESPONSE_ERROR_TYPE = "proxy_no_response"
+NO_RESPONSE = "upstream returned no response for this request"
 
 # Baton-branded tool name for the injected annotation surface. v1 posture:
 # the proxy is the gateway demo for customers evaluating Baton, so Baton
@@ -526,44 +533,81 @@ def _write_stdout(payload: dict[str, Any] | str) -> None:
         _write_line(sys.stdout, payload)
 
 
-def _write_client_error(req_id: Any, code: int, message: str) -> None:
-    """Hand the client a JSON-RPC error for a request id, so it never hangs.
+def rpc_error(req_id: Any, code: int, message: str) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
-    No-op for notifications (``req_id is None``) — those get no response by
-    definition. Swallows write errors (fail-open: a broken stdout must not
-    take down the loop).
-    """
-    if req_id is None:
-        return
+
+def no_response_error(processor: Any, req_id: Any) -> dict[str, Any]:
+    processor.synthesize_pending_error(req_id, NO_RESPONSE_ERROR_TYPE, NO_RESPONSE)
+    return rpc_error(req_id, -32001, f"baton-proxy: {NO_RESPONSE}")
+
+
+def _write_client(payload: dict[str, Any] | str) -> None:
+    """Write to the client, logging rather than raising: a broken stdout must not end the loop."""
     try:
-        _write_stdout({"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}})
+        _write_stdout(payload)
     except Exception:
-        logger.exception("baton-proxy: forward error to client failed")
+        logger.exception("baton-proxy: forward to client failed")
 
 
 @dataclass
 class _ClientAction:
     """What a transport should do with one client->server message.
 
-    Exactly one field is set. ``respond`` means the proxy owns this message
-    (an injected tool call) — synthesise the response back to the client and
-    do NOT forward upstream. ``forward`` is the message to hand to the upstream
-    server (unchanged from the input; returned so the transport's job is
-    uniform whichever branch fired).
+    Exactly one field is set, so an action built with none is a bug, not a drop.
+    ``respond`` is the proxy's own reply, not forwarded upstream; ``forward`` is
+    the message for the upstream; ``drop`` means neither.
     """
 
     respond: dict[str, Any] | None = None
     forward: dict[str, Any] | None = None
+    drop: bool = False
 
     def __post_init__(self) -> None:
-        # Enforce the "exactly one set" invariant structurally, so a future
-        # intercept branch that forgets to set forward (or sets both) fails loudly
-        # at construction rather than silently forwarding the wrong object. Both
-        # call sites are inside handle_client_message, which the transports wrap
-        # in try/except — so a violation degrades to a logged error + client
-        # error, never a dangling request.
-        if (self.respond is None) == (self.forward is None):
-            raise ValueError("_ClientAction requires exactly one of respond/forward")
+        if (self.respond is not None) + (self.forward is not None) + self.drop != 1:
+            raise ValueError("_ClientAction requires exactly one of respond/forward/drop")
+
+
+def shown_url(url: str) -> str:
+    """``url``'s scheme, host and port, or ``<not shown>`` if it holds an '@' or does not parse.
+
+    Userinfo, path, query and fragment can each hold a credential, and an unencoded
+    '/', '?' or '#' in a password moves where urlsplit thinks the host starts.
+    """
+    if "@" in url:
+        return "<not shown>"
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return "<not shown>"
+    if not (parts.scheme and host):
+        return "<not shown>"
+    host = f"[{host}]" if ":" in host else host
+    return f"{parts.scheme}://{host}" if port is None else f"{parts.scheme}://{host}:{port}"
+
+
+def client_action(processor: Any, req: dict[str, Any]) -> _ClientAction:
+    """The processor's action for ``req``, failing open when processing raises.
+
+    A request is answered with -32603: forwarding it unprocessed could run a tool
+    the overlay hides. Anything else, a notification or the client's answer to a
+    server request, is forwarded unchanged, since no one waits on a reply to it.
+    """
+    try:
+        action = processor.handle_client_message(req)
+    except Exception:
+        logger.exception("baton-proxy: handle_client_message failed")
+        req_id = owed_answer_id(req)
+        if req_id is not None:
+            message = "baton-proxy: internal error processing the request"
+            return _ClientAction(respond=rpc_error(req_id, -32603, message))
+        return _ClientAction(forward=req)
+    if action.respond is not None and owed_answer_id(req) is None:
+        # A message without an id gets no reply, even one the proxy answers itself;
+        # see test_the_injected_tool_called_without_an_id_gets_no_reply.
+        return _ClientAction(drop=True)
+    return action
 
 
 class MessageProcessor:
@@ -581,9 +625,16 @@ class MessageProcessor:
     transport, so MCP traffic keeps flowing even if capture breaks.
     """
 
-    def __init__(self, emitter: Emitter, injection: _Injection, session_id: str) -> None:
+    def __init__(
+        self,
+        emitter: Emitter,
+        injection: _Injection,
+        session_id: str,
+        overlay: Overlay | None = None,
+    ) -> None:
         self._emitter = emitter
         self._injection = injection
+        self._overlay = overlay
         self._session_id = session_id
         self._pending: OrderedDict[Any, _PendingCall] = OrderedDict()
         self._pending_lock = threading.Lock()
@@ -603,18 +654,19 @@ class MessageProcessor:
         # serverInfo and capabilities that belong in the snapshot. Written on
         # the server-message path only.
         self._server_meta: dict[str, Any] | None = None
-        # Request ids of first-page tools/list requests (no cursor param) —
-        # only their responses are snapshot candidates; a cursor-continuation
-        # page is a fragment, never a surface. Insertion-ordered dict so
-        # overflow evicts oldest. Written on the client path, popped on the
-        # server path — different pump threads on stdio, hence the lock.
-        self._toollist_first_page_ids: dict[Any, None] = {}
+        # Open tools/list ids, apart from call tracking, so the overlay holds even
+        # when tracking a listing failed. The value says whether it was a first page.
+        self._toollist_ids: dict[Any, bool] = {}
         # Hashes already emitted this process — a Desktop-style lazy re-list
         # of an unchanged surface must not re-emit. A CHANGED surface (e.g.
         # listChanged refire after an upstream mutation) hashes fresh and
         # emits again by design.
         self._emitted_surface_hashes: set[str] = set()
         self._surface_lock = threading.Lock()
+
+    @property
+    def overlay(self) -> Overlay | None:
+        return self._overlay
 
     def _track(
         self,
@@ -676,20 +728,19 @@ class MessageProcessor:
             return _ClientAction(forward=req)
 
         if method == "tools/list":
-            # Remember first-page requests (no cursor) so the server path can
-            # tell a snapshot candidate from a pagination fragment. Forwarded
-            # unchanged either way; fail-open on any shape surprise.
+            # Every listing id is remembered: the overlay applies to each page, and
+            # only a first page (no cursor) is a snapshot candidate.
             params = req.get("params")
             if not isinstance(params, dict):
                 params = {}
             req_id = req.get("id")
             try:
-                if req_id is not None and not params.get("cursor"):
+                if req_id is not None:
                     with self._surface_lock:
-                        self._toollist_first_page_ids[req_id] = None
-                        while len(self._toollist_first_page_ids) > MAX_PENDING_TOOLLISTS:
-                            oldest = next(iter(self._toollist_first_page_ids))
-                            del self._toollist_first_page_ids[oldest]
+                        self._toollist_ids.pop(req_id, None)
+                        self._toollist_ids[req_id] = not params.get("cursor")
+                        while len(self._toollist_ids) > MAX_PENDING_TOOLLISTS:
+                            del self._toollist_ids[next(iter(self._toollist_ids))]
             except Exception:
                 logger.exception("baton-proxy: tools/list tracking failed")
             runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
@@ -754,6 +805,7 @@ class MessageProcessor:
             call_intent, call_expected, call_workflow = self._extract_goal_params(
                 safe_tool_name, params
             )
+            hidden_response = self._apply_overlay_to_call(safe_tool_name, req, params)
 
             call_id = str(uuid.uuid4())
             try:
@@ -775,6 +827,11 @@ class MessageProcessor:
                 logger.exception("baton-proxy: enqueue tool_call_start failed")
             else:
                 self._track(req_id, "tool", safe_tool_name, runtime_meta, call_id)
+            if hidden_response is not None:
+                self.synthesize_pending_error(
+                    req_id, HIDDEN_TOOL_ERROR_TYPE, "the overlay hides this tool"
+                )
+                return _ClientAction(respond=hidden_response)
 
         elif method == "resources/read":
             params = req.get("params", {}) or {}
@@ -893,8 +950,9 @@ class MessageProcessor:
 
     def handle_server_message(self, msg: dict[str, Any]) -> dict[str, Any]:
         """Correlate/emit for a server->client message; return the message to write out."""
-        # Correlate this response to a pending call (by id) and emit the
-        # matching end/error event.
+        # A server request carries the server's own id, which may equal a pending call's.
+        if "method" in msg:
+            return msg
         call = self._pop_pending(msg.get("id"))
         # A listing's count includes the proxy's own tool, so its end waits
         # for the injection below:
@@ -936,10 +994,12 @@ class MessageProcessor:
             except Exception:
                 logger.exception("baton-proxy: enqueue end/error failed")
 
-        # Surface capture runs BEFORE both injections below, so the snapshot
-        # records the vendor-true surface (no baton_* tools, no intent param,
-        # pre-suffix instructions).
-        self._capture_surface(msg)
+        listing = self._take_listing(msg.get("id"))
+        overlaid_tools = self._overlay_tools(msg) if listing is not None else None
+        # Surface capture runs BEFORE the overlay lands and both injections
+        # below, so the snapshot records the vendor-true surface.
+        self._capture_surface(msg, first_page=listing is True)
+        self._land_overlay(msg, overlaid_tools)
 
         self._inject_intent_params(msg)
         out = _inject_into_response(msg, self._injection)
@@ -955,7 +1015,17 @@ class MessageProcessor:
                 logger.exception("baton-proxy: enqueue tool_list_end failed")
         return out
 
-    def _capture_surface(self, msg: dict[str, Any]) -> None:
+    def _take_listing(self, msg_id: Any) -> bool | None:
+        """Forget an open tools/list id: ``None`` if it was not one, else whether it was a first page."""
+        if not self._toollist_ids or msg_id is None:
+            return None
+        try:
+            with self._surface_lock:
+                return self._toollist_ids.pop(msg_id, None)
+        except TypeError:
+            return None
+
+    def _capture_surface(self, msg: dict[str, Any], first_page: bool = False) -> None:
         """Snapshot the upstream surface from initialize + tools/list responses.
 
         initialize responses stash serverInfo/capabilities/instructions;
@@ -966,14 +1036,8 @@ class MessageProcessor:
         error is logged and the message flows on untouched.
         """
         try:
-            msg_id = msg.get("id")
             result = msg.get("result")
             if not isinstance(result, dict):
-                # Error (or shapeless) response — forget any tracked list id
-                # so the dict doesn't accumulate dead entries.
-                if msg_id is not None:
-                    with self._surface_lock:
-                        self._toollist_first_page_ids.pop(msg_id, None)
                 return
 
             if "protocolVersion" in result or "serverInfo" in result:
@@ -988,10 +1052,6 @@ class MessageProcessor:
             tools = result.get("tools")
             if not isinstance(tools, list):
                 return
-            with self._surface_lock:
-                first_page = msg_id is not None and (
-                    self._toollist_first_page_ids.pop(msg_id, "absent") is None
-                )
             if not first_page or result.get("nextCursor"):
                 return
 
@@ -1012,24 +1072,98 @@ class MessageProcessor:
                 self._emitted_surface_hashes.add(digest)
 
             mode = self._injection.intent_param_mode
+            augmentations: dict[str, Any] = {
+                "injected_tools": sorted(self._injection.names),
+                "intent_param": {
+                    "names": sorted(INTENT_PARAM_NAMES),
+                    "required_names": sorted(required_param_names(intent_param_mode=mode)),
+                    "mode": mode,
+                },
+                "instructions_suffix": bool(self._injection.instructions_suffix),
+            }
+            if self._overlay is not None:
+                augmentations["overlay"] = {
+                    "hash": self._overlay.hash,
+                    "unmatched_targets": self._overlay.unmatched(),
+                }
             self._emitter.enqueue_surface_snapshot(
                 surface_hash=digest,
                 server_info=surface["server_info"],
                 capabilities=surface["capabilities"],
                 instructions=surface["instructions"],
                 tools=surface["tools"],
-                seam_augmentations={
-                    "injected_tools": sorted(self._injection.names),
-                    "intent_param": {
-                        "names": sorted(INTENT_PARAM_NAMES),
-                        "required_names": sorted(required_param_names(intent_param_mode=mode)),
-                        "mode": mode,
-                    },
-                    "instructions_suffix": bool(self._injection.instructions_suffix),
-                },
+                seam_augmentations=augmentations,
             )
         except Exception:
             logger.exception("baton-proxy: surface snapshot capture failed")
+
+    def _apply_overlay_to_call(
+        self, tool_name: str, req: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Drop hidden params from a call; return the reply for a hidden tool.
+
+        A hidden tool is answered here because forwarding it would run a tool
+        the agent was told does not exist.
+        """
+        if self._overlay is None:
+            return None
+        try:
+            if tool_name in self._overlay.hidden_tools:
+                return rpc_error(req.get("id"), -32602, f"Unknown tool: {tool_name}")
+            args = params.get("arguments")
+            if isinstance(args, dict):
+                for name in self._overlay.hidden_params(tool_name):
+                    args.pop(name, None)
+        except Exception:
+            logger.exception("baton-proxy: overlay on tools/call failed")
+        return None
+
+    def _overlay_tools(self, msg: dict[str, Any]) -> list[Any] | None:
+        if self._overlay is None:
+            return None
+        try:
+            result = msg.get("result")
+            tools = result.get("tools") if isinstance(result, dict) else None
+            if isinstance(tools, list):
+                return self._overlay.apply_to_tools(tools)
+        except Exception:
+            logger.exception("baton-proxy: overlay on tools/list failed")
+        return None
+
+    def overlay_degraded(self, msg: dict[str, Any]) -> dict[str, Any]:
+        self._land_overlay(msg, None)
+        return msg
+
+    def _land_overlay(self, msg: dict[str, Any], overlaid_tools: list[Any] | None) -> None:
+        if self._overlay is None:
+            return
+        try:
+            result = msg.get("result")
+            if not isinstance(result, dict):
+                return
+            if overlaid_tools is not None:
+                result["tools"] = overlaid_tools
+                if not result.get("nextCursor"):
+                    self._report_unmatched_overlay_targets()
+            if "protocolVersion" in result or "serverInfo" in result:
+                original = result.get("instructions")
+                replaced = self._overlay.apply_to_instructions(
+                    original if isinstance(original, str) else ""
+                )
+                if replaced or isinstance(original, str):
+                    result["instructions"] = replaced
+        except Exception:
+            logger.exception("baton-proxy: overlay failed, forwarding response unmodified")
+
+    def _report_unmatched_overlay_targets(self) -> None:
+        unmatched = self._overlay.unmatched_once()
+        if unmatched:
+            logger.error(
+                "baton-proxy: overlay %s has %d action(s) that did not apply: %s",
+                self._overlay.hash[:15],
+                len(unmatched),
+                ", ".join(unmatched),
+            )
 
     def _inject_intent_params(self, msg: dict[str, Any]) -> None:
         """Add user_goal to every upstream tool in a tools/list response.
@@ -1085,6 +1219,7 @@ class MessageProcessor:
         with no end/error pair. Pop it and emit the matching error so the wire
         stream stays well-formed. No-op if the id isn't tracked.
         """
+        self._take_listing(req_id)
         call = self._pop_pending(req_id)
         if call is not None:
             _close_unanswered(self._emitter, call, error_type, error_body)
@@ -1137,23 +1272,11 @@ def _pump_client_to_server(
                     logger.exception("baton-proxy: forward to upstream failed")
                 continue
 
-            # Fail-open: a bug processing one message must not kill this pump thread
-            # (which would silently stop all capture). Log, error the client so it
-            # doesn't hang, move on.
-            try:
-                action = processor.handle_client_message(req)
-            except Exception:
-                logger.exception("baton-proxy: handle_client_message failed")
-                _write_client_error(
-                    req.get("id"), -32603, "baton-proxy: internal error processing the request"
-                )
-                continue
+            action = client_action(processor, req)
 
             if action.respond is not None:
-                try:
-                    _write_stdout(action.respond)
-                except Exception:
-                    logger.exception("baton-proxy: forward to client failed")
+                _write_client(action.respond)
+            if action.forward is None:
                 continue
 
             try:
@@ -1204,17 +1327,11 @@ def _pump_server_to_client(child_stdout: Any, processor: MessageProcessor) -> No
         try:
             msg = json.loads(line)
         except json.JSONDecodeError:
-            try:
-                _write_stdout(line)
-            except Exception:
-                logger.exception("baton-proxy: forward to client failed")
+            _write_client(line)
             continue
 
         out = processor.handle_server_message(msg)
-        try:
-            _write_stdout(out)
-        except Exception:
-            logger.exception("baton-proxy: forward to client failed")
+        _write_client(out)
 
 
 def _child_env(parent_env: Mapping[str, str]) -> dict[str, str]:
@@ -1244,7 +1361,9 @@ def _configure_logging(log_file: str | None) -> None:
             logger.warning("baton-proxy: cannot open log file %r: %s", log_file, e)
 
 
-def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
+def _bootstrap(
+    overlay_path: str | None = None,
+) -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     """Shared per-transport startup.
 
     Reads config, configures logging, resolves the injection set, starts the
@@ -1287,9 +1406,26 @@ def _bootstrap() -> tuple[Config, _Injection, Emitter, MessageProcessor]:
             "calls. Use a shorter sink path to restore it.",
             event_file,
         )
+    # A leftover variable must not change a run that was started without an overlay.
+    if os.environ.get("BATON_OVERLAY", "").strip():
+        logger.warning(
+            "baton-proxy: BATON_OVERLAY is ignored. Pass the file with --overlay PATH instead."
+        )
+    try:
+        overlay = load_overlay(overlay_path) if overlay_path else None
+    except OverlayError as exc:
+        logger.error("baton-proxy: --overlay refused: %s", exc)
+        raise SystemExit(2) from exc
+    if overlay is not None:
+        logger.info(
+            "baton-proxy: overlay %s loaded from %s (%d actions)",
+            overlay.hash[:15],
+            overlay_path,
+            len(overlay.actions),
+        )
     emitter = Emitter(config)
     emitter.start()
-    processor = MessageProcessor(emitter, injection, config.session_id)
+    processor = MessageProcessor(emitter, injection, config.session_id, overlay=overlay)
     return config, injection, emitter, processor
 
 
@@ -1421,13 +1557,13 @@ class _UpstreamShutdown:
         return rc
 
 
-def run_proxy(argv: list[str]) -> int:
+def run_proxy(argv: list[str], overlay_path: str | None = None) -> int:
     """Spawn the upstream stdio MCP server and pump bidirectionally.
 
     `argv` is the upstream command (e.g. `["npx", "@vendor/mcp-server"]`).
     Returns the upstream's exit code.
     """
-    config, injection, emitter, processor = _bootstrap()
+    config, injection, emitter, processor = _bootstrap(overlay_path)
     logger.info(
         "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, upstream=%s)",
         config.session_id,
@@ -1496,7 +1632,7 @@ def run_proxy(argv: list[str]) -> int:
     return rc
 
 
-def run_http_proxy(url: str) -> int:
+def run_http_proxy(url: str, overlay_path: str | None = None) -> int:
     """Bridge a stdio-facing Claude client to an HTTPS Streamable-HTTP upstream.
 
     The proxy stays stdio-facing to Claude (reads JSON-RPC from stdin, writes to
@@ -1517,7 +1653,7 @@ def run_http_proxy(url: str) -> int:
     """
     from baton_proxy.transport_http import StreamableHttpClient
 
-    config, injection, emitter, processor = _bootstrap()
+    config, injection, emitter, processor = _bootstrap(overlay_path)
     auth_token = os.environ.get("BATON_UPSTREAM_AUTH_TOKEN")
     logger.info(
         "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, "
@@ -1526,7 +1662,7 @@ def run_http_proxy(url: str) -> int:
         "on" if config.emission_enabled else "off",
         sorted(injection.names),
         injection.intent_param_mode,
-        url,
+        shown_url(url),
         "bearer" if auth_token else "none",
     )
     logger.info(
@@ -1571,10 +1707,7 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
             "client stays connected (injected tools remain usable)",
             forward.get("method"),
         )
-        try:
-            _write_stdout(_inject_into_response(degraded, injection))
-        except Exception:
-            logger.exception("baton-proxy: forward to client failed")
+        _write_client(_inject_into_response(processor.overlay_degraded(degraded), injection))
         return True
 
     for line in sys.stdin:
@@ -1594,30 +1727,15 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
             logger.warning("baton-proxy: dropping non-object client line on http bridge")
             continue
 
-        # Fail-open: a bug processing one message must never propagate out and
-        # kill the whole bridge process (unlike the stdio path, this loop runs
-        # on the main thread). Log, error the client so it doesn't hang, move on.
-        try:
-            action = processor.handle_client_message(req)
-        except Exception:
-            logger.exception("baton-proxy: handle_client_message failed")
-            _write_client_error(
-                req.get("id"), -32603, "baton-proxy: internal error processing the request"
-            )
-            continue
+        action = client_action(processor, req)
 
         if action.respond is not None:
-            try:
-                _write_stdout(action.respond)
-            except Exception:
-                logger.exception("baton-proxy: forward to client failed")
+            _write_client(action.respond)
+        if action.forward is None:
             continue
 
-        # Invariant (enforced in _ClientAction.__post_init__): respond is None
-        # here, so forward is set. No `or req` fallback — that would silently
-        # mask a processor bug by forwarding the unprocessed request.
         forward = action.forward
-        req_id = forward.get("id")
+        req_id = owed_answer_id(forward)
         is_notification = req_id is None
         try:
             responses = client.post(forward)
@@ -1629,24 +1747,23 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
             # Either way a tracked start is closed with a synthetic error.
             logger.warning("baton-proxy: upstream POST failed: %s", e)
             err = str(e)
-            if _degrade(forward, "proxy_upstream_unreachable", err):
+            if _degrade(forward, UPSTREAM_UNREACHABLE_ERROR_TYPE, err):
                 continue
             if not is_notification:
-                processor.synthesize_pending_error(req_id, "proxy_upstream_unreachable", err)
-                _write_client_error(req_id, -32001, f"baton-proxy: upstream request failed: {err}")
+                processor.synthesize_pending_error(req_id, UPSTREAM_UNREACHABLE_ERROR_TYPE, err)
+                _write_client(
+                    rpc_error(req_id, -32001, f"baton-proxy: upstream request failed: {err}")
+                )
             continue
 
         # Write every returned message; track whether one actually answered this
         # request's id.
         responded = False
         for msg in responses:
-            if isinstance(msg, dict) and msg.get("id") == req_id:
+            if answers(msg, req_id):
                 responded = True
             out = processor.handle_server_message(msg)
-            try:
-                _write_stdout(out)
-            except Exception:
-                logger.exception("baton-proxy: forward to client failed")
+            _write_client(out)
 
         # The upstream accepted the request (2xx) but returned nothing that
         # answers it — an empty 200 body, a 202, or an SSE stream with no
@@ -1656,12 +1773,8 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
             logger.warning("baton-proxy: upstream returned no response for id=%r", req_id)
             # Same wedge risk as an outright failure: an unanswered initialize/
             # tools/list must degrade to a healthy surface rather than error.
-            no_response = "upstream returned no response for this request"
-            if not _degrade(forward, "proxy_no_response", no_response):
-                processor.synthesize_pending_error(req_id, "proxy_no_response", no_response)
-                _write_client_error(
-                    req_id, -32001, "baton-proxy: upstream returned no response for this request"
-                )
+            if not _degrade(forward, NO_RESPONSE_ERROR_TYPE, NO_RESPONSE):
+                _write_client(no_response_error(processor, req_id))
 
     return 0
 
@@ -1672,6 +1785,10 @@ def main(argv: list[str] | None = None) -> int:
         from baton_proxy.wrap import cli
 
         return cli(argv)
+    if argv and argv[0] == "listen":
+        from baton_proxy.listen import main as listen_main
+
+        return listen_main(argv[1:])
 
     parser = argparse.ArgumentParser(
         prog="baton-proxy",
@@ -1696,6 +1813,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--overlay",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Overlay file (JSON, or YAML with the [overlay] extra) that changes the tool "
+            "text the agent sees. The only way to load one; BATON_OVERLAY is ignored."
+        ),
+    )
+    parser.add_argument(
         "upstream",
         nargs=argparse.REMAINDER,
         help="Upstream MCP server command, after `--`. Example: -- npx @vendor/mcp-server",
@@ -1709,14 +1835,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.url:
         if upstream:
             parser.error("--url and the `-- <command>` stdio form are mutually exclusive")
-        return run_http_proxy(args.url)
+        return run_http_proxy(args.url, args.overlay)
 
     if not upstream:
         parser.error(
             "upstream command required (after `--`), or pass --url <url> for the HTTP bridge"
         )
 
-    return run_proxy(upstream)
+    return run_proxy(upstream, args.overlay)
 
 
 if __name__ == "__main__":

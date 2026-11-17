@@ -32,8 +32,8 @@ def result_for(req: dict[str, Any]) -> dict[str, Any] | None:
     method = req.get("method")
     req_id = req.get("id")
 
-    # Notification (no id) — no response.
-    if req_id is None:
+    # A notification, or the client's answer to a server request: no response.
+    if req_id is None or method is None:
         return None
 
     if (req.get("params") or {}).get("cursor") == BAD_CURSOR:

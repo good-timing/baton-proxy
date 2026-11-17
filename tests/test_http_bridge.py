@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 import subprocess
 import sys
 import threading
@@ -123,7 +122,10 @@ REQUESTS: list[dict[str, Any]] = [
 
 
 def _drive_proxy(
-    url: str, requests: list[dict[str, Any]], env_extra: dict[str, str] | None = None
+    url: str,
+    requests: list[dict[str, Any]],
+    env_extra: dict[str, str] | None = None,
+    args: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Run the proxy in --url mode, feed requests on stdin, return (stdout, events).
 
@@ -144,7 +146,7 @@ def _drive_proxy(
         env.update(env_extra)
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "baton_proxy", "--url", url],
+        [sys.executable, "-m", "baton_proxy", "--url", url, *(args or [])],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -428,16 +430,8 @@ def test_sends_identifying_headers() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _free_port() -> int:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
 def test_unreachable_upstream_fails_open_without_hang() -> None:
-    dead_url = f"http://127.0.0.1:{_free_port()}/mcp"
+    dead_url = f"http://127.0.0.1:{fixture_http_server.free_port()}/mcp"
     reqs = [
         REQUESTS[0],  # initialize
         {
@@ -468,7 +462,7 @@ def test_unreachable_upstream_degrades_handshake_keeping_session_alive() -> None
     the client attaches and the injected baton tools stay usable — while real
     upstream tool calls still degrade per-call (an error, not a wedge).
     """
-    dead_url = f"http://127.0.0.1:{_free_port()}/mcp"
+    dead_url = f"http://127.0.0.1:{fixture_http_server.free_port()}/mcp"
     reqs = [
         REQUESTS[0],  # initialize
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
@@ -696,9 +690,9 @@ def test_non_object_json_line_does_not_kill_the_bridge(http_server: str) -> None
 # --------------------------------------------------------------------------- #
 
 
-def test_parse_sse_skips_non_message_events() -> None:
+def test_iter_sse_skips_non_message_events() -> None:
     """Only event:message frames are JSON-RPC; keepalive/ping data is ignored."""
-    from baton_proxy.transport_http import _parse_sse
+    from baton_proxy.transport_http import iter_sse
 
     raw = [
         b"event: ping\n",
@@ -708,29 +702,66 @@ def test_parse_sse_skips_non_message_events() -> None:
         b'data: {"jsonrpc": "2.0", "id": 1, "result": {}}\n',
         b"\n",
     ]
-    msgs = _parse_sse(iter(raw))
+    msgs = list(iter_sse(iter(raw)))
     assert len(msgs) == 1, f"ping frame leaked through: {msgs}"
     assert msgs[0]["id"] == 1
 
 
-def test_parse_sse_treats_eventless_data_as_message() -> None:
+def test_iter_sse_treats_eventless_data_as_message() -> None:
     """A data frame with no event: field defaults to the 'message' type (SSE spec)."""
-    from baton_proxy.transport_http import _parse_sse
+    from baton_proxy.transport_http import iter_sse
 
     raw = [b'data: {"jsonrpc": "2.0", "id": 2, "result": {}}\n', b"\n"]
-    msgs = _parse_sse(iter(raw))
+    msgs = list(iter_sse(iter(raw)))
     assert len(msgs) == 1 and msgs[0]["id"] == 2
 
 
 def test_env_timeout_rejects_non_finite(monkeypatch: Any) -> None:
     """inf/nan must fall back to the default — urlopen(timeout=inf) blocks forever."""
-    from baton_proxy.transport_http import _DEFAULT_TIMEOUT_S, _env_timeout
+    from baton_proxy.transport_http import _DEFAULT_TIMEOUT_S, env_timeout
 
     monkeypatch.setenv("BATON_UPSTREAM_TIMEOUT", "inf")
-    assert _env_timeout() == _DEFAULT_TIMEOUT_S
+    assert env_timeout() == _DEFAULT_TIMEOUT_S
     monkeypatch.setenv("BATON_UPSTREAM_TIMEOUT", "nan")
-    assert _env_timeout() == _DEFAULT_TIMEOUT_S
+    assert env_timeout() == _DEFAULT_TIMEOUT_S
     monkeypatch.setenv("BATON_UPSTREAM_TIMEOUT", "-3")
-    assert _env_timeout() == _DEFAULT_TIMEOUT_S
+    assert env_timeout() == _DEFAULT_TIMEOUT_S
     monkeypatch.setenv("BATON_UPSTREAM_TIMEOUT", "5")
-    assert _env_timeout() == 5.0
+    assert env_timeout() == 5.0
+
+
+def test_a_dead_upstream_still_serves_the_overlay_instructions(tmp_path: Path) -> None:
+    overlay = tmp_path / "overlay.json"
+    overlay.write_text(
+        json.dumps({"actions": [{"target": {"instructions": True}, "append": "OVERLAID"}]})
+    )
+    dead_url = f"http://127.0.0.1:{fixture_http_server.free_port()}/mcp"
+    stdout_msgs, _ = _drive_proxy(dead_url, [REQUESTS[0]], args=["--overlay", str(overlay)])
+    init = next(m for m in stdout_msgs if m.get("id") == 1)
+    assert init["result"]["instructions"].startswith("OVERLAID")
+
+
+def test_a_client_answer_to_a_server_request_gets_no_reply(http_server: str) -> None:
+    answer = {"jsonrpc": "2.0", "id": 77, "result": {}}
+    stdout_msgs, _ = _drive_proxy(http_server, [*REQUESTS[:2], answer])
+    assert [m for m in stdout_msgs if m.get("id") == 77] == []
+
+
+def test_a_server_request_reusing_the_calls_id_is_not_its_answer(http_server: str) -> None:
+    call = {"jsonrpc": "2.0", "id": 31, "method": "tools/call", "params": {"name": "asks"}}
+    stdout_msgs, _ = _drive_proxy(http_server, [*REQUESTS[:2], call])
+    replies = [m for m in stdout_msgs if m.get("id") == 31]
+    assert [m.get("method") for m in replies] == ["sampling/createMessage", None]
+    assert replies[1]["error"]["code"] == -32001
+
+
+def test_a_refused_request_puts_no_token_in_an_event(http_server_auth: str) -> None:
+    token = "s3ntinel-tok"
+    call = {"jsonrpc": "2.0", "id": 41, "method": "tools/call", "params": {"name": "echo"}}
+    _, events = _drive_proxy(
+        http_server_auth, [*REQUESTS[:2], call], {"BATON_UPSTREAM_AUTH_TOKEN": token}
+    )
+    assert [e["payload"]["error_type"] for e in _of(events, "tool_call_error")] == [
+        "proxy_upstream_unreachable"
+    ]
+    assert token not in json.dumps(events)

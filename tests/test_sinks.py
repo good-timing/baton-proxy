@@ -284,3 +284,47 @@ def test_find_file_sink_path_returns_none_when_no_file() -> None:
     assert find_file_sink_path("https://example.com") is None
     assert find_file_sink_path(None) is None
     assert find_file_sink_path("") is None
+
+
+def test_the_http_sink_never_follows_a_redirect_with_its_key() -> None:
+    import http.server
+    import threading
+    import urllib.error
+
+    seen: list[str | None] = []
+
+    class Elsewhere(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:
+            seen.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        do_POST = do_GET
+
+    other = http.server.HTTPServer(("127.0.0.1", 0), Elsewhere)
+
+    class Redirects(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_: Any) -> None:
+            pass
+
+        def do_POST(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", f"http://localhost:{other.server_port}/steal")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    redirector = http.server.HTTPServer(("127.0.0.1", 0), Redirects)
+    for server in (other, redirector):
+        threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
+    try:
+        sink = HttpSink(f"http://127.0.0.1:{redirector.server_port}", api_key="k3y")
+        with pytest.raises(urllib.error.HTTPError):
+            sink.write({"event_type": "x"})
+    finally:
+        other.shutdown()
+        redirector.shutdown()
+    assert seen == []

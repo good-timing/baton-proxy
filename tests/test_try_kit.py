@@ -2485,7 +2485,7 @@ NARROW_AUDIT_RE = r"urlopen\(|Popen\(|subprocess\.run\(|boto3\.client\("
 # trust our regex.
 WIDE_AUDIT_RE = r"urlopen|socket|http\.client|requests\.|boto3|subprocess"
 
-# The four call sites of §4's table, plus the one comment line §9 names. Stored
+# The five call sites of §4's table, plus the one comment line §9 names. Stored
 # as (path, lineno, substring-of-the-line) so a moved line fails loudly instead
 # of a bare count quietly absorbing a swap. Nothing under `try/` is in the set,
 # and `test_the_kit_contributes_no_audited_call_site` is the assertion of that.
@@ -2499,14 +2499,15 @@ WIDE_AUDIT_RE = r"urlopen|socket|http\.client|requests\.|boto3|subprocess"
 # ([[feedback_no_anchor_on_rebuilt_positional_key]]).
 #
 # What still makes this a real guard is the pair below it: every expected site
-# must be present, AND the total must be exactly five, so a sixth egress call
+# must be present, AND the total must be exactly six, so a seventh egress call
 # anywhere under src|try reds here whatever its line.
 EXPECTED_AUDIT_HITS = {
     ("src/baton_proxy/proxy.py", "subprocess.Popen("),
-    ("src/baton_proxy/transport_http.py", "urllib.request.urlopen(req"),
+    ("src/baton_proxy/transport_http.py", "no_redirect_urlopen(req"),
     ("src/baton_proxy/transport_http.py", "urlopen(timeout=inf) blocks forever"),
-    ("src/baton_proxy/sinks.py", "urllib.request.urlopen(req"),
+    ("src/baton_proxy/sinks.py", "no_redirect_urlopen(req"),
     ("src/baton_proxy/sinks.py", 'boto3.client("s3")'),
+    ("src/baton_proxy/listen.py", "no_redirect_urlopen(req"),
 }
 
 
@@ -2546,15 +2547,13 @@ def _grep(pattern: str, root: Path = REPO_ROOT):
     return hits
 
 
-def test_security_md_section_9_narrow_grep_returns_exactly_its_five():
-    """§9: "Five matches: the four in the §4 table, plus one comment line in
+def test_security_md_section_9_narrow_grep_returns_exactly_its_six():
+    """§9: "Six matches: the five in the §4 table, plus one comment line in
     transport_http.py."
 
-    It was six, went to seven when `kit.py upload` shipped, back to six when the
-    kit stopped sending, and is five now that `scan.py` is deleted. Each time,
-    the count moved in the same commit as the code, which is the whole point of
+    The count moves in the same commit as the code, which is the whole point of
     pinning it. A reviewer runs the printed command and counts; a document that
-    says five over a tree that answers six is the one failure this section
+    says six over a tree that answers seven is the one failure this section
     cannot survive, because its only claim is that its claims are mechanical.
 
     Note what makes this stable at all: SECURITY.md quotes the regex as
@@ -2567,10 +2566,10 @@ def test_security_md_section_9_narrow_grep_returns_exactly_its_five():
         assert any(p == path and needle in line for p, line in found), (
             f"§9's expected match is gone: {path} ({needle!r}). A match that MOVED "
             "within its file is fine; one that vanished means the document's "
-            "five-match promise no longer describes this tree."
+            "six-match promise no longer describes this tree."
         )
-    assert len(hits) == 5, (
-        "SECURITY.md §9 promises a reviewer FIVE matches; this grep now returns "
+    assert len(hits) == 6, (
+        "SECURITY.md §9 promises a reviewer SIX matches; this grep now returns "
         f"{len(hits)}:\n" + "\n".join(f"  {p}:{n}: {line.strip()}" for p, n, line in hits)
     )
 
@@ -2782,8 +2781,11 @@ def test_one_of_the_six_is_a_comment_not_a_call_site():
     reviewer counting call sites and getting six would conclude the table is
     incomplete — so the comment is part of the claim, not noise around it."""
     hits = _grep(NARROW_AUDIT_RE)
-    comments = [(p, n) for p, n, line in hits if line.strip().startswith("#")]
-    assert comments == [("src/baton_proxy/transport_http.py", 187)]
+    comments = [(p, line.strip()) for p, _n, line in hits if line.strip().startswith("#")]
+    assert len(comments) == 1
+    path, line = comments[0]
+    assert path == "src/baton_proxy/transport_http.py"
+    assert "urlopen(timeout=inf) blocks forever" in line
 
 
 def test_the_kit_contributes_no_audited_call_site():
@@ -5713,6 +5715,16 @@ _A_LISTENER = re.compile(
 )
 
 
+_LISTEN_SUBCOMMAND = REPO_ROOT / "src" / "baton_proxy" / "listen.py"
+# The one listening socket §2 allows, and nothing else in listen.py.
+_LISTEN_SUBCOMMAND_ALLOWED = (
+    "from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer",
+    ") -> ThreadingHTTPServer:",
+    "server = ThreadingHTTPServer((host, port), Handler)",
+    "server.serve_forever()",
+)
+
+
 def test_nothing_of_ours_opens_a_listening_port():
     """The load-bearing half of the OAuth disclosure. §2 tells someone the
     `localhost` port on that consent screen is their own server's and not ours,
@@ -5721,11 +5733,21 @@ def test_nothing_of_ours_opens_a_listening_port():
     offenders = []
     for path in sorted((REPO_ROOT / "src").rglob("*.py")) + [KIT_PATH]:
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if path == _LISTEN_SUBCOMMAND and line.strip() in _LISTEN_SUBCOMMAND_ALLOWED:
+                continue
             if m := _A_LISTENER.search(line):
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{n}: …{m.group(0)}…")
     assert not offenders, "SECURITY.md §2 says we open no listening port; this does:\n" + "\n".join(
         offenders
     )
+
+
+def test_the_kit_never_reaches_the_listen_subcommand():
+    """§2 exempts `listen.py` from the sweep because the kit never runs it."""
+    kit = KIT_PATH.read_text(encoding="utf-8")
+    assert '"listen"' not in kit and "'listen'" not in kit
+    proxy = (REPO_ROOT / "src" / "baton_proxy" / "proxy.py").read_text(encoding="utf-8")
+    assert proxy.count("baton_proxy.listen") == 1, "listen.py is imported only for `listen`"
 
 
 def test_the_listener_sweep_can_fail():

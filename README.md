@@ -81,6 +81,42 @@ The printed entry holds the DSN's key and any bearer token in full, because it i
 
 `wrap` writes absolute paths, because Claude Desktop starts servers with a short `PATH`. A server that signs in with OAuth runs through `npx -y mcp-remote`, which opens a browser on first start and keeps the token itself, so Node.js must be installed. A connector added in the Claude app is not in any config file: `--url` adds a separate local entry, so turn the app's connector off. To send events to a Console, add a server on its Settings page and pass its DSN: `--dsn 'https://baton_pk_…@baton.goodtiming.ai/ten_…/<server>'`. The DSN carries the address, the key and both ids. Without `--dsn`, events stay on this machine. `--dry-run` shows the entry first.
 
+## Serve a URL in front of a remote server
+
+For a harness that wants a URL and cannot start a process, `baton-proxy listen` serves Streamable HTTP in front of a remote MCP server and captures every session.
+
+```sh
+baton-proxy listen --listen 127.0.0.1:8710 --url https://mcp.example.com/mcp
+```
+
+`--listen` takes an IPv4 address or a host name, and a port.
+
+Every header the caller sends is forwarded unchanged, except the connection-level ones, `Host`, `Content-Length`, `Accept`, `Content-Type`, `Accept-Encoding` and the session id. The listener adds itself to `Via`. Every request goes to the `--url` address itself, whatever path the client was registered with, and the client's query is added to it. So `http://127.0.0.1:8710/mcp?tag=beta` reaches `https://mcp.example.com/mcp?tag=beta`. Header values are never written to an event. So the listener needs no credential of its own. `BATON_UPSTREAM_AUTH_TOKEN` fills in for callers that send none, and the listener refuses it on a non-loopback address because anyone who reached the port would act as you.
+
+The server's answer goes back with its own headers, such as `Set-Cookie`, minus the ones that describe its original body and its CORS grants. A refusal such as a 401 goes back to the caller with its status, its body and the headers above. A redirect is answered with a 502, because following it would leave the overlay and the capture behind. A request with an `Origin` header is refused unless `BATON_LISTEN_ALLOWED_ORIGINS` lists it. The listener sends no CORS headers, so a browser page cannot call it even from an allowed origin.
+
+Each client gets its own `Mcp-Session-Id`, so clients stay apart even when the upstream has no sessions. Each client session is one Baton session, and its open calls are closed in that session when it ends. An answer the server streams is passed on as it arrives, so a question the server asks during a call reaches the client in time. The `--url` form without `listen` waits for the whole answer, so use `listen` for servers that ask questions mid-call. The proxy gives up on a server that sends nothing for 60 seconds, which includes a server waiting for the answer to its question. Set `BATON_UPSTREAM_TIMEOUT` to more seconds if those answers can take longer, knowing a dead server then takes that long to notice too. The listener does not offer the standing server-to-client stream.
+
+The listener does not pass OAuth sign-in through. A client that discovers how to sign in by asking the server cannot do it through the listener, so send a fixed token in a header instead, or set `BATON_UPSTREAM_AUTH_TOKEN`.
+
+## Overlays
+
+An overlay changes what the agent sees without touching the server. The file holds one overlay in the same shape the Console stores. It can add to or replace a tool's description or a parameter's description, hide a tool, hide a parameter the tool does not require, list a parameter as required, and add to the server's instructions. Actions apply in order, and an added text starts a new paragraph. Pass the file with `--overlay PATH`, which is the only way to load one. `BATON_OVERLAY` is ignored with a warning, so a leftover variable cannot change a run.
+
+```json
+{
+  "actions": [
+    { "target": { "tool": "create_fields" }, "append": "Get the record type id from get_workspace first." },
+    { "target": { "tool": "create_fields", "param": "record_type_id" }, "replace": "The id get_workspace returns, unchanged." },
+    { "target": { "tool": "create_fields", "param": "legacy_mode" }, "remove": true },
+    { "target": { "tool": "debug_dump" }, "remove": true },
+    { "target": { "instructions": true }, "append": "..." }
+  ]
+}
+```
+
+JSON always works. YAML needs `pip install 'baton-proxy[overlay]'`. A malformed file stops the proxy at startup. An action the tool list cannot take, such as a tool or parameter the server does not list, is logged as an error once the server lists its tools. A required parameter is listed as required but never enforced. Targets on Baton's own text (`agent_text`) are not supported yet. A call to a hidden tool is answered by the proxy and never reaches the server. Events still record the server's own surface, and the surface snapshot carries the overlay's hash.
+
 ## Where events go
 
 `BATON_EVENT_SINK` takes a comma-separated list, and the URL scheme picks the sink: `stderr:` writes JSON Lines to stderr, `file:///tmp/events.jsonl` appends one JSON object per event, and `https://collector.example.com` POSTs to `{url}/v0/events`. The default is `stderr:,file:///tmp/baton-proxy.jsonl`, so a bare install writes only to your own machine.
@@ -97,7 +133,7 @@ A misconfigured sink fails loudly at startup rather than silently dropping event
 
 - **Open source, Apache 2.0.** Auditable end-to-end.
 - **Fail-open.** A Console outage, a network issue or an instrumentation bug never breaks the MCP pipe. If injection or stripping raises, the message is forwarded unmodified.
-- **Outbound-only.** The proxy never accepts inbound connections. Events go to the configured sink, either an HTTPS POST out or a local file write, and that is the only egress surface.
+- **Outbound-only, except `listen`.** A wrapped server's proxy never accepts inbound connections. `baton-proxy listen` accepts them on the one address you pass it. Events go to the configured sink, either an HTTPS POST out or a local file write, and that is the only egress surface.
 - **Source-side scrubbing, on by default**, with the limits stated above.
 - **Emission off the hot path.** Events are enqueued onto a background thread; the I/O pump does not wait for the POST.
 
