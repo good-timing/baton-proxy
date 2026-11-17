@@ -8,7 +8,7 @@ import os
 import sys
 from typing import Any
 
-from baton_proxy._jsonrpc import answers
+from baton_proxy._jsonrpc import answers, owed_answer_id
 from baton_proxy._urls import shown_url
 from baton_proxy.listen import (
     OVERLAY_HEADER,
@@ -17,11 +17,15 @@ from baton_proxy.listen import (
     forward_delete,
     forward_post,
 )
-from baton_proxy.overlay import Overlay, OverlayError, load_overlay
+from baton_proxy.overlay import Overlay, OverlayError, load_overlay, overlay_label
 from baton_proxy.proxy import ANNOTATE_TOOL_NAME, _inject_goal_params
-from baton_proxy.transport_http import SESSION_HEADER, env_timeout, read_messages
+from baton_proxy.transport_http import (
+    DEFAULT_PROTOCOL_VERSION,
+    SESSION_HEADER,
+    env_timeout,
+    read_messages,
+)
 
-_PROTOCOL_VERSION = "2025-06-18"
 _MAX_PAGES = 50
 
 
@@ -35,7 +39,7 @@ def list_tools(url: str, headers: dict[str, str]) -> tuple[list[dict[str, Any]],
     sent = dict(headers)
     overlay: str | None = None
 
-    def call(msg: dict[str, Any]) -> dict[str, Any] | None:
+    def call(msg: dict[str, Any]) -> Any:
         nonlocal overlay
         try:
             resp = forward_post(url, msg, sent, timeout_s)
@@ -44,7 +48,7 @@ def list_tools(url: str, headers: dict[str, str]) -> tuple[list[dict[str, Any]],
                 session = resp.headers.get(SESSION_HEADER)
                 if session and SESSION_HEADER not in sent:
                     sent[SESSION_HEADER] = session
-                messages = read_messages(resp, msg.get("id"))
+                messages = read_messages(resp, owed_answer_id(msg))
         except UpstreamRefused as refused:
             raise CheckFailed(f"{shown_url(url)} answered HTTP {refused.status}") from None
         except UpstreamUnreachable as exc:
@@ -52,18 +56,18 @@ def list_tools(url: str, headers: dict[str, str]) -> tuple[list[dict[str, Any]],
         except Exception as exc:
             # Only the type: urllib's messages can quote the URL and its query.
             raise CheckFailed(f"{shown_url(url)} failed: {type(exc).__name__}") from None
-        answer = next((m for m in messages if answers(m, msg.get("id"))), None)
+        answer = next((m for m in messages if answers(m, owed_answer_id(msg))), None)
         if "id" in msg and (answer is None or "result" not in answer):
             raise CheckFailed(f"{shown_url(url)} did not answer {msg['method']}: {answer}")
         return answer
 
     init = {
-        "protocolVersion": _PROTOCOL_VERSION,
+        "protocolVersion": DEFAULT_PROTOCOL_VERSION,
         "capabilities": {},
         "clientInfo": {"name": "baton-proxy-check", "version": "1"},
     }
-    answer = call({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": init}) or {}
-    version = answer.get("result", {}).get("protocolVersion")
+    answer = call({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": init})
+    version = answer["result"].get("protocolVersion")
     if isinstance(version, str):
         sent["MCP-Protocol-Version"] = version
     try:
@@ -73,7 +77,7 @@ def list_tools(url: str, headers: dict[str, str]) -> tuple[list[dict[str, Any]],
         for page in range(_MAX_PAGES):
             params = {"cursor": cursor} if cursor else {}
             msg = {"jsonrpc": "2.0", "id": 2 + page, "method": "tools/list", "params": params}
-            result = (call(msg) or {}).get("result")
+            result = call(msg)["result"]
             if not isinstance(result, dict) or not isinstance(result.get("tools"), list):
                 raise CheckFailed(f"{shown_url(url)} sent a tools/list result with no tool list")
             tools.extend(result["tools"])
@@ -167,7 +171,7 @@ def main(argv: list[str]) -> int:
     if running is None:
         print("check failed: no Baton-Overlay header; is --listener a baton-proxy listener?")
         return 2
-    want = overlay.label if overlay else "none"
+    want = overlay_label(overlay)
     if running != want:
         print(f"different: the listener runs overlay {running}, and this check expects {want}")
         return 1

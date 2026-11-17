@@ -66,7 +66,7 @@ _DEFAULT_TIMEOUT_S = 60.0
 
 # Fallback protocol version advertised until the initialize response tells us
 # what was actually negotiated.
-_DEFAULT_PROTOCOL_VERSION = "2025-03-26"
+DEFAULT_PROTOCOL_VERSION = "2025-03-26"
 
 SESSION_HEADER = "Mcp-Session-Id"
 _PROTOCOL_HEADER = "MCP-Protocol-Version"
@@ -103,7 +103,7 @@ class StreamableHttpClient:
             timeout_s = env_timeout()
         self._timeout_s = timeout_s
         self._session_id: str | None = None
-        self._protocol_version = _DEFAULT_PROTOCOL_VERSION
+        self._protocol_version = DEFAULT_PROTOCOL_VERSION
 
     def _headers(self, is_initialize: bool) -> dict[str, str]:
         headers = {**POST_HEADERS, "Via": VIA}

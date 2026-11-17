@@ -90,7 +90,6 @@ class Overlay:
         self._hidden_params = {t: frozenset(p) for t, p in hidden.items()}
         self.hidden_tools = frozenset(a.tool for a in self.actions if a.hides_tool)
         self._instruction_actions = [a for a in self.actions if a.tool is None]
-        self._changed_tools: set[str] = set()
         self._reported = False
 
     @property
@@ -113,7 +112,7 @@ class Overlay:
             if self._reported:
                 return None
             self._reported = True
-            changed = len(self._changed_tools)
+            changed = len({a.tool for a in self.actions if a.index in self._applied})
         return changed, self.unmatched()
 
     def apply_to_instructions(self, original: str) -> str:
@@ -129,13 +128,13 @@ class Overlay:
                 out.append(tool)
                 continue
             if name in self.hidden_tools:
-                self._mark([a.index for a in actions if a.hides_tool], name)
+                self._mark(a.index for a in actions if a.hides_tool)
                 continue
             tool = copy.deepcopy(tool)
             for a in actions:
                 skipped = _apply_one(tool, a)
                 if skipped is None:
-                    self._mark([a.index], name)
+                    self._mark([a.index])
                 elif skipped == _REQUIRED and a.param is not None:
                     self._keep(name, a.param)
             out.append(tool)
@@ -148,17 +147,19 @@ class Overlay:
                 a.label for a in self.actions if a.tool is not None and a.index not in self._applied
             ]
 
-    def _mark(self, indexes: list[int], tool_name: str) -> None:
+    def _mark(self, indexes: Any) -> None:
         with self._lock:
             self._applied.update(indexes)
-            if indexes:
-                self._changed_tools.add(tool_name)
 
 
 def _required(tool: dict[str, Any]) -> list[Any]:
     schema = tool.get("inputSchema")
     required = schema.get("required") if isinstance(schema, dict) else None
     return required if isinstance(required, list) else []
+
+
+def overlay_label(overlay: Overlay | None) -> str:
+    return overlay.label if overlay is not None else "none"
 
 
 _REQUIRED = "the tool requires it"

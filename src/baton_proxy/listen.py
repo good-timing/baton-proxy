@@ -45,7 +45,7 @@ from baton_proxy._jsonrpc import answers, owed_answer_id
 from baton_proxy._no_redirect import no_redirect_urlopen
 from baton_proxy._urls import shown_url
 from baton_proxy.emitter import Emitter
-from baton_proxy.overlay import Overlay
+from baton_proxy.overlay import Overlay, overlay_label
 from baton_proxy.proxy import (
     UPSTREAM_UNREACHABLE_ERROR_TYPE,
     MessageProcessor,
@@ -160,11 +160,11 @@ def forward_post(
     return resp
 
 
-def unreachable_reason(url: str, timeout_s: float = _PROBE_TIMEOUT_S) -> str | None:
+def unreachable_reason(url: str) -> str | None:
     """Why ``url`` looks down, or None if it answered (a 401, 405 or 501 counts)."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT}, method="HEAD")
-        with _open(req, timeout_s):
+        with _open(req, _PROBE_TIMEOUT_S):
             return None
     except urllib.error.HTTPError as exc:
         if 300 <= exc.code < 400:
@@ -653,20 +653,19 @@ def run_listener(host: str, port: int, upstream_url: str, overlay_path: str | No
             make_processor=make_processor,
             fallback_auth_token=os.environ.get("BATON_UPSTREAM_AUTH_TOKEN"),
             allowed_origins=frozenset(o.strip() for o in origins.split(",") if o.strip()),
-            overlay_label=overlay.label if overlay else "none",
+            overlay_label=overlay_label(overlay),
         )
     except ValueError as exc:
         logger.error("baton-proxy: %s", exc)
         emitter.stop()
         return 2
     except OSError as exc:
-        logger.error(
-            "baton-proxy: cannot listen on %s:%d: %s. Is another listener running? "
-            "Stop it or pass another --listen port.",
-            host,
-            port,
-            exc,
+        hint = (
+            " Is another listener running? Stop it or pass another --listen port."
+            if exc.errno == errno.EADDRINUSE
+            else ""
         )
+        logger.error("baton-proxy: cannot listen on %s:%d: %s.%s", host, port, exc, hint)
         emitter.stop()
         return 2
     logger.info(
@@ -675,7 +674,7 @@ def run_listener(host: str, port: int, upstream_url: str, overlay_path: str | No
         host,
         port,
         shown_url(upstream_url),
-        overlay.label if overlay else "none",
+        overlay_label(overlay),
         sorted(injection.names),
         injection.intent_param_mode,
         shown_sinks(config.event_sink),

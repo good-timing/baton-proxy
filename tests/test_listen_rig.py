@@ -69,6 +69,12 @@ def _wait_until_up(url: str, proc: subprocess.Popen[str]) -> None:
             time.sleep(0.1)
 
 
+def _env(**extra: str) -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
+    env.update(PYTHONPATH=str(Path(__file__).parent.parent / "src"), **extra)
+    return env
+
+
 def _end(proc: subprocess.Popen[str]) -> None:
     if proc.poll() is None:
         proc.terminate()
@@ -87,11 +93,7 @@ def rig(tmp_path: Path, request):
         path.write_text(json.dumps(OVERLAY))
         overlay_args = ["--overlay", str(path)]
     events = tmp_path / "events.jsonl"
-    env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
-    env.update(
-        PYTHONPATH=str(Path(__file__).parent.parent / "src"),
-        BATON_EVENT_SINK=f"file://{events}",
-    )
+    env = _env(BATON_EVENT_SINK=f"file://{events}")
     uport, lport = fixture_http_server.free_port(), fixture_http_server.free_port()
     procs: list[subprocess.Popen[str]] = []
     try:
@@ -187,9 +189,10 @@ def test_a_call_in_flight_at_ctrl_c_is_on_disk_with_its_outcome(rig):
         task = asyncio.ensure_future(_case(rig["proxied"], 0, "slow", {"seconds": 2, GOAL: "1"}))
         await asyncio.sleep(1)
         rig["listener"].send_signal(signal.SIGINT)
+        await asyncio.to_thread(rig["listener"].wait, 15)
         # The mcp client waits on a stream whose server is gone; it is not what is tested.
-        await asyncio.wait([task], timeout=5)
         task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(interrupted())
     _, stderr = rig["listener"].communicate(timeout=15)
@@ -258,11 +261,6 @@ def test_every_answer_names_the_overlay_round(rig):
 def _check(
     rig: dict[str, Any], listener: str | None = None, overlay: str | None = None
 ) -> subprocess.CompletedProcess[str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
-    env.update(
-        PYTHONPATH=str(Path(__file__).parent.parent / "src"),
-        BATON_UPSTREAM_AUTH_TOKEN=rig_upstream.TOKEN,
-    )
     return subprocess.run(
         [
             *(sys.executable, "-m", "baton_proxy", "check"),
@@ -270,7 +268,7 @@ def _check(
             *("--header", f"x-api-key: {rig_upstream.API_KEY}"),
             *(("--overlay", overlay) if overlay else ()),
         ],
-        env=env,
+        env=_env(BATON_UPSTREAM_AUTH_TOKEN=rig_upstream.TOKEN),
         capture_output=True,
         text=True,
         timeout=30,

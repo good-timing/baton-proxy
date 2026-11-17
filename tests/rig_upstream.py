@@ -16,10 +16,12 @@ import anyio
 import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
 
+from baton_proxy._llm_text import USER_GOAL_PARAM_NAME
+
 TOKEN = "rig-token"
 API_KEY = "rig-key"
 TAG = "beta"
-GOAL_PARAM = "user_goal"
+GOAL_PARAM = USER_GOAL_PARAM_NAME
 
 server = FastMCP("rig", log_level="WARNING")
 

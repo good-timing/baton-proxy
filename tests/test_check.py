@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from baton_proxy import check
+from baton_proxy._llm_text import USER_GOAL_PARAM_NAME as GOAL
 from baton_proxy.overlay import parse_overlay
 from baton_proxy.proxy import _inject_goal_params
 
@@ -16,7 +17,7 @@ ODD_TOOLS = [
     {"name": "no_schema"},
     {
         "name": "own_goal",
-        "inputSchema": {"type": "object", "properties": {"user_goal": {"type": "integer"}}},
+        "inputSchema": {"type": "object", "properties": {GOAL: {"type": "integer"}}},
     },
     {
         "name": "plain",
@@ -55,10 +56,11 @@ OVERLAY = {
 
 
 def test_the_overlays_changes_are_expected_and_nothing_else():
-    listed = _as_listed(parse_overlay(OVERLAY).apply_to_tools(ODD_TOOLS))
-    assert check.closest(ODD_TOOLS, listed, parse_overlay(OVERLAY)) == ([], [], [])
+    overlay = parse_overlay(OVERLAY)
+    listed = _as_listed(overlay.apply_to_tools(ODD_TOOLS))
+    assert check.closest(ODD_TOOLS, listed, overlay) == ([], [], [])
     one_more_gone = [t for t in listed if t["name"] != "no_schema"]
-    assert check.closest(ODD_TOOLS, one_more_gone, parse_overlay(OVERLAY)) == (
+    assert check.closest(ODD_TOOLS, one_more_gone, overlay) == (
         [],
         ["no_schema"],
         [],
@@ -70,7 +72,7 @@ def test_the_overlays_changes_are_expected_and_nothing_else():
     [("none", False, 0), ("sha256:other", False, 1), ("none", True, 1)],
 )
 def test_the_round_must_be_the_one_the_check_expects(
-    monkeypatch, capsys, tmp_path: Path, running, overlay_file, code
+    monkeypatch, tmp_path: Path, running, overlay_file, code
 ):
     lists = {"server": (ODD_TOOLS, None), "listener": (_as_listed(ODD_TOOLS), running)}
     monkeypatch.setattr(check, "list_tools", lambda url, headers: lists[url])
