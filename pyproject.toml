@@ -31,7 +31,9 @@ s3 = ["boto3>=1.34"]
 overlay = ["pyyaml>=6"]
 # ruff is capped to a minor: `format --check` is a CI gate, and formatter
 # output changes between minors would turn an untouched tree red.
-dev = ["pytest>=7.0", "ruff>=0.15.17,<0.16", "jsonschema>=4.0"]
+# mcp drives the listen rig with an eval runner's client (1.x: it passes an
+# httpx.AsyncClient and unpacks three streams); tests only.
+dev = ["pytest>=7.0", "ruff>=0.15.17,<0.16", "jsonschema>=4.0", "mcp>=1.24,<2"]
 
 [tool.hatch.version]
 path = "src/baton_proxy/__init__.py"
