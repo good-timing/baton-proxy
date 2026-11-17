@@ -589,6 +589,7 @@ def test_a_busy_port_exits_2_with_a_reason(monkeypatch, caplog):
             rc = run_listener("127.0.0.1", port, "http://127.0.0.1:1/mcp")
     assert rc == 2
     assert any(f"cannot listen on 127.0.0.1:{port}" in r.getMessage() for r in caplog.records)
+    assert any("pass another --listen port" in r.getMessage() for r in caplog.records)
 
 
 def test_a_client_response_is_forwarded_and_never_answered_or_closed(rig, monkeypatch):
@@ -776,6 +777,7 @@ def test_headers_that_describe_the_servers_own_body_are_not_passed_back():
             ("Connection", "X-Hop"),
             ("X-Hop", "1"),
             ("Retry-After", "2"),
+            ("Baton-Overlay", "upstream's own"),
         ]
     )
     assert kept == [("Set-Cookie", "lb=1"), ("Retry-After", "2")]
@@ -1001,3 +1003,33 @@ def test_the_injected_tool_called_without_an_id_gets_no_reply(rig):
     status, _, body = _post(url, call, headers)
     assert status == 202 and not body
     assert len(upstream.authorizations) == before
+
+
+class _Redirects(http.server.BaseHTTPRequestHandler):
+    def do_HEAD(self) -> None:
+        self.send_response(302)
+        self.send_header("Location", "http://elsewhere.invalid/")
+        self.end_headers()
+
+    def log_message(self, *_: Any) -> None:
+        pass
+
+
+def test_the_startup_probe_counts_any_http_answer_and_names_a_redirect():
+    from baton_proxy.listen import unreachable_reason
+
+    gated = fixture_http_server.serve(0, require_auth=TOKEN)
+    redirects = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Redirects)
+    for server in (gated, redirects):
+        threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
+    try:
+        gport, rport = gated.server_address[1], redirects.server_address[1]
+        assert unreachable_reason(f"http://127.0.0.1:{gport}/mcp") is None
+        assert "every call would get a 502" in (
+            unreachable_reason(f"http://127.0.0.1:{rport}/mcp") or ""
+        )
+        closed = fixture_http_server.free_port()
+        assert unreachable_reason(f"http://127.0.0.1:{closed}/mcp") == "ConnectionRefusedError"
+    finally:
+        gated.shutdown()
+        redirects.shutdown()

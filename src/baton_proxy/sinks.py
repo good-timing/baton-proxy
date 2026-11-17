@@ -282,6 +282,22 @@ def is_remote_spec(url_spec: str | None) -> bool:
     return any(s in ("http", "https", "s3") for s in spec_schemes(url_spec))
 
 
+def shown_sinks(url_spec: str | None) -> str:
+    """Where events go, with no credential: each leg's file path, host or bucket."""
+    shown = []
+    for part in _split_spec(url_spec):
+        parsed = urllib.parse.urlparse(part)
+        if parsed.scheme == "file":
+            shown.append(parsed.path or "<no path>")
+        elif parsed.scheme == "stderr":
+            shown.append("stderr")
+        elif parsed.scheme in ("http", "https", "s3") and parsed.hostname and "@" not in part:
+            shown.append(f"{parsed.scheme}://{parsed.hostname}")
+        else:
+            shown.append(f"{parsed.scheme or '?'}://<not shown>")
+    return ", ".join(shown)
+
+
 def find_file_sink_path(event_sink_url: str | None) -> str | None:
     """Return the first ``file://`` path in a (possibly comma-separated) sink
     URL spec, or None if no file sink is present.

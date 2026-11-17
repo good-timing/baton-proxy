@@ -54,6 +54,7 @@ from baton_proxy.proxy import (
     rpc_error,
     shown_url,
 )
+from baton_proxy.sinks import shown_sinks
 from baton_proxy.transport_http import (
     POST_HEADERS,
     SESSION_HEADER,
@@ -79,6 +80,7 @@ _HOP_BY_HOP = frozenset(
         "upgrade",
     }
 )
+OVERLAY_HEADER = "Baton-Overlay"
 # Each side has its own session id: the listener's to the client, the upstream's to it.
 _NEVER_RELAYED = _HOP_BY_HOP | {SESSION_HEADER.lower()}
 # Content-Type and Accept are ours because the body is re-serialized and parsed
@@ -97,8 +99,10 @@ _NOT_PASSED_BACK = _NEVER_RELAYED | {
     "etag",
     "last-modified",
     "server",
+    OVERLAY_HEADER.lower(),
 }
 _MAX_BODY = 8 * 1024 * 1024
+_PROBE_TIMEOUT_S = 5.0
 MAX_SESSIONS = 1024
 UPSTREAM_REFUSED_ERROR_TYPE = "proxy_upstream_refused"
 SESSION_CLOSED_ERROR_TYPE = "proxy_session_closed"
@@ -154,6 +158,20 @@ def forward_post(
     except urllib.error.URLError as e:
         raise UpstreamUnreachable(f"upstream connection failed: {e.reason}") from e
     return resp
+
+
+def unreachable_reason(url: str, timeout_s: float = _PROBE_TIMEOUT_S) -> str | None:
+    """Why ``url`` gave no HTTP answer, or None if it gave any (a 401 counts)."""
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT}, method="HEAD")
+    try:
+        with _open(req, timeout_s):
+            return None
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            return f"it redirects (HTTP {exc.code}), so every call would get a 502"
+        return None
+    except Exception as exc:
+        return type(getattr(exc, "reason", exc)).__name__
 
 
 def forward_delete(url: str, headers: dict[str, str], timeout_s: float) -> None:
@@ -296,6 +314,7 @@ def make_server(
     make_processor: Any,
     fallback_auth_token: str | None = None,
     allowed_origins: frozenset[str] = frozenset(),
+    overlay_label: str = "none",
 ) -> ThreadingHTTPServer:
     if fallback_auth_token and not _is_loopback(host):
         # Anyone who reached the port would act with the operator's credential.
@@ -313,6 +332,11 @@ def make_server(
 
         def log_message(self, format: str, *args: Any) -> None:
             logger.debug("baton-proxy listen: " + format, *args)
+
+        def end_headers(self) -> None:
+            # Every answer, error and stream says which round it belongs to.
+            self.send_header(OVERLAY_HEADER, overlay_label)
+            super().end_headers()
 
         def _upstream_headers(self, session: _Session | None) -> dict[str, str]:
             dropped = _NOT_FORWARDED | _connection_named(self.headers.items())
@@ -601,7 +625,7 @@ def parse_listen(value: str) -> tuple[str, int]:
 
 
 def run_listener(host: str, port: int, upstream_url: str, overlay_path: str | None = None) -> int:
-    _, injection, emitter, template = _bootstrap(overlay_path)
+    config, injection, emitter, template = _bootstrap(overlay_path)
     overlay: Overlay | None = template.overlay
 
     def make_processor(session_id: str) -> MessageProcessor:
@@ -617,22 +641,42 @@ def run_listener(host: str, port: int, upstream_url: str, overlay_path: str | No
             make_processor=make_processor,
             fallback_auth_token=os.environ.get("BATON_UPSTREAM_AUTH_TOKEN"),
             allowed_origins=frozenset(o.strip() for o in origins.split(",") if o.strip()),
+            overlay_label=overlay.label if overlay else "none",
         )
     except ValueError as exc:
         logger.error("baton-proxy: %s", exc)
         emitter.stop()
         return 2
     except OSError as exc:
-        logger.error("baton-proxy: cannot listen on %s:%d: %s", host, port, exc)
+        logger.error(
+            "baton-proxy: cannot listen on %s:%d: %s. Is another listener running? "
+            "Stop it or pass another --listen port.",
+            host,
+            port,
+            exc,
+        )
         emitter.stop()
         return 2
     logger.info(
-        "baton-proxy listening on http://%s:%d/ (upstream=%s, overlay=%s)",
+        "baton-proxy listening on http://%s:%d/ (upstream=%s, overlay=%s, tools=%s, "
+        "intent_param=%s, events=%s)",
         host,
         port,
         shown_url(upstream_url),
-        overlay.hash[:15] if overlay else "none",
+        overlay.label if overlay else "none",
+        sorted(injection.names),
+        injection.intent_param_mode,
+        shown_sinks(config.event_sink) if config.emission_enabled else "off",
     )
+    if not config.emission_enabled:
+        logger.warning("baton-proxy: nothing is being recorded; set BATON_EVENT_SINK")
+    why = unreachable_reason(upstream_url)
+    if why is not None:
+        logger.warning(
+            "baton-proxy: the upstream %s did not answer (%s); calls will fail until it does",
+            shown_url(upstream_url),
+            why,
+        )
     signal.signal(signal.SIGTERM, _stop_on_sigterm)
     try:
         server.serve_forever()

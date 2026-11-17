@@ -24,6 +24,7 @@ from baton_proxy.sinks import (
     StderrSink,
     find_file_sink_path,
     make_sink,
+    shown_sinks,
 )
 
 
@@ -328,3 +329,16 @@ def test_the_http_sink_never_follows_a_redirect_with_its_key() -> None:
         other.shutdown()
         redirector.shutdown()
     assert seen == []
+
+
+@pytest.mark.parametrize(
+    "spec, want",
+    [
+        ("stderr:,file:///tmp/baton-proxy.jsonl", "stderr, /tmp/baton-proxy.jsonl"),
+        ("https://api.example.com/v0?key=s3cret", "https://api.example.com"),
+        ("https://user:pw@api.example.com", "https://<not shown>"),
+        ("s3://bucket/prefix", "s3://bucket"),
+    ],
+)
+def test_shown_sinks_names_where_events_go_and_no_credential(spec, want):
+    assert shown_sinks(spec) == want

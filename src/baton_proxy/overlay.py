@@ -90,7 +90,13 @@ class Overlay:
         self._hidden_params = {t: frozenset(p) for t, p in hidden.items()}
         self.hidden_tools = frozenset(a.tool for a in self.actions if a.hides_tool)
         self._instruction_actions = [a for a in self.actions if a.tool is None]
-        self._unmatched_reported = False
+        self._changed_tools: set[str] = set()
+        self._reported = False
+
+    @property
+    def label(self) -> str:
+        """The hash as logs and the Baton-Overlay header show it: a prefix of the event's."""
+        return self.hash[:15]
 
     def hidden_params(self, tool_name: str) -> frozenset[str]:
         """Params a call to ``tool_name`` drops, because the agent was never shown them."""
@@ -101,13 +107,14 @@ class Overlay:
         with self._lock:
             self._hidden_params[tool_name] = self.hidden_params(tool_name) - {param}
 
-    def unmatched_once(self) -> list[str]:
-        """``unmatched()`` the first time it is asked across every session, then nothing."""
+    def report_once(self) -> tuple[int, list[str]] | None:
+        """Tools changed so far and ``unmatched()``, the first time across every session."""
         with self._lock:
-            if self._unmatched_reported:
-                return []
-            self._unmatched_reported = True
-        return self.unmatched()
+            if self._reported:
+                return None
+            self._reported = True
+            changed = len(self._changed_tools)
+        return changed, self.unmatched()
 
     def apply_to_instructions(self, original: str) -> str:
         return changed_text(original, self._instruction_actions)
@@ -122,13 +129,13 @@ class Overlay:
                 out.append(tool)
                 continue
             if name in self.hidden_tools:
-                self._mark(a.index for a in actions if a.hides_tool)
+                self._mark([a.index for a in actions if a.hides_tool], name)
                 continue
             tool = copy.deepcopy(tool)
             for a in actions:
                 skipped = _apply_one(tool, a)
                 if skipped is None:
-                    self._mark([a.index])
+                    self._mark([a.index], name)
                 elif skipped == _REQUIRED and a.param is not None:
                     self._keep(name, a.param)
             out.append(tool)
@@ -141,9 +148,11 @@ class Overlay:
                 a.label for a in self.actions if a.tool is not None and a.index not in self._applied
             ]
 
-    def _mark(self, indexes: Any) -> None:
+    def _mark(self, indexes: list[int], tool_name: str) -> None:
         with self._lock:
             self._applied.update(indexes)
+            if indexes:
+                self._changed_tools.add(tool_name)
 
 
 def _required(tool: dict[str, Any]) -> list[Any]:

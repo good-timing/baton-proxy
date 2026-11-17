@@ -1144,7 +1144,7 @@ class MessageProcessor:
             if overlaid_tools is not None:
                 result["tools"] = overlaid_tools
                 if not result.get("nextCursor"):
-                    self._report_unmatched_overlay_targets()
+                    self._report_overlay_once()
             if "protocolVersion" in result or "serverInfo" in result:
                 original = result.get("instructions")
                 replaced = self._overlay.apply_to_instructions(
@@ -1155,14 +1155,24 @@ class MessageProcessor:
         except Exception:
             logger.exception("baton-proxy: overlay failed, forwarding response unmodified")
 
-    def _report_unmatched_overlay_targets(self) -> None:
-        unmatched = self._overlay.unmatched_once()
+    def _report_overlay_once(self) -> None:
+        report = self._overlay.report_once()
+        if report is None:
+            return
+        changed, unmatched = report
         if unmatched:
             logger.error(
-                "baton-proxy: overlay %s has %d action(s) that did not apply: %s",
-                self._overlay.hash[:15],
+                "baton-proxy: overlay %s changed %d tool(s); %d action(s) did not apply: %s",
+                self._overlay.label,
+                changed,
                 len(unmatched),
                 ", ".join(unmatched),
+            )
+        else:
+            logger.info(
+                "baton-proxy: overlay %s changed %d tool(s); every action applied",
+                self._overlay.label,
+                changed,
             )
 
     def _inject_intent_params(self, msg: dict[str, Any]) -> None:
@@ -1419,7 +1429,7 @@ def _bootstrap(
     if overlay is not None:
         logger.info(
             "baton-proxy: overlay %s loaded from %s (%d actions)",
-            overlay.hash[:15],
+            overlay.label,
             overlay_path,
             len(overlay.actions),
         )
