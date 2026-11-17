@@ -1020,7 +1020,13 @@ class _AnswersHead(http.server.BaseHTTPRequestHandler):
 
 @pytest.mark.parametrize(
     "status, want",
-    [(401, None), (405, None), (302, "a redirected call gets a 502"), (503, "HTTP 503")],
+    [
+        (401, None),
+        (405, None),
+        (501, None),
+        (302, "a redirected call gets a 502"),
+        (503, "HTTP 503"),
+    ],
 )
 def test_the_startup_probe_counts_an_answer_and_flags_a_redirect_or_an_outage(status, want):
     from baton_proxy.listen import unreachable_reason

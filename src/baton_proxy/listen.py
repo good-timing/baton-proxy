@@ -43,6 +43,7 @@ from typing import Any
 from baton_proxy import USER_AGENT as _USER_AGENT
 from baton_proxy._jsonrpc import answers, owed_answer_id
 from baton_proxy._no_redirect import no_redirect_urlopen
+from baton_proxy._urls import shown_url
 from baton_proxy.emitter import Emitter
 from baton_proxy.overlay import Overlay
 from baton_proxy.proxy import (
@@ -52,7 +53,6 @@ from baton_proxy.proxy import (
     client_action,
     no_response_error,
     rpc_error,
-    shown_url,
 )
 from baton_proxy.sinks import shown_sinks
 from baton_proxy.transport_http import (
@@ -161,7 +161,7 @@ def forward_post(
 
 
 def unreachable_reason(url: str, timeout_s: float = _PROBE_TIMEOUT_S) -> str | None:
-    """Why ``url`` looks down, or None if it answered (a 401 or 405 counts)."""
+    """Why ``url`` looks down, or None if it answered (a 401, 405 or 501 counts)."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT}, method="HEAD")
         with _open(req, timeout_s):
@@ -169,7 +169,8 @@ def unreachable_reason(url: str, timeout_s: float = _PROBE_TIMEOUT_S) -> str | N
     except urllib.error.HTTPError as exc:
         if 300 <= exc.code < 400:
             return f"HTTP {exc.code} to a request with no credential; a redirected call gets a 502"
-        return f"HTTP {exc.code}" if exc.code >= 500 else None
+        # 501 is a server that has no HEAD, which says nothing about its POST.
+        return f"HTTP {exc.code}" if exc.code >= 500 and exc.code != 501 else None
     except Exception as exc:
         return type(getattr(exc, "reason", exc)).__name__
 

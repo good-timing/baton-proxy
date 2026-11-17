@@ -97,18 +97,18 @@ The server's answer goes back with its own headers, such as `Set-Cookie`, minus 
 
 Each client gets its own `Mcp-Session-Id`, so clients stay apart even when the upstream has no sessions. Each client session is one Baton session, and its open calls are closed in that session when it ends. An answer the server streams is passed on as it arrives, so a question the server asks during a call reaches the client in time. The `--url` form without `listen` waits for the whole answer, so use `listen` for servers that ask questions mid-call. The proxy gives up on a server that sends nothing for 60 seconds, which includes a server waiting for the answer to its question. Set `BATON_UPSTREAM_TIMEOUT` to more seconds if those answers can take longer, knowing a dead server then takes that long to notice too. The listener does not offer the standing server-to-client stream.
 
-Even with no overlay the agent does not see the server exactly as it is. Every tool gains a required `user_goal` parameter, which the proxy records and strips before the call goes on, and the server's instructions gain a short paragraph asking for it. Compare two runs through the listener, with and without an overlay, to see what the overlay alone changes.
+Even with no overlay the agent does not see the server exactly as it is. Every tool gains a `user_goal` parameter, which the proxy records and strips before the call goes on. It is listed as required unless `BATON_INTENT_PARAM=optional`, and a tool that already declares its own `user_goal` is left as it is. The server's instructions also gain a short paragraph asking for it. Compare two runs through the listener, with and without an overlay, to see what the overlay alone changes.
 
-At startup the listener prints one line naming the overlay (or `none`), what the proxy adds and where events go, and it warns if the server gives no HTTP answer. The first complete tool listing logs how many tools the overlay changed, and any action it could not apply is logged as an error. Every answer carries a `Baton-Overlay` header holding the overlay's hash or `none`, so a client can tell which run it is in.
+At startup the listener prints one line naming the overlay (or `none`), what the proxy adds and where events go, and it warns if the server does not answer, answers with a server error or redirects. The first complete tool listing logs how many tools the overlay changed, and any action it could not apply is logged as an error. Every answer carries a `Baton-Overlay` header holding the start of the overlay's hash, as the startup line shows it, or `none`. So a client can tell which run it is in.
 
-To confirm a running listener shows the server's tools, compare the two with the same headers.
+To confirm a running listener shows what it should, compare it with the server using the same headers. Pass `--overlay` with the file the listener was started with, if any.
 
 ```sh
 baton-proxy check --listener 'http://127.0.0.1:8710/mcp?tag=beta' \
   --url 'https://mcp.example.com/mcp?tag=beta' --header 'x-api-key: ...'
 ```
 
-`BATON_UPSTREAM_AUTH_TOKEN` fills `Authorization` when no `--header` sets it. It prints `same` when the only difference is the proxy's own parameter, or names the tools that are changed, hidden or added. It exits 1 for a difference with no overlay loaded and 2 when either side cannot be listed.
+`BATON_UPSTREAM_AUTH_TOKEN` fills `Authorization` when no `--header` sets it. The check applies the overlay and the proxy's own parameter to the server's list, the way the listener does, and prints `same` when the result matches. Otherwise it names the tools that are changed, missing or added. It exits 1 for any difference, including a listener running a different overlay, and 2 when either side cannot be listed.
 
 The listener does not pass OAuth sign-in through. A client that discovers how to sign in by asking the server cannot do it through the listener, so send a fixed token in a header instead, or set `BATON_UPSTREAM_AUTH_TOKEN`.
 
@@ -134,9 +134,9 @@ JSON always works. YAML needs `pip install 'baton-proxy[overlay]'`. A malformed 
 
 Each client session is one Baton session with its own `session_id`, and `agent_runtime` names the client from its handshake. Every event is one JSON object with `event_type`, `session_id`, `sequence_number`, `captured_at` and a `payload`.
 
-- `surface_snapshot` holds the tools and instructions the server offered and the overlay's full hash under `seam_augmentations.overlay`.
+- `surface_snapshot` holds the tools and instructions the server offered. With an overlay loaded, its full hash is at `seam_augmentations.overlay.hash`, and the `Baton-Overlay` header shows the start of it.
 - `tool_call_start` holds `tool_name`, the `params` the server received and the agent's `user_goal` as `call_intent`.
-- `tool_call_end` holds the `result` and `duration_ms`, and `tool_call_error` holds an `error_type` instead. Each pairs with its start by `call_id`.
+- `tool_call_end` holds the `result` and `duration_ms`. `tool_call_error` holds an `error_type`, and the `result` too when the tool itself returned the error. Each pairs with its start by the `call_id` beside `session_id`.
 
 A call still open when its session ends, or when the listener stops, is closed with an error, so every start has an outcome. Header values and query strings are never recorded. To join events to a harness's own results, match each case's time window to `captured_at` and its calls in order.
 

@@ -121,6 +121,7 @@ def rig(tmp_path: Path, request):
             "proxied": f"http://127.0.0.1:{lport}/mcp{QUERY}",
             "listener": procs[1],
             "events": events,
+            "overlay": overlay_args[1] if overlay_args else None,
         }
     finally:
         for proc in reversed(procs):
@@ -254,7 +255,9 @@ def test_every_answer_names_the_overlay_round(rig):
     assert len(labels) == 1 and labels.pop().startswith("sha256:")
 
 
-def _check(rig: dict[str, Any], listener: str | None = None) -> subprocess.CompletedProcess[str]:
+def _check(
+    rig: dict[str, Any], listener: str | None = None, overlay: str | None = None
+) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
     env.update(
         PYTHONPATH=str(Path(__file__).parent.parent / "src"),
@@ -265,6 +268,7 @@ def _check(rig: dict[str, Any], listener: str | None = None) -> subprocess.Compl
             *(sys.executable, "-m", "baton_proxy", "check"),
             *("--listener", listener or rig["proxied"], "--url", rig["direct"]),
             *("--header", f"x-api-key: {rig_upstream.API_KEY}"),
+            *(("--overlay", overlay) if overlay else ()),
         ],
         env=env,
         capture_output=True,
@@ -277,16 +281,17 @@ def test_check_says_round_a_shows_the_servers_tools(rig):
     done = _check(rig)
     assert done.returncode == 0, done.stderr
     assert "overlay none" in done.stdout
-    assert "same: the listener shows the server's tools" in done.stdout
+    assert "same: the listener shows what the server and the overlay say" in done.stdout
 
 
 @pytest.mark.parametrize("rig", ["overlay"], indirect=True)
-def test_check_names_what_round_bs_overlay_changed(rig):
-    done = _check(rig)
+def test_check_confirms_round_b_against_its_overlay_file(rig):
+    done = _check(rig, overlay=rig["overlay"])
     assert done.returncode == 0, done.stderr
-    assert "changed: echo" in done.stdout
-    assert "hidden: slow, whoami" in done.stdout
-    assert "different, as the overlay says" in done.stdout
+    assert "same: the listener shows what the server and the overlay say" in done.stdout
+    without = _check(rig)
+    assert without.returncode == 1
+    assert "this check expects none" in without.stdout
 
 
 def test_check_refuses_a_listener_that_is_not_one(rig):

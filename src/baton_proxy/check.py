@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
+import copy
 import os
 import sys
 from typing import Any
 
 from baton_proxy._jsonrpc import answers
-from baton_proxy._llm_text import INTENT_PARAM_NAMES
+from baton_proxy._urls import shown_url
 from baton_proxy.listen import (
     OVERLAY_HEADER,
     UpstreamRefused,
@@ -17,7 +17,8 @@ from baton_proxy.listen import (
     forward_delete,
     forward_post,
 )
-from baton_proxy.proxy import ANNOTATE_TOOL_NAME, shown_url
+from baton_proxy.overlay import Overlay, OverlayError, load_overlay
+from baton_proxy.proxy import ANNOTATE_TOOL_NAME, _inject_goal_params
 from baton_proxy.transport_http import SESSION_HEADER, env_timeout, read_messages
 
 _PROTOCOL_VERSION = "2025-06-18"
@@ -38,16 +39,19 @@ def list_tools(url: str, headers: dict[str, str]) -> tuple[list[dict[str, Any]],
         nonlocal overlay
         try:
             resp = forward_post(url, msg, sent, timeout_s)
+            with resp:
+                overlay = resp.headers.get(OVERLAY_HEADER, overlay)
+                session = resp.headers.get(SESSION_HEADER)
+                if session and SESSION_HEADER not in sent:
+                    sent[SESSION_HEADER] = session
+                messages = read_messages(resp, msg.get("id"))
         except UpstreamRefused as refused:
             raise CheckFailed(f"{shown_url(url)} answered HTTP {refused.status}") from None
         except UpstreamUnreachable as exc:
             raise CheckFailed(f"{shown_url(url)} is unreachable: {exc}") from None
-        with resp:
-            overlay = resp.headers.get(OVERLAY_HEADER, overlay)
-            session = resp.headers.get(SESSION_HEADER)
-            if session and SESSION_HEADER not in sent:
-                sent[SESSION_HEADER] = session
-            messages = read_messages(resp, msg.get("id"))
+        except Exception as exc:
+            # Only the type: urllib's messages can quote the URL and its query.
+            raise CheckFailed(f"{shown_url(url)} failed: {type(exc).__name__}") from None
         answer = next((m for m in messages if answers(m, msg.get("id"))), None)
         if "id" in msg and (answer is None or "result" not in answer):
             raise CheckFailed(f"{shown_url(url)} did not answer {msg['method']}: {answer}")
@@ -58,7 +62,10 @@ def list_tools(url: str, headers: dict[str, str]) -> tuple[list[dict[str, Any]],
         "capabilities": {},
         "clientInfo": {"name": "baton-proxy-check", "version": "1"},
     }
-    call({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": init})
+    answer = call({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": init}) or {}
+    version = answer.get("result", {}).get("protocolVersion")
+    if isinstance(version, str):
+        sent["MCP-Protocol-Version"] = version
     try:
         call({"jsonrpc": "2.0", "method": "notifications/initialized"})
         tools: list[dict[str, Any]] = []
@@ -66,46 +73,47 @@ def list_tools(url: str, headers: dict[str, str]) -> tuple[list[dict[str, Any]],
         for page in range(_MAX_PAGES):
             params = {"cursor": cursor} if cursor else {}
             msg = {"jsonrpc": "2.0", "id": 2 + page, "method": "tools/list", "params": params}
-            result = (call(msg) or {})["result"]
-            tools.extend(result.get("tools") or [])
+            result = (call(msg) or {}).get("result")
+            if not isinstance(result, dict) or not isinstance(result.get("tools"), list):
+                raise CheckFailed(f"{shown_url(url)} sent a tools/list result with no tool list")
+            tools.extend(result["tools"])
             cursor = result.get("nextCursor")
             if not cursor:
                 break
+        else:
+            raise CheckFailed(f"{shown_url(url)} lists more than {_MAX_PAGES} pages of tools")
     finally:
         if SESSION_HEADER in sent:
             forward_delete(url, sent, timeout_s)
     return tools, overlay
 
 
-def without_proxy_additions(tool: dict[str, Any]) -> dict[str, Any]:
-    """``tool`` as the listener would show it with nothing of the proxy's own."""
-    tool = json.loads(json.dumps(tool))
-    schema = tool.get("inputSchema")
-    if isinstance(schema, dict):
-        props = schema.get("properties")
-        required = schema.get("required")
-        for name in INTENT_PARAM_NAMES:
-            if isinstance(props, dict):
-                props.pop(name, None)
-            if isinstance(required, list) and name in required:
-                required.remove(name)
-        if required == []:
-            del schema["required"]
-    return tool
+def expected(direct: list[dict[str, Any]], overlay: Overlay | None, mode: str) -> list[Any]:
+    """What the listener should list: the overlay, then the goal param, as the proxy does."""
+    tools = copy.deepcopy(direct)
+    if overlay is not None:
+        tools = overlay.apply_to_tools(tools)
+    for tool in tools:
+        _inject_goal_params(tool, mode)
+    return tools
 
 
 def compare(
-    direct: list[dict[str, Any]], proxied: list[dict[str, Any]]
+    want: list[Any], proxied: list[dict[str, Any]]
 ) -> tuple[list[str], list[str], list[str]]:
     """Tool names changed, missing from the listener, and added by it."""
-    theirs = {t.get("name"): t for t in direct}
-    ours = {
-        t.get("name"): without_proxy_additions(t)
-        for t in proxied
-        if t.get("name") != ANNOTATE_TOOL_NAME
-    }
+    theirs = {t.get("name"): t for t in want if isinstance(t, dict)}
+    ours = {t.get("name"): t for t in proxied if t.get("name") != ANNOTATE_TOOL_NAME}
     changed = sorted(n for n in theirs.keys() & ours.keys() if theirs[n] != ours[n])
     return changed, sorted(theirs.keys() - ours.keys()), sorted(ours.keys() - theirs.keys())
+
+
+def closest(direct: list[dict[str, Any]], proxied: list[dict[str, Any]], overlay: Overlay | None):
+    """``compare`` under whichever goal-param mode the listener runs."""
+    results = [
+        compare(expected(direct, overlay, mode), proxied) for mode in ("required", "optional")
+    ]
+    return min(results, key=lambda r: sum(map(len, r)))
 
 
 def _headers(pairs: list[str]) -> dict[str, str]:
@@ -126,11 +134,15 @@ def main(argv: list[str]) -> int:
         prog="baton-proxy check",
         description=(
             "List tools through a running `baton-proxy listen` and from the server "
-            "directly, with the same headers, and say whether they match."
+            "directly, with the same headers, and say whether the listener shows "
+            "what it should."
         ),
     )
     parser.add_argument("--listener", required=True, help="The listener's URL, as clients use it")
     parser.add_argument("--url", required=True, help="The server's own URL, query included")
+    parser.add_argument(
+        "--overlay", default=None, metavar="PATH", help="The overlay the listener was started with"
+    )
     parser.add_argument(
         "--header",
         action="append",
@@ -141,28 +153,30 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     try:
         headers = _headers(args.header)
-    except ValueError as exc:
+        overlay = load_overlay(args.overlay) if args.overlay else None
+    except (ValueError, OverlayError) as exc:
         parser.error(str(exc))
     try:
         direct, _ = list_tools(args.url, headers)
-        proxied, overlay = list_tools(args.listener, headers)
+        proxied, running = list_tools(args.listener, headers)
     except CheckFailed as exc:
         print(f"check failed: {exc}", file=sys.stderr)
         return 2
-    changed, missing, added = compare(direct, proxied)
     print(f"server:   {len(direct)} tools at {shown_url(args.url)}")
-    print(f"listener: {len(proxied)} tools at {shown_url(args.listener)}, overlay {overlay}")
-    if overlay is None:
+    print(f"listener: {len(proxied)} tools at {shown_url(args.listener)}, overlay {running}")
+    if running is None:
         print("check failed: no Baton-Overlay header; is --listener a baton-proxy listener?")
         return 2
+    want = overlay.label if overlay else "none"
+    if running != want:
+        print(f"different: the listener runs overlay {running}, and this check expects {want}")
+        return 1
+    changed, missing, added = closest(direct, proxied, overlay)
     if not (changed or missing or added):
-        print("same: the listener shows the server's tools, plus the proxy's goal param")
+        print("same: the listener shows what the server and the overlay say it should")
         return 0
-    for label, names in (("changed", changed), ("hidden", missing), ("added", added)):
+    for label, names in (("changed", changed), ("missing", missing), ("added", added)):
         if names:
             print(f"{label}: {', '.join(names)}")
-    if overlay == "none":
-        print("different, with no overlay loaded")
-        return 1
-    print("different, as the overlay says")
-    return 0
+    print("different from what the server and the overlay say")
+    return 1
