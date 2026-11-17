@@ -366,7 +366,7 @@ def _project_path(value: str) -> str:
     return os.path.abspath(os.path.expanduser(value))
 
 
-class _Parser(argparse.ArgumentParser):
+class KeyHidingParser(argparse.ArgumentParser):
     """argparse echoes a stray argument whole, and a DSN given without --dsn carries the key."""
 
     def error(self, message: str) -> NoReturn:
@@ -374,7 +374,7 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _parser() -> argparse.ArgumentParser:
-    p = _Parser(prog="baton-proxy", description="Put an MCP server behind baton-proxy.")
+    p = KeyHidingParser(prog="baton-proxy", description="Put an MCP server behind baton-proxy.")
     sub = p.add_subparsers(dest="cmd", required=True)
     for cmd in ("wrap", "unwrap"):
         s = sub.add_parser(cmd)
@@ -404,7 +404,7 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-def _dsn_env(raw: str) -> dict[str, str]:
+def dsn_env(raw: str) -> dict[str, str]:
     """The BATON_* values a Console DSN carries. The refusal never echoes it: it holds the key."""
     not_a_dsn = Refused(
         "the --dsn is not a Console DSN, which looks like "
@@ -443,7 +443,7 @@ def _dsn_env(raw: str) -> dict[str, str]:
 
 
 def _baton_env(args: argparse.Namespace) -> dict[str, str]:
-    return _dsn_env(args.dsn) if args.dsn is not None else {}
+    return dsn_env(args.dsn) if args.dsn is not None else {}
 
 
 def cli(argv: list[str]) -> int:

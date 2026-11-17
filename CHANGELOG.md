@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`baton-proxy listen --dsn`** sends events to the Console and keeps the local sinks `BATON_EVENT_SINK` names, or its default. A remote sink next to a DSN is refused, so the DSN's key and consent apply only to the Console. A refused DSN never repeats its key.
+
 ## [0.8.0] — 2026-11-16
 
 ### Added

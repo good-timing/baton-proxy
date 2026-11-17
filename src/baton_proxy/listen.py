@@ -44,6 +44,7 @@ from baton_proxy import USER_AGENT as _USER_AGENT
 from baton_proxy._jsonrpc import answers, owed_answer_id
 from baton_proxy._no_redirect import no_redirect_urlopen
 from baton_proxy._urls import shown_url
+from baton_proxy.config import DEFAULT_EVENT_SINK
 from baton_proxy.emitter import Emitter
 from baton_proxy.overlay import Overlay, overlay_label
 from baton_proxy.proxy import (
@@ -54,7 +55,7 @@ from baton_proxy.proxy import (
     no_response_error,
     rpc_error,
 )
-from baton_proxy.sinks import shown_sinks
+from baton_proxy.sinks import is_remote_spec, shown_sinks, spec_schemes
 from baton_proxy.transport_http import (
     POST_HEADERS,
     SESSION_HEADER,
@@ -64,6 +65,7 @@ from baton_proxy.transport_http import (
     iter_sse,
     read_messages,
 )
+from baton_proxy.wrap import KeyHidingParser, Refused, dsn_env
 
 logger = logging.getLogger("baton_proxy")
 
@@ -703,19 +705,43 @@ def _stop_on_sigterm(*_: Any) -> None:
     raise KeyboardInterrupt
 
 
-def main(argv: list[str]) -> int:
-    import argparse
+def console_env(dsn: str) -> dict[str, str]:
+    """The DSN's values, with the Console added to the local sinks BATON_EVENT_SINK names."""
+    env = dsn_env(dsn)
+    own = os.environ.get("BATON_EVENT_SINK", "")
+    if not spec_schemes(own):
+        own = DEFAULT_EVENT_SINK
+    # The DSN's key and consent would reach every remote leg.
+    # test_a_dsn_never_lends_its_key_or_consent_to_another_remote_sink
+    if is_remote_spec(own):
+        raise Refused("with --dsn, BATON_EVENT_SINK may name only file:// and stderr: sinks")
+    # Local legs first: a slow Console must not hold up the file the agent reads back.
+    # test_a_dsn_adds_the_console_after_the_local_sinks
+    env["BATON_EVENT_SINK"] = f"{own},{env['BATON_EVENT_SINK']}"
+    return env
 
-    parser = argparse.ArgumentParser(
+
+def main(argv: list[str]) -> int:
+    parser = KeyHidingParser(
         prog="baton-proxy listen",
         description="Serve a remote MCP server at a local URL, with Baton capture and overlays.",
     )
     parser.add_argument("--listen", required=True, metavar="HOST:PORT")
     parser.add_argument("--url", required=True, help="The MCP server to sit in front of")
     parser.add_argument("--overlay", default=None, metavar="PATH", help="Overlay file to apply")
+    parser.add_argument(
+        "--dsn",
+        default=None,
+        help=(
+            "The DSN from the Console's Settings. Events go there and to the local "
+            "sinks BATON_EVENT_SINK names, or to its default."
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         host, port = parse_listen(args.listen)
-    except ValueError as exc:
+        if args.dsn is not None:
+            os.environ.update(console_env(args.dsn))
+    except (ValueError, Refused) as exc:
         parser.error(str(exc))
     return run_listener(host, port, args.url, args.overlay)

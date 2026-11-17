@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import fixture_http_server  # noqa: E402
 
+from baton_proxy.config import DEFAULT_EVENT_SINK, Config  # noqa: E402
 from baton_proxy.listen import (  # noqa: E402
     UpstreamRefused,
     make_server,
@@ -1052,3 +1053,65 @@ def test_the_startup_probe_names_a_failure_by_type_only(url, want):
     from baton_proxy.listen import unreachable_reason
 
     assert unreachable_reason(url) == want
+
+
+DSN_KEY = "baton_pk_" + "A" * 43
+DSN = f"https://{DSN_KEY}@baton.example.com/ten_0a1b2c3d/srv-1f2e3d4c"
+
+
+def _main_env(monkeypatch, *argv: str, sink: str | None = None) -> dict[str, str]:
+    import baton_proxy.listen as listen
+
+    env = {} if sink is None else {"BATON_EVENT_SINK": sink}
+    monkeypatch.setattr(os, "environ", env)
+    monkeypatch.setattr(listen, "run_listener", lambda *a: 0)
+    assert listen.main(["--listen", "127.0.0.1:8710", "--url", "http://u/mcp", *argv]) == 0
+    return env
+
+
+@pytest.mark.parametrize(
+    "own, sent_to",
+    [
+        (None, f"{DEFAULT_EVENT_SINK},https://baton.example.com"),
+        (" , ", f"{DEFAULT_EVENT_SINK},https://baton.example.com"),
+        ("file:///tmp/a.jsonl", "file:///tmp/a.jsonl,https://baton.example.com"),
+    ],
+)
+def test_a_dsn_adds_the_console_after_the_local_sinks(monkeypatch, own, sent_to):
+    _main_env(monkeypatch, "--dsn", DSN, sink=own)
+    config = Config.from_env()
+    assert config.event_sink == sent_to
+    assert (config.api_key, config.tenant_id, config.consent_token) == (
+        DSN_KEY,
+        "ten_0a1b2c3d",
+        "customer-consented",
+    )
+
+
+@pytest.mark.parametrize("own", ["https://collector.example.com", "file:///tmp/a,s3://bucket/p"])
+def test_a_dsn_never_lends_its_key_or_consent_to_another_remote_sink(monkeypatch, capsys, own):
+    with pytest.raises(SystemExit) as exit_:
+        _main_env(monkeypatch, "--dsn", DSN, sink=own)
+    assert exit_.value.code == 2
+    assert "may name only file:// and stderr: sinks" in capsys.readouterr().err
+
+
+def test_without_a_dsn_listen_sets_nothing(monkeypatch):
+    assert _main_env(monkeypatch, sink="stderr:") == {"BATON_EVENT_SINK": "stderr:"}
+
+
+@pytest.mark.parametrize(
+    "argv, says",
+    [
+        (("--dsn", DSN.replace("/ten_0a1b2c3d", "")), "not a Console DSN"),
+        ((DSN,), "<key not shown>"),
+    ],
+    ids=["malformed", "no-flag"],
+)
+def test_a_refused_dsn_never_prints_its_key(monkeypatch, capsys, argv, says):
+    with pytest.raises(SystemExit) as exit_:
+        _main_env(monkeypatch, *argv)
+    assert exit_.value.code == 2
+    err = capsys.readouterr().err
+    assert DSN_KEY not in err
+    assert says in err
