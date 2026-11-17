@@ -161,17 +161,27 @@ def forward_post(
 
 
 def unreachable_reason(url: str, timeout_s: float = _PROBE_TIMEOUT_S) -> str | None:
-    """Why ``url`` gave no HTTP answer, or None if it gave any (a 401 counts)."""
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT}, method="HEAD")
+    """Why ``url`` looks down, or None if it answered (a 401 or 405 counts)."""
     try:
+        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT}, method="HEAD")
         with _open(req, timeout_s):
             return None
     except urllib.error.HTTPError as exc:
         if 300 <= exc.code < 400:
-            return f"it redirects (HTTP {exc.code}), so every call would get a 502"
-        return None
+            return f"HTTP {exc.code} to a request with no credential; a redirected call gets a 502"
+        return f"HTTP {exc.code}" if exc.code >= 500 else None
     except Exception as exc:
         return type(getattr(exc, "reason", exc)).__name__
+
+
+def _warn_if_unreachable(url: str) -> None:
+    why = unreachable_reason(url)
+    if why is not None:
+        logger.warning(
+            "baton-proxy: the upstream %s did not answer cleanly (%s); calls may fail",
+            shown_url(url),
+            why,
+        )
 
 
 def forward_delete(url: str, headers: dict[str, str], timeout_s: float) -> None:
@@ -334,7 +344,8 @@ def make_server(
             logger.debug("baton-proxy listen: " + format, *args)
 
         def end_headers(self) -> None:
-            # Every answer, error and stream says which round it belongs to.
+            # Every answer, error and stream says which round it belongs to;
+            # see test_every_answer_names_the_overlay_round.
             self.send_header(OVERLAY_HEADER, overlay_label)
             super().end_headers()
 
@@ -666,18 +677,11 @@ def run_listener(host: str, port: int, upstream_url: str, overlay_path: str | No
         overlay.label if overlay else "none",
         sorted(injection.names),
         injection.intent_param_mode,
-        shown_sinks(config.event_sink) if config.emission_enabled else "off",
+        shown_sinks(config.event_sink),
     )
-    if not config.emission_enabled:
-        logger.warning("baton-proxy: nothing is being recorded; set BATON_EVENT_SINK")
-    why = unreachable_reason(upstream_url)
-    if why is not None:
-        logger.warning(
-            "baton-proxy: the upstream %s did not answer (%s); calls will fail until it does",
-            shown_url(upstream_url),
-            why,
-        )
     signal.signal(signal.SIGTERM, _stop_on_sigterm)
+    # Off the main thread, so a slow upstream never holds up serving or Ctrl+C.
+    threading.Thread(target=_warn_if_unreachable, args=(upstream_url,), daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

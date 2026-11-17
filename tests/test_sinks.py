@@ -336,7 +336,8 @@ def test_the_http_sink_never_follows_a_redirect_with_its_key() -> None:
     [
         ("stderr:,file:///tmp/baton-proxy.jsonl", "stderr, /tmp/baton-proxy.jsonl"),
         ("https://api.example.com/v0?key=s3cret", "https://api.example.com"),
-        ("https://user:pw@api.example.com", "https://<not shown>"),
+        ("http://127.0.0.1:4318", "http://127.0.0.1:4318"),
+        ("https://user:pw@api.example.com", "<not shown>"),
         ("s3://bucket/prefix", "s3://bucket"),
     ],
 )

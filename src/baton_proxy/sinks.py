@@ -37,6 +37,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from baton_proxy._no_redirect import no_redirect_urlopen
+from baton_proxy._urls import shown_url
 
 logger = logging.getLogger(__name__)
 
@@ -291,8 +292,10 @@ def shown_sinks(url_spec: str | None) -> str:
             shown.append(parsed.path or "<no path>")
         elif parsed.scheme == "stderr":
             shown.append("stderr")
-        elif parsed.scheme in ("http", "https", "s3") and parsed.hostname and "@" not in part:
-            shown.append(f"{parsed.scheme}://{parsed.hostname}")
+        elif parsed.scheme in ("http", "https"):
+            shown.append(shown_url(part))
+        elif parsed.scheme == "s3" and parsed.hostname and "@" not in part:
+            shown.append(f"s3://{parsed.hostname}")
         else:
             shown.append(f"{parsed.scheme or '?'}://<not shown>")
     return ", ".join(shown)

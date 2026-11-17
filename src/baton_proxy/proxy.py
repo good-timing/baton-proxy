@@ -38,7 +38,6 @@ import signal
 import subprocess
 import sys
 import threading
-import urllib.parse
 import uuid
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -56,6 +55,7 @@ from baton_proxy._llm_text import (
     build_user_goal_param_description,
     required_param_names,
 )
+from baton_proxy._urls import shown_url
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter, utc_now_ms
 from baton_proxy.mcp_error import RETURNED_ERROR_TYPE, error_text, is_error_result
@@ -566,25 +566,6 @@ class _ClientAction:
     def __post_init__(self) -> None:
         if (self.respond is not None) + (self.forward is not None) + self.drop != 1:
             raise ValueError("_ClientAction requires exactly one of respond/forward/drop")
-
-
-def shown_url(url: str) -> str:
-    """``url``'s scheme, host and port, or ``<not shown>`` if it holds an '@' or does not parse.
-
-    Userinfo, path, query and fragment can each hold a credential, and an unencoded
-    '/', '?' or '#' in a password moves where urlsplit thinks the host starts.
-    """
-    if "@" in url:
-        return "<not shown>"
-    try:
-        parts = urllib.parse.urlsplit(url)
-        host, port = parts.hostname, parts.port
-    except ValueError:
-        return "<not shown>"
-    if not (parts.scheme and host):
-        return "<not shown>"
-    host = f"[{host}]" if ":" in host else host
-    return f"{parts.scheme}://{host}" if port is None else f"{parts.scheme}://{host}:{port}"
 
 
 def client_action(processor: Any, req: dict[str, Any]) -> _ClientAction:

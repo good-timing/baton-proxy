@@ -1005,31 +1005,44 @@ def test_the_injected_tool_called_without_an_id_gets_no_reply(rig):
     assert len(upstream.authorizations) == before
 
 
-class _Redirects(http.server.BaseHTTPRequestHandler):
+class _AnswersHead(http.server.BaseHTTPRequestHandler):
+    status = 200
+
     def do_HEAD(self) -> None:
-        self.send_response(302)
-        self.send_header("Location", "http://elsewhere.invalid/")
+        self.send_response(self.status)
+        if 300 <= self.status < 400:
+            self.send_header("Location", "http://elsewhere.invalid/")
         self.end_headers()
 
     def log_message(self, *_: Any) -> None:
         pass
 
 
-def test_the_startup_probe_counts_any_http_answer_and_names_a_redirect():
+@pytest.mark.parametrize(
+    "status, want",
+    [(401, None), (405, None), (302, "a redirected call gets a 502"), (503, "HTTP 503")],
+)
+def test_the_startup_probe_counts_an_answer_and_flags_a_redirect_or_an_outage(status, want):
     from baton_proxy.listen import unreachable_reason
 
-    gated = fixture_http_server.serve(0, require_auth=TOKEN)
-    redirects = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Redirects)
-    for server in (gated, redirects):
-        threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
+    handler = type("H", (_AnswersHead,), {"status": status})
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
     try:
-        gport, rport = gated.server_address[1], redirects.server_address[1]
-        assert unreachable_reason(f"http://127.0.0.1:{gport}/mcp") is None
-        assert "every call would get a 502" in (
-            unreachable_reason(f"http://127.0.0.1:{rport}/mcp") or ""
-        )
-        closed = fixture_http_server.free_port()
-        assert unreachable_reason(f"http://127.0.0.1:{closed}/mcp") == "ConnectionRefusedError"
+        why = unreachable_reason(f"http://127.0.0.1:{server.server_address[1]}/mcp")
     finally:
-        gated.shutdown()
-        redirects.shutdown()
+        server.shutdown()
+    assert why == want if want is None else want in (why or "")
+
+
+@pytest.mark.parametrize(
+    "url, want",
+    [
+        (f"http://127.0.0.1:{fixture_http_server.free_port()}/mcp", "ConnectionRefusedError"),
+        ("mcp.example.com/mcp?key=s3cret", "ValueError"),
+    ],
+)
+def test_the_startup_probe_names_a_failure_by_type_only(url, want):
+    from baton_proxy.listen import unreachable_reason
+
+    assert unreachable_reason(url) == want
