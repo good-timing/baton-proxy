@@ -97,6 +97,19 @@ The server's answer goes back with its own headers, such as `Set-Cookie`, minus 
 
 Each client gets its own `Mcp-Session-Id`, so clients stay apart even when the upstream has no sessions. Each client session is one Baton session, and its open calls are closed in that session when it ends. An answer the server streams is passed on as it arrives, so a question the server asks during a call reaches the client in time. The `--url` form without `listen` waits for the whole answer, so use `listen` for servers that ask questions mid-call. The proxy gives up on a server that sends nothing for 60 seconds, which includes a server waiting for the answer to its question. Set `BATON_UPSTREAM_TIMEOUT` to more seconds if those answers can take longer, knowing a dead server then takes that long to notice too. The listener does not offer the standing server-to-client stream.
 
+Even with no overlay the agent does not see the server exactly as it is. Every tool gains a required `user_goal` parameter, which the proxy records and strips before the call goes on, and the server's instructions gain a short paragraph asking for it. Compare two runs through the listener, with and without an overlay, to see what the overlay alone changes.
+
+At startup the listener prints one line naming the overlay (or `none`), what the proxy adds and where events go, and it warns if the server gives no HTTP answer. The first complete tool listing logs how many tools the overlay changed, and any action it could not apply is logged as an error. Every answer carries a `Baton-Overlay` header holding the overlay's hash or `none`, so a client can tell which run it is in.
+
+To confirm a running listener shows the server's tools, compare the two with the same headers.
+
+```sh
+baton-proxy check --listener 'http://127.0.0.1:8710/mcp?tag=beta' \
+  --url 'https://mcp.example.com/mcp?tag=beta' --header 'x-api-key: ...'
+```
+
+`BATON_UPSTREAM_AUTH_TOKEN` fills `Authorization` when no `--header` sets it. It prints `same` when the only difference is the proxy's own parameter, or names the tools that are changed, hidden or added. It exits 1 for a difference with no overlay loaded and 2 when either side cannot be listed.
+
 The listener does not pass OAuth sign-in through. A client that discovers how to sign in by asking the server cannot do it through the listener, so send a fixed token in a header instead, or set `BATON_UPSTREAM_AUTH_TOKEN`.
 
 ## Overlays
@@ -116,6 +129,16 @@ An overlay changes what the agent sees without touching the server. The file hol
 ```
 
 JSON always works. YAML needs `pip install 'baton-proxy[overlay]'`. A malformed file stops the proxy at startup. An action the tool list cannot take, such as a tool or parameter the server does not list, is logged as an error once the server lists its tools. A required parameter is listed as required but never enforced. Targets on Baton's own text (`agent_text`) are not supported yet. A call to a hidden tool is answered by the proxy and never reaches the server. Events still record the server's own surface, and the surface snapshot carries the overlay's hash.
+
+## What the listener records
+
+Each client session is one Baton session with its own `session_id`, and `agent_runtime` names the client from its handshake. Every event is one JSON object with `event_type`, `session_id`, `sequence_number`, `captured_at` and a `payload`.
+
+- `surface_snapshot` holds the tools and instructions the server offered and the overlay's full hash under `seam_augmentations.overlay`.
+- `tool_call_start` holds `tool_name`, the `params` the server received and the agent's `user_goal` as `call_intent`.
+- `tool_call_end` holds the `result` and `duration_ms`, and `tool_call_error` holds an `error_type` instead. Each pairs with its start by `call_id`.
+
+A call still open when its session ends, or when the listener stops, is closed with an error, so every start has an outcome. Header values and query strings are never recorded. To join events to a harness's own results, match each case's time window to `captured_at` and its calls in order.
 
 ## Where events go
 
