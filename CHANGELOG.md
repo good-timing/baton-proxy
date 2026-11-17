@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] — 2026-11-16
+
+### Added
+
+- **`baton-proxy listen --listen HOST:PORT --url URL`** serves a remote MCP server at a local URL, for a harness that registers servers by URL and cannot start a process. Each client session is its own Baton session. Every header and the client's query go on to the server unchanged and none is recorded. Answers the server streams are passed on as they arrive, and a redirect is answered with a 502, never followed. At startup it prints the overlay, what the proxy adds and where events go, and warns if the server does not answer cleanly. Every answer carries a `Baton-Overlay` header naming the overlay or `none`.
+- **`--overlay PATH`** changes what the agent sees without touching the server. It takes one overlay in the shape the Console stores, in JSON, or in YAML with `pip install 'baton-proxy[overlay]'`. It can add to or replace tool and parameter descriptions, hide a tool or a parameter the tool does not require, list a parameter as required, and add to the server's instructions. A call to a hidden tool never reaches the server. It works with `listen`, `--url` and a stdio wrap, and `BATON_OVERLAY` is ignored with a warning.
+- **`baton-proxy check --listener URL --url URL`** lists tools through a running listener and from the server with the same headers, and prints `same` when the listener shows what the server and the overlay say it should. Otherwise it names the tools that differ.
+
+### Fixed
+
+- **No outbound request follows a redirect,** so the event sink's API key and the upstream token are never sent to another host.
+- **A server request that reuses a call's id no longer closes that call,** and a stream the server leaves open after its answer no longer holds the call until the timeout.
+
 ## [0.7.4] — 2026-11-16
 
 ### Fixed
