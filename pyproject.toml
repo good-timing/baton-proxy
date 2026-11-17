@@ -61,6 +61,7 @@ ignore = ["E501"]
 # guards library code, which this is not.
 "try/kit.py" = ["T201"]
 "src/baton_proxy/wrap.py" = ["T201"]
+"src/baton_proxy/check.py" = ["T201"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

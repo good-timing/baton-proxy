@@ -252,3 +252,44 @@ def test_every_answer_names_the_overlay_round(rig):
     labels = {r.headers.get("Baton-Overlay") for r in (answered, refused, no_stream)}
     assert (answered.status_code, refused.status_code, no_stream.status_code) == (200, 401, 405)
     assert len(labels) == 1 and labels.pop().startswith("sha256:")
+
+
+def _check(rig: dict[str, Any], listener: str | None = None) -> subprocess.CompletedProcess[str]:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("BATON_")}
+    env.update(
+        PYTHONPATH=str(Path(__file__).parent.parent / "src"),
+        BATON_UPSTREAM_AUTH_TOKEN=rig_upstream.TOKEN,
+    )
+    return subprocess.run(
+        [
+            *(sys.executable, "-m", "baton_proxy", "check"),
+            *("--listener", listener or rig["proxied"], "--url", rig["direct"]),
+            *("--header", f"x-api-key: {rig_upstream.API_KEY}"),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_check_says_round_a_shows_the_servers_tools(rig):
+    done = _check(rig)
+    assert done.returncode == 0, done.stderr
+    assert "overlay none" in done.stdout
+    assert "same: the listener shows the server's tools" in done.stdout
+
+
+@pytest.mark.parametrize("rig", ["overlay"], indirect=True)
+def test_check_names_what_round_bs_overlay_changed(rig):
+    done = _check(rig)
+    assert done.returncode == 0, done.stderr
+    assert "changed: echo" in done.stdout
+    assert "hidden: slow, whoami" in done.stdout
+    assert "different, as the overlay says" in done.stdout
+
+
+def test_check_refuses_a_listener_that_is_not_one(rig):
+    done = _check(rig, listener=rig["direct"])
+    assert done.returncode == 2
+    assert "no Baton-Overlay header" in done.stdout

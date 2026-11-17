@@ -1795,6 +1795,10 @@ def main(argv: list[str] | None = None) -> int:
         from baton_proxy.wrap import cli
 
         return cli(argv)
+    if argv and argv[0] == "check":
+        from baton_proxy.check import main as check_main
+
+        return check_main(argv[1:])
     if argv and argv[0] == "listen":
         from baton_proxy.listen import main as listen_main
 
