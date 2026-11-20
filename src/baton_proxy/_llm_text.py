@@ -19,6 +19,8 @@ make.
 
 from __future__ import annotations
 
+from baton_proxy.overlay import Overlay, overlaid
+
 # The whole report suffix. Holds no report rule: each is written once, in the
 # tool's description. The leading space lets it join a trailing-stop upstream
 # value.
@@ -72,16 +74,13 @@ _INSTRUCTIONS_LENGTH_CAP = 1500
 
 # A main agent that delegates may never load this server's tool schemas, so the
 # user_goal description never reaches it and its subagents get no number.
-_INSTRUCTIONS_SUBAGENT_CLAUSE = (
-    "\n\nWhen you hand work to a subagent that may call this server's tools, tell it "
+#: The same sentence baton-sdk exports.
+INTENT_INSTRUCTIONS = (
+    "When you hand work to a subagent that may call this server's tools, tell it "
     "the number of the user's current message in this conversation, and that it "
     "must start user_goal with that number on every call to this server's "
     "tools. This applies only to this server's tools."
 )
-
-#: All of the proxy's instructions under ``BATON_ANNOTATE=off``, apart from the
-#: event-file line; the same sentence baton-sdk exports.
-INTENT_INSTRUCTIONS = _INSTRUCTIONS_SUBAGENT_CLAUSE.strip()
 
 
 # Rendered only when there IS a local file to name. Its length comes from the
@@ -104,6 +103,7 @@ def build_instructions_suffix(
     *,
     event_file_path: str | None = None,
     report_mode: str = "on",
+    server_overlay: Overlay | None = None,
 ) -> str:
     """Build the proxy's instructions suffix.
 
@@ -151,14 +151,16 @@ def build_instructions_suffix(
     routine, and ``_bootstrap`` logs a warning when it happens, so an operator
     whose agent was never told the path can find out why.
     """
-    if report_mode == "off":
-        rendered = ""
-    else:
-        rendered = _render_report_text(annotation_tool_name)
-    # After `_render_report_text` caps its text: the sentence has a fixed
-    # length, so it comes out of the headroom under the truncation point.
+    rendered = ""
+    if report_mode != "off":
+        # The cap holds Baton's text only, never an overlay's:
+        # test_a_pointer_replaced_past_the_length_cap_is_still_served
+        pointer = _render_report_text(annotation_tool_name).lstrip(" ")
+        if pointer := overlaid(pointer, server_overlay, "instructions.report_pointer"):
+            rendered = " " + pointer
     # Before the event-file line, so truncation still takes that line first.
-    rendered += _INSTRUCTIONS_SUBAGENT_CLAUSE
+    if subagent := overlaid(INTENT_INSTRUCTIONS, server_overlay, "instructions.subagent"):
+        rendered += "\n\n" + subagent
     if event_file_path:
         # Spliced into the already-formatted report text: a `{` or `}` in the
         # operator's sink path would make `.format` on that template raise.

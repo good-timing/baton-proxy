@@ -173,6 +173,7 @@ def test_emit_call_error_tool() -> None:
                 "result": None,
                 "runtime_meta": None,
                 "call_id": "c1",
+                "failure_kind": None,
             },
         )
     ]

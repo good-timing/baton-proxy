@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import dataclasses
 import hashlib
 import json
 import logging
@@ -59,7 +60,14 @@ from baton_proxy._urls import shown_url
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter, utc_now_ms
 from baton_proxy.mcp_error import RETURNED_ERROR_TYPE, error_text, is_error_result
-from baton_proxy.overlay import Overlay, OverlayError, load_overlay
+from baton_proxy.overlay import (
+    Overlay,
+    OverlayError,
+    load_overlay,
+    overlaid,
+    overlay_label,
+)
+from baton_proxy.settings import Caller, CallSettings, HeldSettings, SettingsDocument
 from baton_proxy.sinks import find_file_sink_path
 
 logger = logging.getLogger("baton_proxy")
@@ -152,10 +160,23 @@ class _Injection:
     # Intent-param injection mode: "optional" | "required". Defaulted
     # so tests that build _Injection directly keep their existing shape.
     intent_param_mode: str = "optional"
+    event_file_path: str | None = None
 
     @property
     def names(self) -> set[str]:
         return {t["name"] for t in self.tools}
+
+    def drops_event_line(self, suffix: str) -> bool:
+        return bool(self.event_file_path) and self.event_file_path not in suffix
+
+    def instructions_for(self, *, pointer: bool, server_overlay: Overlay | None) -> str:
+        """The suffix a connection gets under Console settings (SPEC §2.6)."""
+        return build_instructions_suffix(
+            ANNOTATE_TOOL_NAME,
+            event_file_path=self.event_file_path,
+            report_mode="on" if pointer else "off",
+            server_overlay=server_overlay,
+        )
 
     @classmethod
     def create(
@@ -172,17 +193,18 @@ class _Injection:
         parsing the spec in both places was the duplication this signature
         removes.
         """
-        suffix = build_instructions_suffix(
-            ANNOTATE_TOOL_NAME,
-            event_file_path=event_file_path,
-            report_mode=report_mode,
-        )
         tools = [] if report_mode == "off" else [_build_injected_tool(ANNOTATE_TOOL_NAME)]
-        return cls(
+        injection = cls(
             tools=tools,
-            instructions_suffix=suffix,
-            event_line_dropped=bool(event_file_path) and event_file_path not in suffix,
+            instructions_suffix="",
             intent_param_mode=intent_param_mode,
+            event_file_path=event_file_path,
+        )
+        suffix = injection.instructions_for(pointer=report_mode != "off", server_overlay=None)
+        return dataclasses.replace(
+            injection,
+            instructions_suffix=suffix,
+            event_line_dropped=injection.drops_event_line(suffix),
         )
 
 
@@ -280,6 +302,7 @@ def _emit_call_error(
             result=result,
             runtime_meta=call.runtime_meta,
             call_id=call.call_id,
+            failure_kind="tool_hidden" if error_type == HIDDEN_TOOL_ERROR_TYPE else None,
         )
     elif call.kind == "tool_list":
         emitter.enqueue_tool_list_error(
@@ -343,7 +366,7 @@ def _evict_overflow(pending: OrderedDict[Any, _PendingCall], emitter: Emitter) -
         )
 
 
-def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
+def _inject_goal_params(tool: Any, mode: str, description: str | None = None) -> dict[str, str]:
     """Add ``user_goal`` to one tool's inputSchema; return each name's
     disposition. "injected" (param added) or "native" (the tool already
     declares the name, left untouched, per skip-if-exists) — a retired name the
@@ -370,7 +393,11 @@ def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
     dispositions[USER_GOAL_PARAM_NAME] = "injected"
     props[USER_GOAL_PARAM_NAME] = {
         "type": "string",
-        "description": build_user_goal_param_description(intent_param_mode=mode),
+        "description": (
+            build_user_goal_param_description(intent_param_mode=mode)
+            if description is None
+            else description
+        ),
     }
     if USER_GOAL_PARAM_NAME in required_param_names(intent_param_mode=mode):
         required = schema.get("required")
@@ -382,7 +409,13 @@ def _inject_goal_params(tool: Any, mode: str) -> dict[str, str]:
     return dispositions
 
 
-def _inject_into_response(msg: dict[str, Any], injection: _Injection) -> dict[str, Any]:
+def _is_initialize_result(result: Any) -> bool:
+    return isinstance(result, dict) and ("protocolVersion" in result or "serverInfo" in result)
+
+
+def _inject_into_response(
+    msg: dict[str, Any], instructions_suffix: str, tools: list[dict[str, Any]]
+) -> dict[str, Any]:
     """Inject into responses to `initialize` and `tools/list`.
 
     Returns the (possibly-mutated) message. Errors are swallowed — a malformed
@@ -395,16 +428,16 @@ def _inject_into_response(msg: dict[str, Any], injection: _Injection) -> dict[st
             return msg
         result = msg["result"]
 
-        if "protocolVersion" in result or "serverInfo" in result:
+        if _is_initialize_result(result):
             original = result.get("instructions", "")
             if not isinstance(original, str):
                 original = ""
-            combined = original + injection.instructions_suffix
+            combined = original + instructions_suffix
             # The suffix opens with a separator, which has nothing above it here.
             result["instructions"] = combined if original else combined.lstrip()
 
         if "tools" in result and isinstance(result["tools"], list):
-            result["tools"].extend(injection.tools)
+            result["tools"].extend(tools)
     except Exception:
         logger.exception("baton-proxy: injection failed, forwarding response unmodified")
     return msg
@@ -464,7 +497,20 @@ def _is_report(what_happened: Any) -> bool:
     return isinstance(what_happened, str) and bool(what_happened.strip())
 
 
-def _refuse_pre_call_annotation(req: dict[str, Any]) -> dict[str, Any]:
+REFUSAL_TEXT = (
+    f"{ANNOTATE_TOOL_NAME} is reactive-only on this server. Call it "
+    "only AFTER a tool call returns an unhelpful, empty, failed or "
+    "contradictory result, or when no tool covers what the user asked "
+    "for. What the user is trying to do is already recorded on each "
+    "tool call, so no pre-call annotation is needed — nothing was "
+    "lost. If a tool call really went wrong, or no tool covers the "
+    "request, call this again and say what_happened. If neither is "
+    "true, do NOT re-send: that would file a report for a call that "
+    "did not go wrong."
+)
+
+
+def _refuse_pre_call_annotation(req: dict[str, Any], text: str) -> dict[str, Any]:
     """The response to an agent-filed annotation that is not a report.
 
     A normal result rather than a JSON-RPC error: an error reads as the server
@@ -477,22 +523,7 @@ def _refuse_pre_call_annotation(req: dict[str, Any]) -> dict[str, Any]:
         "jsonrpc": "2.0",
         "id": req.get("id"),
         "result": {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        f"{ANNOTATE_TOOL_NAME} is reactive-only on this server. Call it "
-                        "only AFTER a tool call returns an unhelpful, empty, failed or "
-                        "contradictory result, or when no tool covers what the user asked "
-                        "for. What the user is trying to do is already recorded on each "
-                        "tool call, so no pre-call annotation is needed — nothing was "
-                        "lost. If a tool call really went wrong, or no tool covers the "
-                        "request, call this again and say what_happened. If neither is "
-                        "true, do NOT re-send: that would file a report for a call that "
-                        "did not go wrong."
-                    ),
-                }
-            ],
+            "content": [{"type": "text", "text": text}],
             "isError": True,
         },
     }
@@ -591,6 +622,30 @@ def client_action(processor: Any, req: dict[str, Any]) -> _ClientAction:
     return action
 
 
+_CODE_VALUES = CallSettings(capture={})
+
+
+def _report_overlay_once(overlay: Overlay) -> None:
+    report = overlay.report_once()
+    if report is None:
+        return
+    changed, unmatched = report
+    if unmatched:
+        logger.error(
+            "baton-proxy: overlay %s changed %d tool(s); %d action(s) did not apply: %s",
+            overlay.label,
+            changed,
+            len(unmatched),
+            ", ".join(unmatched),
+        )
+    else:
+        logger.info(
+            "baton-proxy: overlay %s changed %d tool(s); every action applied",
+            overlay.label,
+            changed,
+        )
+
+
 class MessageProcessor:
     """Transport-independent MCP message layer.
 
@@ -612,10 +667,25 @@ class MessageProcessor:
         injection: _Injection,
         session_id: str,
         overlay: Overlay | None = None,
+        settings: HeldSettings | None = None,
     ) -> None:
+        if overlay is not None and settings is not None:
+            raise ValueError("an overlay file and Console settings cannot both apply")
         self._emitter = emitter
         self._injection = injection
         self._overlay = overlay
+        self._settings = settings
+        self._client_name: str | None = None
+        # An overlay file serves every connection the same; Console settings
+        # are taken on initialize and on each first page of tools.
+        self._server_overlay = overlay
+        self._instructions_suffix = injection.instructions_suffix
+        # The listing's settings and the report tools they serve, swapped as one.
+        self._listing: tuple[CallSettings, list[dict[str, Any]]] | None = None
+        if settings is None:
+            self._list_under(CallSettings(capture={}, overlay=overlay))
+        # test_a_call_before_any_listing_drops_no_param
+        self._listed_tools: set[str] = set()
         self._session_id = session_id
         self._pending: OrderedDict[Any, _PendingCall] = OrderedDict()
         self._pending_lock = threading.Lock()
@@ -638,11 +708,10 @@ class MessageProcessor:
         # Open tools/list ids, apart from call tracking, so the overlay holds even
         # when tracking a listing failed. The value says whether it was a first page.
         self._toollist_ids: dict[Any, bool] = {}
-        # Hashes already emitted this process — a Desktop-style lazy re-list
-        # of an unchanged surface must not re-emit. A CHANGED surface (e.g.
-        # listChanged refire after an upstream mutation) hashes fresh and
-        # emits again by design.
+        # Hashes already emitted under the last server overlay sent: a lazy
+        # re-list of an unchanged surface must not re-emit, and a changed one does.
         self._emitted_surface_hashes: set[str] = set()
+        self._snapshot_server_overlay: str | None = None
         self._surface_lock = threading.Lock()
 
     @property
@@ -703,6 +772,7 @@ class MessageProcessor:
                 client_info = params.get("clientInfo") if isinstance(params, dict) else None
                 name = client_info.get("name") if isinstance(client_info, dict) else None
                 if isinstance(name, str):
+                    self._client_name = name
                     self._emitter.set_agent_runtime(name)
             except Exception:
                 logger.exception("baton-proxy: clientInfo capture failed")
@@ -747,7 +817,7 @@ class MessageProcessor:
                 # leave NO event.
                 what_happened = args.get("what_happened")
                 if not _is_report(what_happened):
-                    return _ClientAction(respond=_refuse_pre_call_annotation(req))
+                    return _ClientAction(respond=_refuse_pre_call_annotation(req, self._refusal()))
                 reported_tool = args.get("tool_name")
                 ann_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
                 ctx = args.get("context") if isinstance(args.get("context"), dict) else None
@@ -809,8 +879,9 @@ class MessageProcessor:
             else:
                 self._track(req_id, "tool", safe_tool_name, runtime_meta, call_id)
             if hidden_response is not None:
+                # SPEC §11.4.3: the body is the unknown-tool answer the agent got.
                 self.synthesize_pending_error(
-                    req_id, HIDDEN_TOOL_ERROR_TYPE, "the overlay hides this tool"
+                    req_id, HIDDEN_TOOL_ERROR_TYPE, hidden_response["error"]["message"]
                 )
                 return _ClientAction(respond=hidden_response)
 
@@ -976,14 +1047,18 @@ class MessageProcessor:
                 logger.exception("baton-proxy: enqueue end/error failed")
 
         listing = self._take_listing(msg.get("id"))
-        overlaid_tools = self._overlay_tools(msg) if listing is not None else None
+        overlay = self._follow_settings(msg, listing)
+        overlaid_tools = None
+        if listing is not None:
+            self._learn_tools(msg)
+            overlaid_tools = self._overlay_tools(msg, overlay)
         # Surface capture runs BEFORE the overlay lands and both injections
         # below, so the snapshot records the vendor-true surface.
         self._capture_surface(msg, first_page=listing is True)
-        self._land_overlay(msg, overlaid_tools)
+        self._land_overlay(msg, overlaid_tools, overlay)
 
         self._inject_intent_params(msg)
-        out = _inject_into_response(msg, self._injection)
+        out = self.inject(msg)
         if call is not None and ends_after_injection:
             try:
                 _emit_call_end(
@@ -1021,7 +1096,7 @@ class MessageProcessor:
             if not isinstance(result, dict):
                 return
 
-            if "protocolVersion" in result or "serverInfo" in result:
+            if _is_initialize_result(result):
                 instructions = result.get("instructions")
                 self._server_meta = {
                     "server_info": copy.deepcopy(result.get("serverInfo")),
@@ -1047,7 +1122,12 @@ class MessageProcessor:
                 "tools": copy.deepcopy(tools),
             }
             digest = _surface_hash(surface)
+            server_overlay = self._server_overlay.id if self._server_overlay is not None else None
             with self._surface_lock:
+                # Not in the hash, so a new server overlay sends the surface again (SPEC §11.4.2).
+                if server_overlay != self._snapshot_server_overlay:
+                    self._emitted_surface_hashes.clear()
+                    self._snapshot_server_overlay = server_overlay
                 if digest in self._emitted_surface_hashes:
                     return
                 self._emitted_surface_hashes.add(digest)
@@ -1062,6 +1142,8 @@ class MessageProcessor:
                 },
                 "instructions_suffix": bool(self._injection.instructions_suffix),
             }
+            if self._settings is not None:
+                augmentations["server_overlay"] = server_overlay
             if self._overlay is not None:
                 augmentations["overlay"] = {
                     "hash": self._overlay.hash,
@@ -1086,37 +1168,122 @@ class MessageProcessor:
         A hidden tool is answered here because forwarding it would run a tool
         the agent was told does not exist.
         """
-        if self._overlay is None:
-            return None
         try:
-            if tool_name in self._overlay.hidden_tools:
+            overlay = self._caller().overlay
+            if overlay is None:
+                return None
+            if tool_name in overlay.hidden_tools:
                 return rpc_error(req.get("id"), -32602, f"Unknown tool: {tool_name}")
             args = params.get("arguments")
-            if isinstance(args, dict):
-                for name in self._overlay.hidden_params(tool_name):
+            with self._registry_lock:
+                listed = tool_name in self._listed_tools
+            # Under Console settings only a listed tool loses a param: before a
+            # listing nothing says which params the vendor requires.
+            if isinstance(args, dict) and (listed or self._settings is None):
+                for name in overlay.hidden_params(tool_name):
                     args.pop(name, None)
         except Exception:
             logger.exception("baton-proxy: overlay on tools/call failed")
         return None
 
-    def _overlay_tools(self, msg: dict[str, Any]) -> list[Any] | None:
-        if self._overlay is None:
+    def _caller(self) -> CallSettings:
+        """The settings a call runs under: those its connection's tools were
+        listed with, so a call never contradicts the list the agent holds."""
+        return self._listing[0] if self._listing is not None else self._call_settings()
+
+    def _call_settings(self) -> CallSettings:
+        """This caller's settings under the document held now (SPEC §2.6)."""
+        settings = self._settings
+        document = settings.document if settings is not None else None
+        if settings is None or document is None:
+            return _CODE_VALUES
+        return document.settings_for(Caller(client_name=self._client_name), settings.vendor_id)
+
+    def _list_under(self, listed: CallSettings) -> None:
+        piece = "report_tool.description"
+        tools = [
+            {**tool, "description": overlaid(tool["description"], listed.overlay, piece)}
+            for tool in self._injection.tools
+            if listed.report_mode != "off"
+        ]
+        self._listing = (listed, tools)
+
+    def _follow_settings(self, msg: dict[str, Any], listing: bool | None) -> Overlay | None:
+        """The overlay ``msg`` gets. Under Console settings a first page of tools
+        takes this caller's current settings, and an initialize the server overlay."""
+        initialize = _is_initialize_result(msg.get("result"))
+        if self._settings is not None:
+            try:
+                if listing is True:
+                    self._list_under(self._call_settings())
+                elif initialize:
+                    self._serve_instructions(self._settings.document)
+            except Exception:
+                logger.exception("baton-proxy: could not apply Console settings")
+        if listing is not None:
+            return self._listing[0].overlay if self._listing is not None else None
+        return self._server_overlay if initialize else None
+
+    def _serve_instructions(self, document: SettingsDocument | None) -> None:
+        self._server_overlay = document.server_overlay if document is not None else None
+        pointer = bool(self._injection.tools) and (
+            document is None or document.reports_on_for_anyone("on")
+        )
+        self._instructions_suffix = self._injection.instructions_for(
+            pointer=pointer, server_overlay=self._server_overlay
+        )
+        if self._injection.drops_event_line(self._instructions_suffix):
+            logger.warning(
+                "baton-proxy: server overlay %s leaves no room in the instructions for "
+                "the event file path, so the agent is not told where the calls are",
+                overlay_label(self._server_overlay),
+            )
+
+    def _refusal(self) -> str:
+        try:
+            return overlaid(REFUSAL_TEXT, self._caller().overlay, "report_tool.refusal")
+        except Exception:
+            logger.exception("baton-proxy: could not apply Console settings")
+        return REFUSAL_TEXT
+
+    def _learn_tools(self, msg: dict[str, Any]) -> None:
+        try:
+            names = {
+                tool["name"]
+                for tool in msg["result"]["tools"]
+                if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+            }
+        except Exception:
+            return
+        with self._registry_lock:
+            self._listed_tools |= names
+
+    def inject(self, msg: dict[str, Any]) -> dict[str, Any]:
+        """``msg`` with the proxy's instructions and tools, as this connection gets them."""
+        tools = self._listing[1] if self._listing is not None else self._injection.tools
+        return _inject_into_response(msg, self._instructions_suffix, tools)
+
+    def _overlay_tools(self, msg: dict[str, Any], overlay: Overlay | None) -> list[Any] | None:
+        if overlay is None:
             return None
         try:
             result = msg.get("result")
             tools = result.get("tools") if isinstance(result, dict) else None
             if isinstance(tools, list):
-                return self._overlay.apply_to_tools(tools)
+                return overlay.apply_to_tools(tools)
         except Exception:
             logger.exception("baton-proxy: overlay on tools/list failed")
         return None
 
-    def overlay_degraded(self, msg: dict[str, Any]) -> dict[str, Any]:
-        self._land_overlay(msg, None)
+    def overlay_degraded(self, msg: dict[str, Any], listing: bool | None = None) -> dict[str, Any]:
+        """``listing`` as ``_take_listing`` gave it for the request answered."""
+        self._land_overlay(msg, None, self._follow_settings(msg, listing))
         return msg
 
-    def _land_overlay(self, msg: dict[str, Any], overlaid_tools: list[Any] | None) -> None:
-        if self._overlay is None:
+    def _land_overlay(
+        self, msg: dict[str, Any], overlaid_tools: list[Any] | None, overlay: Overlay | None
+    ) -> None:
+        if overlay is None:
             return
         try:
             result = msg.get("result")
@@ -1125,36 +1292,16 @@ class MessageProcessor:
             if overlaid_tools is not None:
                 result["tools"] = overlaid_tools
                 if not result.get("nextCursor"):
-                    self._report_overlay_once()
-            if "protocolVersion" in result or "serverInfo" in result:
+                    _report_overlay_once(overlay)
+            if _is_initialize_result(result):
                 original = result.get("instructions")
-                replaced = self._overlay.apply_to_instructions(
+                replaced = overlay.apply_to_instructions(
                     original if isinstance(original, str) else ""
                 )
                 if replaced or isinstance(original, str):
                     result["instructions"] = replaced
         except Exception:
             logger.exception("baton-proxy: overlay failed, forwarding response unmodified")
-
-    def _report_overlay_once(self) -> None:
-        report = self._overlay.report_once()
-        if report is None:
-            return
-        changed, unmatched = report
-        if unmatched:
-            logger.error(
-                "baton-proxy: overlay %s changed %d tool(s); %d action(s) did not apply: %s",
-                self._overlay.label,
-                changed,
-                len(unmatched),
-                ", ".join(unmatched),
-            )
-        else:
-            logger.info(
-                "baton-proxy: overlay %s changed %d tool(s); every action applied",
-                self._overlay.label,
-                changed,
-            )
 
     def _inject_intent_params(self, msg: dict[str, Any]) -> None:
         """Add user_goal to every upstream tool in a tools/list response.
@@ -1171,6 +1318,7 @@ class MessageProcessor:
             tools = result.get("tools")
             if not isinstance(tools, list):
                 return
+            mode, description = self._goal_param()
             dispositions: dict[str, dict[str, str]] = {}
             for tool in tools:
                 # Defensive: a pathological upstream could name a tool after
@@ -1178,7 +1326,7 @@ class MessageProcessor:
                 # param-injecting them would only confuse the schema.
                 if isinstance(tool, dict) and tool.get("name") in self._injection.names:
                     continue
-                tool_dispositions = _inject_goal_params(tool, self._injection.intent_param_mode)
+                tool_dispositions = _inject_goal_params(tool, mode, description)
                 if tool_dispositions:
                     dispositions[tool["name"]] = tool_dispositions
             if dispositions:
@@ -1201,6 +1349,13 @@ class MessageProcessor:
                     )
         except Exception:
             logger.exception("baton-proxy: intent param injection failed")
+
+    def _goal_param(self) -> tuple[str, str]:
+        """The goal mode and description this connection's listing takes."""
+        listed = self._listing[0] if self._listing is not None else _CODE_VALUES
+        mode = listed.intent_param_mode or self._injection.intent_param_mode
+        served = build_user_goal_param_description(intent_param_mode=mode)
+        return mode, overlaid(served, listed.overlay, "goal_param.description")
 
     def synthesize_pending_error(self, req_id: Any, error_type: str, error_body: str) -> None:
         """Emit a synthetic *_error for a tracked call the upstream never answered.
@@ -1685,20 +1840,22 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
         upstream failure would wedge the client; return True if handled.
 
         Bypasses ``handle_server_message`` (no surface-capture — a degraded
-        reply is not the vendor's real surface) and runs only
-        ``_inject_into_response`` so the annotate tool + instructions still land.
+        reply is not the vendor's real surface) and runs only the overlay and
+        ``processor.inject`` so the annotate tool + instructions still land.
         A degraded listing's start is closed with the upstream's failure.
         """
         degraded = _build_degraded_response(forward)
         if degraded is None:
             return False
+        # Before the error closes the listing's id, which says whether it was a first page.
+        listing = processor._take_listing(forward.get("id"))
         processor.synthesize_pending_error(forward.get("id"), error_type, error_body)
         logger.warning(
             "baton-proxy: upstream unavailable — serving a degraded %s so the "
             "client stays connected (injected tools remain usable)",
             forward.get("method"),
         )
-        _write_client(_inject_into_response(processor.overlay_degraded(degraded), injection))
+        _write_client(processor.inject(processor.overlay_degraded(degraded, listing)))
         return True
 
     for line in sys.stdin:

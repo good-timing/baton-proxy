@@ -516,6 +516,7 @@ class Emitter:
         session_id: str | None = None,
         principal: Principal | Organization | None = None,
         call_id: str,
+        failure_kind: str | None = None,
     ) -> None:
         """SPEC §11.4.3. ``result`` carries the full MCP envelope for a failure
         the tool RETURNED, and is None for a protocol fault, where there is no
@@ -542,6 +543,8 @@ class Emitter:
         # and it was empty" about a call that never had one.
         if result is not None:
             payload["result"] = result
+        if failure_kind is not None:
+            payload["failure_kind"] = failure_kind
         self._enqueue(
             event_type="tool_call_error",
             payload=payload,

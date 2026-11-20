@@ -24,9 +24,9 @@ REPO = HERE.parent
 FIXTURE = HERE / "fixture_server.py"
 SCHEMA_PATH = REPO / "baton-spec" / "events.schema.json"
 
-# Declared by the schema and never sent by the proxy. ``failure_kind`` names a
-# failure a producer makes above the vendor's handler, and the proxy has no such
-# layer. ``result_capture`` marks withheld results, which the proxy cannot do.
+# Declared by the schema and not sent by this script. ``failure_kind`` needs a
+# hidden tool (test_console_settings). ``result_capture`` marks withheld
+# results, which the proxy cannot do.
 # ``signal_type`` is in the schema for older producers only (SPEC §11.4).
 # ``expected_outcome`` and ``workflow`` are retired agent-facing fields: the
 # annotate tool no longer takes them.

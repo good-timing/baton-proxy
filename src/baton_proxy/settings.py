@@ -20,7 +20,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Protocol
 
 from baton_proxy._no_redirect import no_redirect_urlopen
 from baton_proxy.config import INTENT_PARAM_MODES, REPORT_MODES
@@ -239,6 +239,15 @@ def _parse_document(data: Any, previous: SettingsDocument | None) -> SettingsDoc
     )
 
 
+class HeldSettings(Protocol):
+    """Where a session reads the document held now."""
+
+    vendor_id: str
+
+    @property
+    def document(self) -> SettingsDocument | None: ...
+
+
 @dataclass(frozen=True)
 class _Answer:
     status: int
@@ -281,6 +290,7 @@ class SettingsFetcher:
         refresh_s: float = DEFAULT_REFRESH_S,
         get: Callable[[str, dict[str, str], float], _Answer] = _get,
     ) -> None:
+        self.vendor_id = vendor_id
         query = urllib.parse.urlencode({"server": vendor_id})
         self._url = f"{origin.rstrip('/')}{SETTINGS_PATH}?{query}"
         self._headers = {"Authorization": f"Bearer {api_key}", TENANT_HEADER: tenant_id}

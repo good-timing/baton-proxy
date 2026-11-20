@@ -37,7 +37,7 @@ from typing import Any, Literal
 logger = logging.getLogger("baton_proxy")
 
 # SPEC §11.4's blank: Unicode White_Space exactly, which str.strip() is not.
-_WHITE_SPACE = "\t\n\v\f\r \x85\xa0                　"
+WHITE_SPACE = "\t\n\v\f\r \x85\xa0                　"
 _TEXT_CHANGES = ("append", "replace")
 _FLAG_CHANGES = ("remove", "required")
 
@@ -72,13 +72,22 @@ class _Action:
         return f"actions[{self.index}] {self.change} {where}"
 
 
+def overlaid(text: str, overlay: Overlay | None, piece: str) -> str:
+    """``text``, one piece of Baton's text, after ``overlay``, without white
+    space at its end (SPEC §2.6)."""
+    actions = overlay.piece_actions(piece) if overlay is not None else []
+    if not actions:
+        return text
+    return changed_text(text, actions).rstrip(WHITE_SPACE)
+
+
 def changed_text(text: str, actions: list[_Action]) -> str:
     """``text`` after ``actions``: an append is a new paragraph, a replace the whole text."""
     for action in actions:
         if action.change == "replace":
             text = action.text or ""
         elif action.change == "append":
-            kept = text.rstrip(_WHITE_SPACE)
+            kept = text.rstrip(WHITE_SPACE)
             text = f"{kept}\n\n{action.text}" if kept else action.text or ""
     return text
 
@@ -88,6 +97,9 @@ class Overlay:
     actions: list[_Action]
     hash: str
     id: str | None = None
+    # SPEC §2.6's paragraph rule, for a Console overlay only:
+    # test_an_overlay_file_keeps_the_white_space_its_instructions_end_with
+    trims_paragraphs: bool = False
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
@@ -135,7 +147,10 @@ class Overlay:
         return changed, self.unmatched()
 
     def apply_to_instructions(self, original: str) -> str:
-        return changed_text(original, self._instruction_actions)
+        changed = changed_text(original, self._instruction_actions)
+        if self._instruction_actions and self.trims_paragraphs:
+            return changed.rstrip(WHITE_SPACE)
+        return changed
 
     def apply_to_tools(self, tools: list[Any]) -> list[Any]:
         """Return the tool list as the agent should see it. Never mutates ``tools``."""
@@ -334,7 +349,7 @@ def document_overlay(
                     index,
                     exc,
                 )
-        overlay = Overlay(actions=kept, hash=key[2], id=overlay_id)
+        overlay = Overlay(actions=kept, hash=key[2], id=overlay_id, trims_paragraphs=True)
     parsed[key] = overlay
     return overlay
 

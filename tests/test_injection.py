@@ -109,7 +109,8 @@ def test_a_server_with_no_instructions_gets_ours_without_a_leading_separator(
 
     injection = _Injection.create(None, report_mode=report_mode)
     msg = {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-03-26"}}
-    instructions = _inject_into_response(msg, injection)["result"]["instructions"]
+    out = _inject_into_response(msg, injection.instructions_suffix, injection.tools)
+    instructions = out["result"]["instructions"]
     assert instructions == injection.instructions_suffix.lstrip()
 
 
