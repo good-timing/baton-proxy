@@ -47,7 +47,7 @@ def test_a_listing_sends_a_start_then_an_end_counting_what_the_client_received()
     meta = {"progressToken": 7}
 
     proc.handle_client_message(_list_request(2, _meta=meta))
-    assert emitter.listings() == [("tool_list_start", {"runtime_meta": meta})]
+    assert emitter.listings() == [("tool_list_start", {"runtime_meta": meta, "capture": None})]
 
     out = proc.handle_server_message(
         {"jsonrpc": "2.0", "id": 2, "result": {"tools": _tools("search", "fetch")}}
@@ -60,7 +60,7 @@ def test_a_listing_sends_a_start_then_an_end_counting_what_the_client_received()
     assert end["count"] == len(received)
     assert end["duration_ms"] >= 0
     assert end["runtime_meta"] == meta
-    assert set(end) == {"count", "duration_ms", "runtime_meta"}
+    assert set(end) == {"count", "duration_ms", "runtime_meta", "capture"}
 
 
 def test_each_page_of_a_listing_gets_its_own_pair() -> None:

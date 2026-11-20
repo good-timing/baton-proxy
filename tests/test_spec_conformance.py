@@ -35,6 +35,10 @@ SCHEMA_PATH = REPO / "baton-spec" / "events.schema.json"
 # race there. Driven through the emitter below instead.
 EXERCISED_BY_THE_EMITTER = {"tool_call_start": {"call_expected", "call_workflow"}}
 
+# Event types the schema declares and the proxy does not send: it counts no
+# lost events (SPEC §11.4.7).
+TYPES_NOT_SENT = {"client_report"}
+
 NEVER_SENT = {
     "annotation": {"signal_type", "expected_outcome", "workflow"},
     "tool_call_end": {"result_capture"},
@@ -184,8 +188,10 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
     events = _run_stdio()
     for event in events:
         jsonschema.validate(event, event_schema)
+    # The scenario runs without Console settings, so no event carries ``capture``.
+    jsonschema.validate(_event_with_capture(), event_schema)
 
-    declared_types = set(event_schema["discriminator"]["mapping"])
+    declared_types = set(event_schema["discriminator"]["mapping"]) - TYPES_NOT_SENT
     seen_types = {e["event_type"] for e in events}
     assert seen_types == declared_types, (
         f"the scenario did not produce: {declared_types - seen_types}; "
@@ -281,3 +287,26 @@ def test_a_tool_call_carries_one_call_id_on_both_legs() -> None:
     others = [e for e in events if not e["event_type"].startswith("tool_call_")]
     assert others
     assert all("call_id" not in e for e in others)
+
+
+def _event_with_capture() -> dict:
+    from baton_proxy.emitter import _Event
+
+    capture = {"settings_version": 9, "audience": "beta", "overlay": "ov_1"}
+    wire = _Event(
+        event_id="00000000-0000-4000-8000-000000000000",
+        event_type="tool_call_end",
+        session_id="s",
+        sequence_number=0,
+        captured_at="2026-01-01T00:00:00Z",
+        tenant_id="t",
+        vendor_id="v",
+        consent_token="c",
+        sdk_version="0.0.0",
+        agent_runtime="r",
+        payload={"tool_name": "t", "duration_ms": 1, "result": None},
+        call_id="c",
+        capture=capture,
+    ).to_json()
+    assert wire["capture"] == capture
+    return wire

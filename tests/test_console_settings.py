@@ -527,3 +527,181 @@ def test_an_overlay_file_keeps_the_white_space_its_instructions_end_with() -> No
     overlay = parse_overlay({"actions": [{"target": {"instructions": True}, "append": "Local.\n"}]})
     processor = MessageProcessor(emitter, _Injection.create(None), "s", overlay=overlay)  # type: ignore[arg-type]
     assert "Local.\n Use `" in _initialize(processor)
+
+
+# --------------------------------------------------------------------------- #
+# capture on events (SPEC §11.4)                                              #
+# --------------------------------------------------------------------------- #
+
+BETA_CAPTURE = {"settings_version": 9, "audience": "beta", "overlay": "ov_beta_1"}
+
+
+def test_a_call_records_the_settings_it_ran_under() -> None:
+    processor, emitter = _processor(_Held(_parsed(_document())))
+    _list(processor)
+    _call(processor, "book_slot", {"day": "d"})
+    processor.handle_server_message({"jsonrpc": "2.0", "id": 7, "result": {"content": []}})
+    assert emitter.of("tool_call_start")[0]["capture"] == BETA_CAPTURE
+    assert emitter.of("tool_call_end")[0]["capture"] == BETA_CAPTURE
+    assert emitter.of("tool_list_start")[0]["capture"] == BETA_CAPTURE
+    assert emitter.of("tool_list_end")[0]["capture"] == BETA_CAPTURE
+
+
+def test_a_caller_no_audience_matches_records_the_version_alone() -> None:
+    body = _document(audiences=[{"id": "beta", "match": {"client": ["x"]}, "capture": {}}])
+    processor, emitter = _processor(_Held(_parsed(body)))
+    _call(processor, "book_slot", {})
+    assert emitter.of("tool_call_start")[0]["capture"] == {"settings_version": 9}
+
+
+def test_without_a_document_or_with_an_overlay_file_no_event_records_capture() -> None:
+    for processor, emitter in (_processor(_Held(None)), _processor(None)):
+        _list(processor)
+        _call(processor, "book_slot", {})
+        assert {kw["capture"] for k, kw in emitter.calls if "capture" in kw} == {None}
+
+
+def test_a_calls_end_records_what_its_start_did() -> None:
+    held = _Held(_parsed(_document()))
+    processor, emitter = _processor(held)
+    _list(processor, req_id=1)
+    _call(processor, "book_slot", {})
+    held.document = None
+    _list(processor, req_id=2)
+    processor.handle_server_message({"jsonrpc": "2.0", "id": 7, "result": {"content": []}})
+    assert emitter.of("tool_call_end")[0]["capture"] == BETA_CAPTURE
+
+
+def test_every_event_a_caller_makes_carries_capture_on_the_wire() -> None:
+    from baton_proxy.config import Config
+    from baton_proxy.emitter import Emitter
+
+    config = Config(
+        session_id="s",
+        event_sink="stderr:",
+        tenant_id="t",
+        api_key="k",
+        consent_token="c",
+        vendor_id="v",
+        log_file=None,
+    )
+    emitter = Emitter(config)
+    emitter._thread = object()  # type: ignore[assignment]
+    processor = MessageProcessor(
+        emitter, _Injection.create(None), "s", settings=_Held(_parsed(_document()))
+    )
+    hello = {"clientInfo": {"name": "beta-client"}}
+    processor.handle_client_message(
+        {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": hello}
+    )
+    _initialize(processor)
+    _list(processor)
+    report = {"user_goal": "1: x", "what_happened": "It failed.", "tool_name": "book_slot"}
+    _call(processor, ANNOTATE_TOOL_NAME, report, req_id=6)
+    _call(processor, "legacy_book", {}, req_id=7)
+    _call(processor, "book_slot", {}, req_id=8)
+    processor.handle_server_message({"jsonrpc": "2.0", "id": 8, "result": {"content": []}})
+    _call(processor, "book_slot", {}, req_id=9)
+    failed = {"content": [], "isError": True}
+    processor.handle_server_message({"jsonrpc": "2.0", "id": 9, "result": failed})
+    methods = ("resources/read", "resources/list", "prompts/get", "prompts/list")
+    for req_id, method in enumerate(methods, start=20):
+        for answer in ({"result": {}}, {"error": {"code": 1}}):
+            params = {"uri": "r", "name": "p"}
+            processor.handle_client_message(
+                {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
+            )
+            processor.handle_server_message({"jsonrpc": "2.0", "id": req_id, **answer})
+    processor.handle_client_message({"jsonrpc": "2.0", "id": 40, "method": "tools/list"})
+    processor.handle_server_message({"jsonrpc": "2.0", "id": 40, "error": {"code": 1}})
+    _call(processor, "book_slot", {}, req_id=41)
+    processor.drain_pending("proxy_session_closed", "gone")
+
+    events = []
+    while not emitter._queue.empty():
+        event = emitter._queue.get_nowait()
+        assert event is not None
+        events.append(event.to_json())
+    lanes = (
+        "tool_call",
+        "tool_list",
+        "resource_read",
+        "resource_list",
+        "prompt_get",
+        "prompt_list",
+    )
+    assert {e["event_type"] for e in events} == {
+        "surface_snapshot",
+        "annotation",
+        *(f"{lane}_{leg}" for lane in lanes for leg in ("start", "end", "error")),
+    }
+    for event in events:
+        if event["event_type"] == "surface_snapshot":
+            assert "capture" not in event
+        else:
+            assert event["capture"] == BETA_CAPTURE, event["event_type"]
+
+
+def test_one_call_records_the_document_its_results_followed_and_the_overlay_it_was_served() -> None:
+    held = _Held(_parsed(_document()))
+    processor, emitter = _processor(held)
+    _list(processor)
+    body = _document(version=10)
+    body["audiences"][0]["capture"]["results"] = "off"
+    body["overlays"]["ov_beta_2"] = {"actions": []}
+    body["audiences"][0]["overlay"] = "ov_beta_2"
+    held.document = _parsed(body)
+    _call(processor, "book_slot", {})
+    start = emitter.of("tool_call_start")[0]
+    assert start["capture"] == {"settings_version": 10, "audience": "beta", "overlay": "ov_beta_1"}
+    processor.handle_server_message({"jsonrpc": "2.0", "id": 7, "result": {"content": []}})
+    assert emitter.of("tool_call_end")[0]["withheld"] is True
+
+
+def test_a_later_page_records_its_first_pages_settings() -> None:
+    held = _Held(_parsed(_document()))
+    processor, emitter = _processor(held)
+    _list(processor, req_id=1, nextCursor="p2")
+    held.document = _parsed(_document(version=10))
+    _list(processor, req_id=2, cursor="p2")
+    starts = [kw["capture"] for kw in emitter.of("tool_list_start")]
+    assert starts == [BETA_CAPTURE, BETA_CAPTURE]
+
+
+def test_a_listings_end_records_the_settings_it_was_answered_under() -> None:
+    held = _Held(_parsed(_document()))
+    processor, emitter = _processor(held)
+    processor.handle_client_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    held.document = _parsed(_document(version=10))
+    processor.handle_server_message({"jsonrpc": "2.0", "id": 1, "result": {"tools": []}})
+    assert emitter.of("tool_list_start")[0]["capture"] == BETA_CAPTURE
+    assert emitter.of("tool_list_end")[0]["capture"] == {**BETA_CAPTURE, "settings_version": 10}
+
+
+def test_a_listing_that_could_not_take_new_settings_keeps_its_starts_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    held = _Held(_parsed(_document()))
+    processor, emitter = _processor(held)
+    processor.handle_client_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+
+    def broken() -> Any:
+        raise RuntimeError("broken")
+
+    monkeypatch.setattr(processor, "_call_settings", broken)
+    processor.handle_server_message({"jsonrpc": "2.0", "id": 1, "result": {"tools": []}})
+    assert emitter.of("tool_list_end")[0]["capture"] == BETA_CAPTURE
+
+
+def test_a_refusal_overlay_that_fails_still_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    from baton_proxy import proxy
+
+    processor, _ = _processor(_Held(_parsed(_document())))
+    _list(processor)
+
+    def broken(*_: Any) -> Any:
+        raise RuntimeError("broken")
+
+    monkeypatch.setattr(proxy, "overlaid", broken)
+    action = _call(processor, ANNOTATE_TOOL_NAME, {"user_goal": "1: x"})
+    assert action.respond["result"]["content"][0]["text"] == REFUSAL_TEXT

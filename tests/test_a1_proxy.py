@@ -91,6 +91,7 @@ def test_emit_call_end_tool() -> None:
                 "result": {"out": 1},
                 "duration_ms": 50,
                 "runtime_meta": None,
+                "capture": None,
                 "call_id": "c1",
                 "withheld": False,
             },
@@ -107,7 +108,7 @@ def test_emit_call_end_resource_read() -> None:
     assert em.calls == [
         (
             "resource_read_end",
-            {"uri": "file:///notes.txt", "duration_ms": 120, "runtime_meta": None},
+            {"uri": "file:///notes.txt", "duration_ms": 120, "runtime_meta": None, "capture": None},
         )
     ]
 
@@ -118,7 +119,10 @@ def test_emit_call_end_resource_list_extracts_count() -> None:
     result = {"resources": [{"uri": "a"}, {"uri": "b"}, {"uri": "c"}]}
     _emit_call_end(em, call, result, 30)
     assert em.calls == [
-        ("resource_list_end", {"count": 3, "duration_ms": 30, "runtime_meta": None})
+        (
+            "resource_list_end",
+            {"count": 3, "duration_ms": 30, "runtime_meta": None, "capture": None},
+        )
     ]
 
 
@@ -127,7 +131,10 @@ def test_emit_call_end_resource_list_empty_result() -> None:
     call = _PendingCall(kind="resource_list", subject="", started_ms=0, runtime_meta=None)
     _emit_call_end(em, call, None, 10)
     assert em.calls == [
-        ("resource_list_end", {"count": 0, "duration_ms": 10, "runtime_meta": None})
+        (
+            "resource_list_end",
+            {"count": 0, "duration_ms": 10, "runtime_meta": None, "capture": None},
+        )
     ]
 
 
@@ -136,7 +143,10 @@ def test_emit_call_end_prompt_get() -> None:
     call = _PendingCall(kind="prompt_get", subject="summarize", started_ms=0, runtime_meta=None)
     _emit_call_end(em, call, {"messages": []}, 40)
     assert em.calls == [
-        ("prompt_get_end", {"name": "summarize", "duration_ms": 40, "runtime_meta": None})
+        (
+            "prompt_get_end",
+            {"name": "summarize", "duration_ms": 40, "runtime_meta": None, "capture": None},
+        )
     ]
 
 
@@ -145,7 +155,9 @@ def test_emit_call_end_prompt_list_extracts_count() -> None:
     call = _PendingCall(kind="prompt_list", subject="", started_ms=0, runtime_meta=None)
     result = {"prompts": [{"name": "p1"}, {"name": "p2"}]}
     _emit_call_end(em, call, result, 20)
-    assert em.calls == [("prompt_list_end", {"count": 2, "duration_ms": 20, "runtime_meta": None})]
+    assert em.calls == [
+        ("prompt_list_end", {"count": 2, "duration_ms": 20, "runtime_meta": None, "capture": None})
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -173,6 +185,7 @@ def test_emit_call_error_tool() -> None:
                 # tests/test_iserror_reclassification.py.
                 "result": None,
                 "runtime_meta": None,
+                "capture": None,
                 "call_id": "c1",
                 "failure_kind": None,
                 "withheld": False,

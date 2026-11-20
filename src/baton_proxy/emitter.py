@@ -227,6 +227,8 @@ class _Event:
     # §11.4). None → omitted WHOLE.
     organization: _PrincipalWire | None = None
     call_id: str | None = None
+    # Which Console settings the call ran under (SPEC §11.4). None → omitted.
+    capture: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -248,6 +250,8 @@ class _Event:
             d["principal"] = self.principal.to_json()
         if self.organization is not None:
             d["organization"] = self.organization.to_json()
+        if self.capture is not None:
+            d["capture"] = self.capture
         if self.call_id is not None:
             d["call_id"] = self.call_id
         return d
@@ -426,6 +430,7 @@ class Emitter:
         session_id: str | None = None,
         principal: Principal | Organization | None = None,
         call_id: str,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         # `call_intent` / `call_expected` / `call_workflow` are the values
         # stripped from the injected per-tool params. They ride the payload as
@@ -447,6 +452,7 @@ class Emitter:
         if intent_source is not None:
             payload["intent_source"] = intent_source
         self._enqueue(
+            capture=capture,
             event_type="tool_call_start",
             payload=payload,
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -495,6 +501,7 @@ class Emitter:
         principal: Principal | Organization | None = None,
         call_id: str,
         withheld: bool = False,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         payload: dict[str, Any] = {"tool_name": tool_name, "duration_ms": duration_ms}
         # SPEC §11.2 item 6: a withheld result never enters the event.
@@ -507,6 +514,7 @@ class Emitter:
         # that serves many sessions from one process MUST pass the per-event session
         # so the end row attributes to the right timeline.
         self._enqueue(
+            capture=capture,
             event_type="tool_call_end",
             payload=payload,
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -529,6 +537,7 @@ class Emitter:
         call_id: str,
         failure_kind: str | None = None,
         withheld: bool = False,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         """SPEC §11.4.3. ``result`` carries the full MCP envelope for a failure
         the tool RETURNED, and is None for a protocol fault, where there is no
@@ -553,6 +562,7 @@ class Emitter:
         if failure_kind is not None:
             payload["failure_kind"] = failure_kind
         self._enqueue(
+            capture=capture,
             event_type="tool_call_error",
             payload=payload,
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -567,8 +577,10 @@ class Emitter:
         uri: str,
         params: Mapping[str, Any] | None,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="resource_read_start",
             payload={"uri": uri, "params": dict(params) if params else {}},
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -580,8 +592,10 @@ class Emitter:
         uri: str,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="resource_read_end",
             payload={"uri": uri, "duration_ms": duration_ms},
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -595,8 +609,10 @@ class Emitter:
         error_body: str,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="resource_read_error",
             payload={
                 "uri": uri,
@@ -611,8 +627,10 @@ class Emitter:
         self,
         *,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="resource_list_start",
             payload={},
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -624,8 +642,10 @@ class Emitter:
         count: int,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="resource_list_end",
             payload={"count": count, "duration_ms": duration_ms},
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -638,8 +658,10 @@ class Emitter:
         error_body: str,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="resource_list_error",
             payload={
                 "error_type": error_type,
@@ -655,8 +677,10 @@ class Emitter:
         name: str,
         params: Mapping[str, Any] | None,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="prompt_get_start",
             payload={"name": name, "params": dict(params) if params else {}},
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -668,8 +692,10 @@ class Emitter:
         name: str,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="prompt_get_end",
             payload={"name": name, "duration_ms": duration_ms},
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -683,8 +709,10 @@ class Emitter:
         error_body: str,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="prompt_get_error",
             payload={
                 "name": name,
@@ -699,8 +727,10 @@ class Emitter:
         self,
         *,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="prompt_list_start",
             payload={},
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -712,8 +742,10 @@ class Emitter:
         count: int,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="prompt_list_end",
             payload={"count": count, "duration_ms": duration_ms},
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -726,8 +758,10 @@ class Emitter:
         error_body: str,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="prompt_list_error",
             payload={
                 "error_type": error_type,
@@ -741,8 +775,10 @@ class Emitter:
         self,
         *,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="tool_list_start",
             payload={},
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -754,8 +790,10 @@ class Emitter:
         count: int,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="tool_list_end",
             payload={"count": count, "duration_ms": duration_ms},
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -768,8 +806,10 @@ class Emitter:
         error_body: str,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
+            capture=capture,
             event_type="tool_list_error",
             payload={
                 "error_type": error_type,
@@ -794,6 +834,7 @@ class Emitter:
         session_id: str | None = None,
         principal: Principal | Organization | None = None,
         signal_type: str | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         """Annotation event per SPEC §11.4; nullable keys omitted when None.
 
@@ -819,6 +860,7 @@ class Emitter:
         }
         payload = {k: v for k, v in candidates.items() if v is not None}
         self._enqueue(
+            capture=capture,
             event_type="annotation",
             payload=payload,
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
@@ -835,6 +877,7 @@ class Emitter:
         session_id: str | None = None,
         principal: Principal | Organization | None = None,
         call_id: str | None = None,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         # `session_id` overrides the per-process session for callers that
         # carry their own session identity per event (the ExtMCP adapter keys
@@ -887,6 +930,7 @@ class Emitter:
             principal=principal_wire,
             organization=organization_wire,
             call_id=call_id,
+            capture=dict(capture) if capture else None,
         )
 
         with self._enqueue_lock:

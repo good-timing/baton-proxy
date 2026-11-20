@@ -216,7 +216,7 @@ class _PendingCall:
     for keyed kinds, empty string for list kinds.
     """
 
-    __slots__ = ("kind", "subject", "started_ms", "runtime_meta", "call_id", "withhold")
+    __slots__ = ("kind", "subject", "started_ms", "runtime_meta", "call_id", "withhold", "capture")
 
     def __init__(
         self,
@@ -226,6 +226,7 @@ class _PendingCall:
         runtime_meta: dict[str, Any] | None,
         call_id: str | None = None,
         withhold: bool = False,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         self.kind = kind
         self.subject = subject
@@ -233,6 +234,7 @@ class _PendingCall:
         self.runtime_meta = runtime_meta
         self.call_id = call_id
         self.withhold = withhold
+        self.capture = capture
 
 
 def _is_request_id(value: Any) -> bool:
@@ -247,12 +249,13 @@ def _emit_call_end(
     duration_ms: int,
 ) -> None:
     """Dispatch the correct *_end event for any pending-call kind."""
+    envelope = {"runtime_meta": call.runtime_meta, "capture": call.capture}
     if call.kind == "tool":
         emitter.enqueue_tool_call_end(
             tool_name=call.subject,
             result=result,
             duration_ms=duration_ms,
-            runtime_meta=call.runtime_meta,
+            **envelope,
             call_id=call.call_id,
             withheld=call.withhold,
         )
@@ -260,25 +263,35 @@ def _emit_call_end(
         tools = result.get("tools") if isinstance(result, dict) else None
         count = len(tools) if isinstance(tools, list) else 0
         emitter.enqueue_tool_list_end(
-            count=count, duration_ms=duration_ms, runtime_meta=call.runtime_meta
+            count=count,
+            duration_ms=duration_ms,
+            **envelope,
         )
     elif call.kind == "resource_read":
         emitter.enqueue_resource_read_end(
-            uri=call.subject, duration_ms=duration_ms, runtime_meta=call.runtime_meta
+            uri=call.subject,
+            duration_ms=duration_ms,
+            **envelope,
         )
     elif call.kind == "resource_list":
         count = len((result or {}).get("resources", []))
         emitter.enqueue_resource_list_end(
-            count=count, duration_ms=duration_ms, runtime_meta=call.runtime_meta
+            count=count,
+            duration_ms=duration_ms,
+            **envelope,
         )
     elif call.kind == "prompt_get":
         emitter.enqueue_prompt_get_end(
-            name=call.subject, duration_ms=duration_ms, runtime_meta=call.runtime_meta
+            name=call.subject,
+            duration_ms=duration_ms,
+            **envelope,
         )
     elif call.kind == "prompt_list":
         count = len((result or {}).get("prompts", []))
         emitter.enqueue_prompt_list_end(
-            count=count, duration_ms=duration_ms, runtime_meta=call.runtime_meta
+            count=count,
+            duration_ms=duration_ms,
+            **envelope,
         )
 
 
@@ -299,6 +312,7 @@ def _emit_call_error(
     ``withheld_body`` is what a tool call whose results are withheld sends
     instead of ``error_body``; ``None`` when the proxy wrote that body itself.
     """
+    envelope = {"runtime_meta": call.runtime_meta, "capture": call.capture}
     if call.kind == "tool":
         withheld = False
         if call.withhold and withheld_body is not None:
@@ -309,7 +323,7 @@ def _emit_call_error(
             error_body=error_body,
             duration_ms=duration_ms,
             result=result,
-            runtime_meta=call.runtime_meta,
+            **envelope,
             call_id=call.call_id,
             failure_kind="tool_hidden" if error_type == HIDDEN_TOOL_ERROR_TYPE else None,
             withheld=withheld,
@@ -319,7 +333,7 @@ def _emit_call_error(
             error_type=error_type,
             error_body=error_body,
             duration_ms=duration_ms,
-            runtime_meta=call.runtime_meta,
+            **envelope,
         )
     elif call.kind == "resource_read":
         emitter.enqueue_resource_read_error(
@@ -327,14 +341,14 @@ def _emit_call_error(
             error_type=error_type,
             error_body=error_body,
             duration_ms=duration_ms,
-            runtime_meta=call.runtime_meta,
+            **envelope,
         )
     elif call.kind == "resource_list":
         emitter.enqueue_resource_list_error(
             error_type=error_type,
             error_body=error_body,
             duration_ms=duration_ms,
-            runtime_meta=call.runtime_meta,
+            **envelope,
         )
     elif call.kind == "prompt_get":
         emitter.enqueue_prompt_get_error(
@@ -342,14 +356,14 @@ def _emit_call_error(
             error_type=error_type,
             error_body=error_body,
             duration_ms=duration_ms,
-            runtime_meta=call.runtime_meta,
+            **envelope,
         )
     elif call.kind == "prompt_list":
         emitter.enqueue_prompt_list_error(
             error_type=error_type,
             error_body=error_body,
             duration_ms=duration_ms,
-            runtime_meta=call.runtime_meta,
+            **envelope,
         )
 
 
@@ -665,6 +679,31 @@ def _report_overlay_once(overlay: Overlay) -> None:
         )
 
 
+def _capture_of(now: CallSettings, served: CallSettings) -> Mapping[str, Any] | None:
+    """``capture`` (SPEC §11.4): ``now``'s document and audience, and the
+    overlay the agent was served."""
+    capture = {k: v for k, v in now.capture.items() if k != "overlay"}
+    if capture and served.overlay is not None and served.overlay.id is not None:
+        capture["overlay"] = served.overlay.id
+    return capture or None
+
+
+@dataclass(frozen=True)
+class _Listing:
+    """The settings a connection's tools were listed under, and what they serve."""
+
+    settings: CallSettings
+    report_tools: list[dict[str, Any]]
+    capture: Mapping[str, Any] | None
+
+
+@dataclass(frozen=True)
+class _Resolved:
+    served: CallSettings
+    withhold: bool
+    capture: Mapping[str, Any] | None
+
+
 class MessageProcessor:
     """Transport-independent MCP message layer.
 
@@ -695,13 +734,13 @@ class MessageProcessor:
         self._overlay = overlay
         self._settings = settings
         self._client_name: str | None = None
-        self._warned_withhold = False
+        self._warned_resolve = False
         # An overlay file serves every connection the same; Console settings
         # are taken on initialize and on each first page of tools.
         self._server_overlay = overlay
         self._instructions_suffix = injection.instructions_suffix
         # The listing's settings and the report tools they serve, swapped as one.
-        self._listing: tuple[CallSettings, list[dict[str, Any]]] | None = None
+        self._listing: _Listing | None = None
         if settings is None:
             self._list_under(CallSettings(capture={}, overlay=overlay))
         # test_a_call_before_any_listing_drops_no_param
@@ -746,9 +785,18 @@ class MessageProcessor:
         runtime_meta: dict[str, Any] | None,
         call_id: str | None = None,
         withhold: bool = False,
+        capture: Mapping[str, Any] | None = None,
     ) -> None:
         """Register an in-flight call whose start is already emitted."""
-        call = _PendingCall(kind, subject, utc_now_ms(), runtime_meta, call_id, withhold)
+        call = _PendingCall(
+            kind,
+            subject,
+            utc_now_ms(),
+            runtime_meta,
+            call_id=call_id,
+            withhold=withhold,
+            capture=capture,
+        )
         if not _is_request_id(req_id):
             _close_unanswered(
                 self._emitter,
@@ -816,17 +864,19 @@ class MessageProcessor:
             except Exception:
                 logger.exception("baton-proxy: tools/list tracking failed")
             runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+            capture = self._resolve(first_page=not params.get("cursor")).capture
             try:
-                self._emitter.enqueue_tool_list_start(runtime_meta=runtime_meta)
+                self._emitter.enqueue_tool_list_start(runtime_meta=runtime_meta, capture=capture)
             except Exception:
                 logger.exception("baton-proxy: enqueue tool_list_start failed")
             else:
-                self._track(req_id, "tool_list", "", runtime_meta)
+                self._track(req_id, "tool_list", "", runtime_meta, capture=capture)
             return _ClientAction(forward=req)
 
         if method == "tools/call":
             params = req.get("params", {}) or {}
             tool_name = params.get("name")
+            resolved = self._resolve()
             if tool_name in self._injection.names:
                 # The proxy owns this tool — don't forward. Emit the annotation
                 # event before synthesising the response; that's the whole
@@ -838,7 +888,8 @@ class MessageProcessor:
                 # leave NO event.
                 what_happened = args.get("what_happened")
                 if not _is_report(what_happened):
-                    return _ClientAction(respond=_refuse_pre_call_annotation(req, self._refusal()))
+                    refusal = self._refusal(resolved.served.overlay)
+                    return _ClientAction(respond=_refuse_pre_call_annotation(req, refusal))
                 reported_tool = args.get("tool_name")
                 ann_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
                 ctx = args.get("context") if isinstance(args.get("context"), dict) else None
@@ -854,6 +905,7 @@ class MessageProcessor:
                         suggested_improvement=args.get("suggested_improvement"),
                         context=ctx,
                         runtime_meta=ann_meta,
+                        capture=resolved.capture,
                     )
                 except Exception:
                     logger.exception("baton-proxy: enqueue annotation failed")
@@ -877,7 +929,9 @@ class MessageProcessor:
             call_intent, call_expected, call_workflow = self._extract_goal_params(
                 safe_tool_name, params
             )
-            hidden_response = self._apply_overlay_to_call(safe_tool_name, req, params)
+            hidden_response = self._apply_overlay_to_call(
+                safe_tool_name, req, params, resolved.served.overlay
+            )
 
             call_id = str(uuid.uuid4())
             try:
@@ -894,12 +948,19 @@ class MessageProcessor:
                     ),
                     runtime_meta=runtime_meta,
                     call_id=call_id,
+                    capture=resolved.capture,
                 )
             except Exception:
                 logger.exception("baton-proxy: enqueue tool_call_start failed")
             else:
                 self._track(
-                    req_id, "tool", safe_tool_name, runtime_meta, call_id, self._withholds()
+                    req_id,
+                    "tool",
+                    safe_tool_name,
+                    runtime_meta,
+                    call_id=call_id,
+                    withhold=resolved.withhold,
+                    capture=resolved.capture,
                 )
             if hidden_response is not None:
                 # SPEC §11.4.3: the body is the unknown-tool answer the agent got.
@@ -909,6 +970,7 @@ class MessageProcessor:
                 return _ClientAction(respond=hidden_response)
 
         elif method == "resources/read":
+            capture = self._resolve().capture
             params = req.get("params", {}) or {}
             uri = str(params.get("uri") or "")
             runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
@@ -918,24 +980,29 @@ class MessageProcessor:
                     uri=uri,
                     params={k: v for k, v in params.items() if k != "_meta"} or None,
                     runtime_meta=runtime_meta,
+                    capture=capture,
                 )
             except Exception:
                 logger.exception("baton-proxy: enqueue resource_read_start failed")
             else:
-                self._track(req_id, "resource_read", uri, runtime_meta)
+                self._track(req_id, "resource_read", uri, runtime_meta, capture=capture)
 
         elif method == "resources/list":
+            capture = self._resolve().capture
             params = req.get("params", {}) or {}
             runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
             req_id = req.get("id")
             try:
-                self._emitter.enqueue_resource_list_start(runtime_meta=runtime_meta)
+                self._emitter.enqueue_resource_list_start(
+                    runtime_meta=runtime_meta, capture=capture
+                )
             except Exception:
                 logger.exception("baton-proxy: enqueue resource_list_start failed")
             else:
-                self._track(req_id, "resource_list", "", runtime_meta)
+                self._track(req_id, "resource_list", "", runtime_meta, capture=capture)
 
         elif method == "prompts/get":
+            capture = self._resolve().capture
             params = req.get("params", {}) or {}
             name = str(params.get("name") or "")
             runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
@@ -945,22 +1012,24 @@ class MessageProcessor:
                     name=name,
                     params=params.get("arguments"),
                     runtime_meta=runtime_meta,
+                    capture=capture,
                 )
             except Exception:
                 logger.exception("baton-proxy: enqueue prompt_get_start failed")
             else:
-                self._track(req_id, "prompt_get", name, runtime_meta)
+                self._track(req_id, "prompt_get", name, runtime_meta, capture=capture)
 
         elif method == "prompts/list":
+            capture = self._resolve().capture
             params = req.get("params", {}) or {}
             runtime_meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
             req_id = req.get("id")
             try:
-                self._emitter.enqueue_prompt_list_start(runtime_meta=runtime_meta)
+                self._emitter.enqueue_prompt_list_start(runtime_meta=runtime_meta, capture=capture)
             except Exception:
                 logger.exception("baton-proxy: enqueue prompt_list_start failed")
             else:
-                self._track(req_id, "prompt_list", "", runtime_meta)
+                self._track(req_id, "prompt_list", "", runtime_meta, capture=capture)
 
         return _ClientAction(forward=req)
 
@@ -1077,7 +1146,11 @@ class MessageProcessor:
                 logger.exception("baton-proxy: enqueue end/error failed")
 
         listing = self._take_listing(msg.get("id"))
+        before = self._listing
         overlay = self._follow_settings(msg, listing)
+        # The end records the settings this page was answered under, if it took new ones.
+        if listing is True and call is not None and self._listing is not before:
+            call.capture = self._listing.capture if self._listing is not None else None
         overlaid_tools = None
         if listing is not None:
             self._learn_tools(msg)
@@ -1191,7 +1264,11 @@ class MessageProcessor:
             logger.exception("baton-proxy: surface snapshot capture failed")
 
     def _apply_overlay_to_call(
-        self, tool_name: str, req: dict[str, Any], params: dict[str, Any]
+        self,
+        tool_name: str,
+        req: dict[str, Any],
+        params: dict[str, Any],
+        overlay: Overlay | None,
     ) -> dict[str, Any] | None:
         """Drop hidden params from a call; return the reply for a hidden tool.
 
@@ -1199,7 +1276,6 @@ class MessageProcessor:
         the agent was told does not exist.
         """
         try:
-            overlay = self._caller().overlay
             if overlay is None:
                 return None
             if tool_name in overlay.hidden_tools:
@@ -1216,26 +1292,38 @@ class MessageProcessor:
             logger.exception("baton-proxy: overlay on tools/call failed")
         return None
 
-    def _withholds(self) -> bool:
-        """Whether this call's results are withheld: ``results`` applies at the
-        next call, from the document held now (SPEC §2.6)."""
+    def _resolve(self, *, first_page: bool | None = None) -> _Resolved:
+        """One request's settings, read once (SPEC §2.6). Its results follow the
+        document held now. Its overlay and ``capture`` are those of the list the
+        agent holds; a first page of tools (``first_page``) takes the document's,
+        and a later page its first page's."""
+        held = self._listing
         try:
-            document = self._settings.document if self._settings is not None else None
-            if document is None or not document.withholds_results:
-                return False
-            return self._call_settings().result_capture_mode == "off"
+            if first_page is False and held is not None:
+                return _Resolved(held.settings, self._withheld_now(), held.capture)
+            now = self._call_settings()
+            served = now if first_page or held is None else held.settings
+            return _Resolved(served, now.result_capture_mode == "off", _capture_of(now, served))
         except Exception:
-            if not self._warned_withhold:
-                self._warned_withhold = True
+            if not self._warned_resolve:
+                self._warned_resolve = True
                 logger.exception(
-                    "baton-proxy: could not apply Console settings; results are withheld"
+                    "baton-proxy: could not apply Console settings; results are withheld "
+                    "and events carry no capture until it can"
                 )
-            return self._settings is not None
+            served = held.settings if held is not None else _CODE_VALUES
+            return _Resolved(served, self._settings is not None, None)
 
-    def _caller(self) -> CallSettings:
-        """The settings a call runs under: those its connection's tools were
-        listed with, so a call never contradicts the list the agent holds."""
-        return self._listing[0] if self._listing is not None else self._call_settings()
+    @staticmethod
+    def _refusal(overlay: Overlay | None) -> str:
+        try:
+            return overlaid(REFUSAL_TEXT, overlay, "report_tool.refusal")
+        except Exception:
+            logger.exception("baton-proxy: could not apply Console settings")
+            return REFUSAL_TEXT
+
+    def _withheld_now(self) -> bool:
+        return self._call_settings().result_capture_mode == "off"
 
     def _call_settings(self) -> CallSettings:
         """This caller's settings under the document held now (SPEC §2.6)."""
@@ -1252,7 +1340,7 @@ class MessageProcessor:
             for tool in self._injection.tools
             if listed.report_mode != "off"
         ]
-        self._listing = (listed, tools)
+        self._listing = _Listing(listed, tools, _capture_of(listed, listed))
 
     def _follow_settings(self, msg: dict[str, Any], listing: bool | None) -> Overlay | None:
         """The overlay ``msg`` gets. Under Console settings a first page of tools
@@ -1267,7 +1355,7 @@ class MessageProcessor:
             except Exception:
                 logger.exception("baton-proxy: could not apply Console settings")
         if listing is not None:
-            return self._listing[0].overlay if self._listing is not None else None
+            return self._listing.settings.overlay if self._listing is not None else None
         return self._server_overlay if initialize else None
 
     def _serve_instructions(self, document: SettingsDocument | None) -> None:
@@ -1285,13 +1373,6 @@ class MessageProcessor:
                 overlay_label(self._server_overlay),
             )
 
-    def _refusal(self) -> str:
-        try:
-            return overlaid(REFUSAL_TEXT, self._caller().overlay, "report_tool.refusal")
-        except Exception:
-            logger.exception("baton-proxy: could not apply Console settings")
-        return REFUSAL_TEXT
-
     def _learn_tools(self, msg: dict[str, Any]) -> None:
         try:
             names = {
@@ -1306,7 +1387,7 @@ class MessageProcessor:
 
     def inject(self, msg: dict[str, Any]) -> dict[str, Any]:
         """``msg`` with the proxy's instructions and tools, as this connection gets them."""
-        tools = self._listing[1] if self._listing is not None else self._injection.tools
+        tools = self._listing.report_tools if self._listing is not None else self._injection.tools
         return _inject_into_response(msg, self._instructions_suffix, tools)
 
     def _overlay_tools(self, msg: dict[str, Any], overlay: Overlay | None) -> list[Any] | None:
@@ -1398,7 +1479,7 @@ class MessageProcessor:
 
     def _goal_param(self) -> tuple[str, str]:
         """The goal mode and description this connection's listing takes."""
-        listed = self._listing[0] if self._listing is not None else _CODE_VALUES
+        listed = self._listing.settings if self._listing is not None else _CODE_VALUES
         mode = listed.intent_param_mode or self._injection.intent_param_mode
         served = build_user_goal_param_description(intent_param_mode=mode)
         return mode, overlaid(served, listed.overlay, "goal_param.description")
