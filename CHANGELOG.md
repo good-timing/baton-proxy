@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`--console-settings`** makes the proxy follow the settings and overlays saved in the Console, read every minute from the Console the events go to, with no restart. It works with `listen`, `--url`, a stdio wrap and `baton-proxy wrap`, and is refused with `--overlay` or without a Console to read from. Each session is matched to an audience by its client's name, takes its goal, reports and overlay each time it lists tools, and records them on every event in `capture`. An audience with results off gets no result and no answer text in its events. The report tool is on by default under Console settings.
+- **A call to a hidden tool** records `failure_kind` `tool_hidden` and the unknown-tool answer the agent got.
+
+### Changed
+
+- **The schema pin** moves to baton-spec `80a46da`.
+
 ## [0.8.1] — 2026-11-17
 
 ### Added

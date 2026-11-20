@@ -169,6 +169,21 @@ def build_wrapped_entry(
     url: str | None,
     python: str,
     npx: str | None,
+    console_settings: bool = False,
+) -> dict[str, Any]:
+    wrapped = _wrapped_entry(original, url=url, python=python, npx=npx)
+    if console_settings:
+        args = wrapped["args"]
+        args.insert(args.index("baton_proxy") + 1, "--console-settings")
+    return wrapped
+
+
+def _wrapped_entry(
+    original: dict[str, Any] | None,
+    *,
+    url: str | None,
+    python: str,
+    npx: str | None,
 ) -> dict[str, Any]:
     if original is None:
         assert url is not None
@@ -216,6 +231,7 @@ def apply_wrap(
     url: str | None = None,
     project: str | None = None,
     baton_env: dict[str, str] | None = None,
+    console_settings: bool = False,
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any]]:
     """Returns (new config text, the original entry or None if added, the entry written)."""
     data = _parse(config_text, "the config")
@@ -228,7 +244,10 @@ def apply_wrap(
         raise Refused(f"no server named {name!r}. Servers in this config: {names}")
     if original is not None and not isinstance(original, dict):
         raise Refused(f"{name!r} is not an object")
-    wrapped = _with_env(build_wrapped_entry(original, url=url, python=python, npx=npx), baton_env)
+    built = build_wrapped_entry(
+        original, url=url, python=python, npx=npx, console_settings=console_settings
+    )
+    wrapped = _with_env(built, baton_env)
     servers[name] = wrapped
     return _dumps_like(data, config_text), original, wrapped
 
@@ -401,6 +420,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     e.add_argument("--url", help="Make a new remote server's entry instead (mcp-remote).")
     e.add_argument("--dsn", help="The DSN from the Console's Settings.")
+    for parser in (w, e):
+        parser.add_argument(
+            "--console-settings",
+            action="store_true",
+            help="Follow the capture settings and overlays saved in the Console. Needs --dsn.",
+        )
     return p
 
 
@@ -443,6 +468,8 @@ def dsn_env(raw: str) -> dict[str, str]:
 
 
 def _baton_env(args: argparse.Namespace) -> dict[str, str]:
+    if args.console_settings and args.dsn is None:
+        raise Refused("--console-settings reads the settings from the Console, so it needs --dsn")
     return dsn_env(args.dsn) if args.dsn is not None else {}
 
 
@@ -467,7 +494,11 @@ def _wrap_entry(args: argparse.Namespace) -> int:
         raise Refused("pass an entry on stdin or --url, not both")
     baton_env = _baton_env(args)
     wrapped = build_wrapped_entry(
-        original, url=args.url, python=launch_python(sys.executable), npx=_find_npx()
+        original,
+        url=args.url,
+        python=launch_python(sys.executable),
+        npx=_find_npx(),
+        console_settings=args.console_settings,
     )
     # A client that types its entries (VS Code) needs one on the stdio entry that replaced an http one.
     if original is not None and "type" in original:
@@ -492,6 +523,7 @@ def _wrap(args: argparse.Namespace, config: Path) -> int:
         url=args.url,
         project=args.project,
         baton_env=_baton_env(args),
+        console_settings=args.console_settings,
     )
     print(f"{args.name} in {config}:\n{_shown(wrapped)}")
     if args.dry_run:

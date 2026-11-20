@@ -343,3 +343,20 @@ def test_the_http_sink_never_follows_a_redirect_with_its_key() -> None:
 )
 def test_shown_sinks_names_where_events_go_and_no_credential(spec, want):
     assert shown_sinks(spec) == want
+
+
+@pytest.mark.parametrize(
+    ("spec", "origin"),
+    [
+        ("stderr:,https://c.example/", "https://c.example"),
+        ("file:///tmp/e.jsonl", None),
+        ("https://a.example,https://b.example", None),
+        ("http://c.example", None),
+        ("http://127.0.0.1:9000", "http://127.0.0.1:9000"),
+        (None, None),
+    ],
+)
+def test_the_console_is_the_one_http_leg(spec, origin) -> None:
+    from baton_proxy.sinks import console_origin
+
+    assert console_origin(spec) == origin

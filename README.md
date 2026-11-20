@@ -130,7 +130,23 @@ An overlay changes what the agent sees without touching the server. The file hol
 }
 ```
 
-JSON always works. YAML needs `pip install 'baton-proxy[overlay]'`. A malformed file stops the proxy at startup. An action the tool list cannot take, such as a tool or parameter the server does not list, is logged as an error once the server lists its tools. A required parameter is listed as required but never enforced. Targets on Baton's own text (`agent_text`) are not supported yet. A call to a hidden tool is answered by the proxy and never reaches the server. Events still record the server's own surface, and the surface snapshot carries the overlay's hash.
+JSON always works. YAML needs `pip install 'baton-proxy[overlay]'`. A malformed file stops the proxy at startup. An action the tool list cannot take, such as a tool or parameter the server does not list, is logged as an error once the server lists its tools. A required parameter is listed as required but never enforced. An overlay file cannot change Baton's own text (`agent_text`). An overlay saved in the Console can. A call to a hidden tool is answered by the proxy and never reaches the server. Events still record the server's own surface, and the surface snapshot carries the overlay's hash.
+
+## Console settings
+
+With `--console-settings` the proxy follows the settings and overlays saved in the Console, so a change reaches a running proxy without a restart. It reads them from the Console the events go to, so it needs `--dsn`, or one `https://` event sink with `BATON_API_KEY`, `BATON_TENANT_ID` and `BATON_VENDOR_ID`. It works with `listen`, `--url` and a stdio wrap, and `baton-proxy wrap --dsn ... --console-settings` writes it into a client's config. It cannot be used with `--overlay`.
+
+```sh
+baton-proxy listen --listen 127.0.0.1:8710 --url https://mcp.example.com/mcp \
+  --dsn 'https://baton_pk_...@baton.goodtiming.ai/ten_.../srv-...' --console-settings
+```
+
+- The proxy reads the settings at startup and then every minute. A stdio or `--url` proxy waits up to 5 seconds for the first read, because its client lists tools once. `listen` does not wait. Until the first read, and whenever the Console holds none, it runs on its own settings. If a read fails it keeps the last settings it read, and a refused read is logged.
+- Each session is matched to an audience by the name its client declares in the handshake. An audience that matches by label or share never matches here, because the proxy knows no person behind a session.
+- A session takes its audience's goal, reports and overlay each time it lists tools. Its calls follow the list it was given until it lists again. The server's instructions and the server overlay are set when a session starts.
+- Under Console settings the report tool is on unless `BATON_ANNOTATE=off`. The Console can take it away from some callers but cannot add it.
+- With results off for an audience, its calls' events carry no result, and an error that came from the server's answer carries no text. They say so with `result_capture`. Errors the proxy writes itself keep their text. The messages of `tool_list_error` and the resource and prompt error events are still sent in full.
+- Every event a session makes records the settings it ran under in `capture`. Every answer from `listen` carries `Baton-Overlay: console`, and `baton-proxy check` does not compare such a listener.
 
 ## What the listener records
 
@@ -158,7 +174,7 @@ A misconfigured sink fails loudly at startup rather than silently dropping event
 
 - **Open source, Apache 2.0.** Auditable end-to-end.
 - **Fail-open.** A Console outage, a network issue or an instrumentation bug never breaks the MCP pipe. If injection or stripping raises, the message is forwarded unmodified.
-- **Outbound-only, except `listen`.** A wrapped server's proxy never accepts inbound connections. `baton-proxy listen` accepts them on the one address you pass it. Events go to the configured sink, either an HTTPS POST out or a local file write, and that is the only egress surface.
+- **Outbound-only, except `listen`.** A wrapped server's proxy never accepts inbound connections. `baton-proxy listen` accepts them on the one address you pass it. Events go to the configured sink, either an HTTPS POST out or a local file write. With `--console-settings` the proxy also reads its settings from that same Console. Those are the only egress surfaces.
 - **Source-side scrubbing, on by default**, with the limits stated above.
 - **Emission off the hot path.** Events are enqueued onto a background thread; the I/O pump does not wait for the POST.
 

@@ -157,7 +157,9 @@ class Config:
         return self.consent_token == DEFAULT_CONSENT_TOKEN
 
     @classmethod
-    def from_env(cls, *, removal_hint: str | None = None) -> Config:
+    def from_env(
+        cls, *, removal_hint: str | None = None, default_report_mode: str = DEFAULT_REPORT_MODE
+    ) -> Config:
         """Read the environment into a Config, collecting startup warnings.
 
         ⚠ **`removal_hint` exists because this method has TWO callers and only
@@ -211,7 +213,7 @@ class Config:
             # Warned rather than refused, like BATON_INTENT_PARAM=off: an old
             # config entry must not stop the wrapped server from starting.
             warnings.append("baton-proxy: BATON_PROACTIVE is no longer read and has no effect.")
-        report_mode = _env("BATON_ANNOTATE") or DEFAULT_REPORT_MODE
+        report_mode = _env("BATON_ANNOTATE") or default_report_mode
         if report_mode not in REPORT_MODES:
             raise ValueError(
                 f"BATON_ANNOTATE must be one of {sorted(REPORT_MODES)}; got {report_mode!r}."

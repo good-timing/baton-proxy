@@ -261,9 +261,9 @@ class MultiSink(Sink):
 def _split_spec(url_spec: str | None) -> list[str]:
     """The legs of a comma-separated sink spec, stripped, empties dropped.
 
-    One definition because there are two readers — ``make_sink`` builds sinks
-    from these legs, ``find_file_sink_path`` reads a path out of them — and the
-    tolerances (surrounding whitespace, empty segments from a trailing or
+    One definition because several readers share it — ``make_sink`` builds
+    sinks from these legs, the others read schemes, a path or the Console's
+    origin out of them — and the tolerances (surrounding whitespace, empty segments from a trailing or
     doubled comma) are a contract `test_make_sink_whitespace_tolerated` pins
     once. Two copies would let a spec that builds sinks fine resolve to no path,
     or the reverse.
@@ -299,6 +299,22 @@ def shown_sinks(url_spec: str | None) -> str:
         else:
             shown.append(f"{parsed.scheme or '?'}://<not shown>")
     return ", ".join(shown)
+
+
+def console_origin(url_spec: str | None) -> str | None:
+    """The one http(s) leg's base URL, where a Console serves its settings too.
+    ``None`` when the spec has none or several, or when plain http would carry
+    the key off this machine."""
+    legs = [p for p in _split_spec(url_spec) if urllib.parse.urlparse(p).scheme in _HTTP]
+    if len(legs) != 1:
+        return None
+    parts = urllib.parse.urlparse(legs[0])
+    if parts.scheme == "http" and parts.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return None
+    return legs[0].rstrip("/")
+
+
+_HTTP = ("http", "https")
 
 
 def find_file_sink_path(event_sink_url: str | None) -> str | None:

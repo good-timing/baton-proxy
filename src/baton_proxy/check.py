@@ -11,6 +11,7 @@ from typing import Any
 from baton_proxy._jsonrpc import answers, owed_answer_id
 from baton_proxy._urls import shown_url
 from baton_proxy.listen import (
+    CONSOLE_ROUND,
     OVERLAY_HEADER,
     UpstreamRefused,
     UpstreamUnreachable,
@@ -158,8 +159,15 @@ def main(argv: list[str]) -> int:
     except (ValueError, OverlayError) as exc:
         parser.error(str(exc))
     try:
-        direct, _ = list_tools(args.url, headers)
         proxied, running = list_tools(args.listener, headers)
+        if running == CONSOLE_ROUND:
+            print(
+                "check failed: the listener follows Console settings, so each caller's "
+                "tools follow its audience. Compare it in the Console instead.",
+                file=sys.stderr,
+            )
+            return 2
+        direct, _ = list_tools(args.url, headers)
     except CheckFailed as exc:
         print(f"check failed: {exc}", file=sys.stderr)
         return 2

@@ -33,6 +33,14 @@ TENANT_HEADER = "X-Baton-Tenant-Id"
 DEFAULT_REFRESH_S = 60.0
 MIN_REFRESH_S = 15.0
 REQUEST_TIMEOUT_S = 10.0
+CONSOLE_SETTINGS_HELP = (
+    "Follow the capture settings and overlays saved in the Console, read every minute "
+    "from the Console the events go to."
+)
+_UNREACHED = 0
+# How long startup waits for the first read, so a stdio session, which lists
+# its tools once, starts on the Console's settings.
+FIRST_READ_WAIT_S = 5.0
 # A settings document is small; a larger answer is not one.
 MAX_DOCUMENT_BYTES = 1024 * 1024
 
@@ -313,14 +321,23 @@ class SettingsFetcher:
         # The last 200's body, so an unchanged answer is not parsed again.
         self._body_digest: bytes | None = None
         self._stop = threading.Event()
+        self._first_read = threading.Event()
         self._warned = False
+        self._last_status: int | None = None
 
     @property
     def document(self) -> SettingsDocument | None:
         return self._document
 
-    def start(self) -> None:
+    def start(self, wait_s: float = 0.0) -> None:
+        """Starts reading; waits up to ``wait_s`` for the first read to finish."""
         threading.Thread(target=self._run, name="baton-settings", daemon=True).start()
+        if wait_s > 0 and not self._first_read.wait(wait_s):
+            logger.warning(
+                "baton-proxy: the Console's settings did not arrive within %.0fs. "
+                "Sessions use the proxy's own settings until they do",
+                wait_s,
+            )
 
     def stop(self) -> None:
         self._stop.set()
@@ -328,20 +345,39 @@ class SettingsFetcher:
     def _run(self) -> None:
         while not self._stop.is_set():
             self.read_once()
+            self._first_read.set()
             self._stop.wait(self._refresh_s)
 
     def read_once(self) -> None:
         """One request. Never raises: a failure keeps what is held."""
         try:
             self._read()
-        except Exception:
+        except Exception as exc:
             logger.debug("baton-proxy: reading capture settings failed", exc_info=True)
+            # Told once per run of failures, as a refused answer is.
+            if self._last_status != _UNREACHED:
+                logger.warning(
+                    "baton-proxy: could not read the capture settings from the Console (%s). "
+                    "The proxy keeps the settings it holds",
+                    type(exc).__name__,
+                )
+            self._last_status = _UNREACHED
 
     def _read(self) -> None:
         headers = dict(self._headers)
         if self._etag is not None:
             headers["If-None-Match"] = self._etag
         answer = self._get(self._url, headers, REQUEST_TIMEOUT_S)
+        refused = answer.status not in (200, 204, 304)
+        if refused and answer.status != self._last_status:
+            logger.warning(
+                "baton-proxy: the Console answered HTTP %d for the capture settings. %s",
+                answer.status,
+                "Check the key, the workspace and the server id"
+                if answer.status in (401, 403, 404)
+                else "The proxy keeps the settings it holds",
+            )
+        self._last_status = answer.status
         if answer.status == 204:
             self._document, self._etag, self._body_digest = None, None, None
         elif answer.status == 200:

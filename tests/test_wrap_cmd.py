@@ -602,3 +602,39 @@ def test_another_clients_url_key_is_named_in_the_refusal(home, monkeypatch, caps
     code, _, err = _entry(monkeypatch, capsys, json.dumps({"serverUrl": "https://a/mcp"}))
     assert code == 1
     assert "url" in err and "mcpServers shape" in err
+
+
+# --- --console-settings ---
+
+
+@pytest.mark.parametrize(
+    ("entry", "after_flag"),
+    [
+        ({"command": "npx", "args": ["@v/fs"]}, "--"),
+        ({"url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer t"}}, "--url"),
+        ({"url": "https://mcp.example.com/mcp"}, "--"),
+    ],
+    ids=["stdio", "url", "mcp-remote"],
+)
+def test_console_settings_goes_to_the_proxy_before_its_upstream(home, cfg, entry, after_flag):
+    before = _write(cfg, {"mcpServers": {"s": entry}})
+    assert run(cfg, "wrap", "s", "--dsn", DSN, "--console-settings") == 0
+    args = json.loads(cfg.read_text())["mcpServers"]["s"]["args"]
+    assert args[:4] == ["-m", "baton_proxy", "--console-settings", after_flag]
+    assert run(cfg, "unwrap", "s") == 0
+    assert cfg.read_text() == before
+
+
+def test_console_settings_without_a_dsn_is_refused(home, cfg, capsys):
+    before = _write(cfg, {"mcpServers": {"s": {"command": "npx", "args": ["@v/fs"]}}})
+    assert run(cfg, "wrap", "s", "--console-settings") == 1
+    assert "needs --dsn" in capsys.readouterr().err
+    assert cfg.read_text() == before
+
+
+def test_wrap_entry_takes_console_settings(monkeypatch, capsys):
+    monkeypatch.setattr(wrap, "_find_npx", lambda: NPX)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"command": "npx", "args": ["x"]})))
+    assert proxy_main(["wrap-entry", "--dsn", DSN, "--console-settings"]) == 0
+    args = json.loads(capsys.readouterr().out)["args"]
+    assert args[2:4] == ["--console-settings", "--"]

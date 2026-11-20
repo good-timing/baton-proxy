@@ -106,3 +106,20 @@ def test_the_check_speaks_the_protocol_current_clients_do(monkeypatch):
     with pytest.raises(check.CheckFailed):
         check.list_tools("http://127.0.0.1:1/mcp", {})
     assert sent[0]["params"]["protocolVersion"] == "2025-06-18"
+
+
+def test_a_listener_on_console_settings_is_refused_before_the_server_is_asked(
+    monkeypatch, capsys
+) -> None:
+    from baton_proxy import check
+
+    asked: list[str] = []
+
+    def listed(url: str, _headers: dict[str, str]):
+        asked.append(url)
+        return [], "console"
+
+    monkeypatch.setattr(check, "list_tools", listed)
+    assert check.main(["--listener", "http://127.0.0.1:1/mcp", "--url", "https://s/mcp"]) == 2
+    assert asked == ["http://127.0.0.1:1/mcp"]
+    assert "follows Console settings" in capsys.readouterr().err

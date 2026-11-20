@@ -511,3 +511,101 @@ def test_a_real_request_reads_the_document_and_its_etag() -> None:
     assert seen[0]["Authorization"] == "Bearer baton_pk_x"
     assert seen[0]["X-Baton-Tenant-Id"] == "ten_1"
     assert seen[1]["If-None-Match"] == '"v3-w1"'
+
+
+def test_startup_waits_for_the_first_read() -> None:
+    import time as _time
+
+    def slow(*_: Any) -> _Answer:
+        _time.sleep(0.2)
+        return _Answer(200, "e", json.dumps(CONSOLE_SAMPLE).encode())
+
+    fetcher = SettingsFetcher(
+        origin="https://c", api_key="k", tenant_id="t", vendor_id="v", get=slow
+    )
+    fetcher.start(wait_s=5)
+    try:
+        assert fetcher.document is not None
+    finally:
+        fetcher.stop()
+
+
+def test_a_first_read_that_does_not_come_is_warned_and_not_waited_on(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import threading as _threading
+
+    gate = _threading.Event()
+
+    def stuck(*_: Any) -> _Answer:
+        gate.wait(5)
+        return _Answer(204)
+
+    fetcher = SettingsFetcher(
+        origin="https://c", api_key="k", tenant_id="t", vendor_id="v", get=stuck
+    )
+    with caplog.at_level(logging.WARNING, logger="baton_proxy"):
+        fetcher.start(wait_s=0.1)
+    gate.set()
+    fetcher.stop()
+    assert "did not arrive" in caplog.text
+
+
+def test_a_refused_read_is_logged_once_per_status(caplog: pytest.LogCaptureFixture) -> None:
+    answers = iter([_Answer(401), _Answer(401), _Answer(404)])
+    fetcher = SettingsFetcher(
+        origin="https://c", api_key="k", tenant_id="t", vendor_id="v", get=lambda *_: next(answers)
+    )
+    with caplog.at_level(logging.WARNING, logger="baton_proxy"):
+        for _ in range(3):
+            fetcher.read_once()
+    assert [r.getMessage().split("HTTP ")[1][:3] for r in caplog.records] == ["401", "404"]
+
+
+def test_a_refusal_that_comes_back_after_a_good_read_is_logged_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    answers = iter([_Answer(401), _Answer(204), _Answer(401)])
+    fetcher = SettingsFetcher(
+        origin="https://c", api_key="k", tenant_id="t", vendor_id="v", get=lambda *_: next(answers)
+    )
+    with caplog.at_level(logging.WARNING, logger="baton_proxy"):
+        for _ in range(3):
+            fetcher.read_once()
+    assert len(caplog.records) == 2
+
+
+def test_a_console_that_cannot_be_reached_is_warned_once_per_outage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def down(*_: Any) -> _Answer:
+        raise OSError("refused")
+
+    answers = iter([down, down, lambda *_: _Answer(204), down])
+
+    def get(*args: Any) -> _Answer:
+        return next(answers)(*args)
+
+    fetcher = SettingsFetcher(
+        origin="https://c", api_key="k", tenant_id="t", vendor_id="v", get=get
+    )
+    with caplog.at_level(logging.WARNING, logger="baton_proxy"):
+        for _ in range(4):
+            fetcher.read_once()
+    assert [r.getMessage().count("could not read") for r in caplog.records] == [1, 1]
+
+
+@pytest.mark.parametrize(("status", "hint"), [(401, "Check the key"), (503, "keeps the settings")])
+def test_a_refusal_says_what_to_look_at(
+    caplog: pytest.LogCaptureFixture, status: int, hint: str
+) -> None:
+    fetcher = SettingsFetcher(
+        origin="https://c",
+        api_key="k",
+        tenant_id="t",
+        vendor_id="v",
+        get=lambda *_: _Answer(status),
+    )
+    with caplog.at_level(logging.WARNING, logger="baton_proxy"):
+        fetcher.read_once()
+    assert hint in caplog.text

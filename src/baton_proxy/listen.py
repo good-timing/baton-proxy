@@ -55,6 +55,7 @@ from baton_proxy.proxy import (
     no_response_error,
     rpc_error,
 )
+from baton_proxy.settings import CONSOLE_SETTINGS_HELP
 from baton_proxy.sinks import is_remote_spec, shown_sinks, spec_schemes
 from baton_proxy.transport_http import (
     POST_HEADERS,
@@ -83,6 +84,7 @@ _HOP_BY_HOP = frozenset(
     }
 )
 OVERLAY_HEADER = "Baton-Overlay"
+CONSOLE_ROUND = "console"
 # Each side has its own session id: the listener's to the client, the upstream's to it.
 _NEVER_RELAYED = _HOP_BY_HOP | {SESSION_HEADER.lower()}
 # Content-Type and Accept are ours because the body is re-serialized and parsed
@@ -638,12 +640,24 @@ def parse_listen(value: str) -> tuple[str, int]:
     return host or "127.0.0.1", int(port)
 
 
-def run_listener(host: str, port: int, upstream_url: str, overlay_path: str | None = None) -> int:
-    config, injection, emitter, template = _bootstrap(overlay_path)
+def run_listener(
+    host: str,
+    port: int,
+    upstream_url: str,
+    overlay_path: str | None = None,
+    console_settings: bool = False,
+) -> int:
+    # Each session lists its own tools later, so startup need not wait for the settings.
+    config, injection, emitter, template = _bootstrap(
+        overlay_path, console_settings, settings_wait_s=0
+    )
     overlay: Overlay | None = template.overlay
+    settings = template.settings
+    # Each session's overlay is in its events' capture; the header says the Console decides.
+    round_label = CONSOLE_ROUND if settings is not None else overlay_label(overlay)
 
     def make_processor(session_id: str) -> MessageProcessor:
-        return MessageProcessor(emitter, injection, session_id, overlay=overlay)
+        return MessageProcessor(emitter, injection, session_id, overlay=overlay, settings=settings)
 
     origins = os.environ.get("BATON_LISTEN_ALLOWED_ORIGINS", "")
     try:
@@ -655,7 +669,7 @@ def run_listener(host: str, port: int, upstream_url: str, overlay_path: str | No
             make_processor=make_processor,
             fallback_auth_token=os.environ.get("BATON_UPSTREAM_AUTH_TOKEN"),
             allowed_origins=frozenset(o.strip() for o in origins.split(",") if o.strip()),
-            overlay_label=overlay_label(overlay),
+            overlay_label=round_label,
         )
     except ValueError as exc:
         logger.error("baton-proxy: %s", exc)
@@ -676,7 +690,7 @@ def run_listener(host: str, port: int, upstream_url: str, overlay_path: str | No
         host,
         port,
         shown_url(upstream_url),
-        overlay_label(overlay),
+        round_label,
         sorted(injection.names),
         injection.intent_param_mode,
         shown_sinks(config.event_sink),
@@ -728,7 +742,9 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--listen", required=True, metavar="HOST:PORT")
     parser.add_argument("--url", required=True, help="The MCP server to sit in front of")
-    parser.add_argument("--overlay", default=None, metavar="PATH", help="Overlay file to apply")
+    changes = parser.add_mutually_exclusive_group()
+    changes.add_argument("--overlay", default=None, metavar="PATH", help="Overlay file to apply")
+    changes.add_argument("--console-settings", action="store_true", help=CONSOLE_SETTINGS_HELP)
     parser.add_argument(
         "--dsn",
         default=None,
@@ -744,4 +760,4 @@ def main(argv: list[str]) -> int:
             os.environ.update(console_env(args.dsn))
     except (ValueError, Refused) as exc:
         parser.error(str(exc))
-    return run_listener(host, port, args.url, args.overlay)
+    return run_listener(host, port, args.url, args.overlay, args.console_settings)

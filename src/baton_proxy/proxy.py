@@ -57,7 +57,7 @@ from baton_proxy._llm_text import (
     required_param_names,
 )
 from baton_proxy._urls import shown_url
-from baton_proxy.config import Config
+from baton_proxy.config import DEFAULT_REPORT_MODE, DEFAULT_TENANT_ID, Config
 from baton_proxy.emitter import Emitter, utc_now_ms
 from baton_proxy.mcp_error import RETURNED_ERROR_TYPE, error_text, is_error_result
 from baton_proxy.overlay import (
@@ -67,8 +67,16 @@ from baton_proxy.overlay import (
     overlaid,
     overlay_label,
 )
-from baton_proxy.settings import Caller, CallSettings, HeldSettings, SettingsDocument
-from baton_proxy.sinks import find_file_sink_path
+from baton_proxy.settings import (
+    CONSOLE_SETTINGS_HELP,
+    FIRST_READ_WAIT_S,
+    Caller,
+    CallSettings,
+    HeldSettings,
+    SettingsDocument,
+    SettingsFetcher,
+)
+from baton_proxy.sinks import console_origin, find_file_sink_path
 
 logger = logging.getLogger("baton_proxy")
 
@@ -776,6 +784,10 @@ class MessageProcessor:
     @property
     def overlay(self) -> Overlay | None:
         return self._overlay
+
+    @property
+    def settings(self) -> HeldSettings | None:
+        return self._settings
 
     def _track(
         self,
@@ -1638,6 +1650,8 @@ def _configure_logging(log_file: str | None) -> None:
 
 def _bootstrap(
     overlay_path: str | None = None,
+    console_settings: bool = False,
+    settings_wait_s: float = FIRST_READ_WAIT_S,
 ) -> tuple[Config, _Injection, Emitter, MessageProcessor]:
     """Shared per-transport startup.
 
@@ -1652,7 +1666,10 @@ def _bootstrap(
     config = Config.from_env(
         removal_hint=(
             "To stop the injection entirely, remove the proxy from the server's config entry."
-        )
+        ),
+        # As baton-sdk under settings="console": the Console can then take
+        # reports away from some callers (SPEC §2.6).
+        default_report_mode="on" if console_settings else DEFAULT_REPORT_MODE,
     )
     _configure_logging(config.log_file)
     # Drained here, not logged where they were raised: `from_env` runs before
@@ -1686,6 +1703,7 @@ def _bootstrap(
         logger.warning(
             "baton-proxy: BATON_OVERLAY is ignored. Pass the file with --overlay PATH instead."
         )
+    settings = _settings_fetcher(config) if console_settings else None
     try:
         overlay = load_overlay(overlay_path) if overlay_path else None
     except OverlayError as exc:
@@ -1700,8 +1718,32 @@ def _bootstrap(
         )
     emitter = Emitter(config)
     emitter.start()
-    processor = MessageProcessor(emitter, injection, config.session_id, overlay=overlay)
+    if settings is not None:
+        settings.start(wait_s=settings_wait_s)
+    processor = MessageProcessor(
+        emitter, injection, config.session_id, overlay=overlay, settings=settings
+    )
     return config, injection, emitter, processor
+
+
+def _settings_fetcher(config: Config) -> SettingsFetcher:
+    """Reads the settings from the Console the events go to (SPEC §2.6)."""
+    origin = console_origin(config.event_sink)
+    named = config.tenant_id != DEFAULT_TENANT_ID and not config.using_placeholder_vendor
+    if origin is None or not config.api_key or not named:
+        logger.error(
+            "baton-proxy: --console-settings reads the settings from the Console the "
+            "events go to, so it needs one. Set BATON_EVENT_SINK to one https:// sink "
+            "with BATON_API_KEY, BATON_TENANT_ID and BATON_VENDOR_ID, or pass --dsn to "
+            "listen or wrap."
+        )
+        raise SystemExit(2)
+    return SettingsFetcher(
+        origin=origin,
+        api_key=config.api_key,
+        tenant_id=config.tenant_id,
+        vendor_id=config.vendor_id,
+    )
 
 
 # The escalation ladder for an upstream that outlives its client, one grace per
@@ -1832,13 +1874,15 @@ class _UpstreamShutdown:
         return rc
 
 
-def run_proxy(argv: list[str], overlay_path: str | None = None) -> int:
+def run_proxy(
+    argv: list[str], overlay_path: str | None = None, console_settings: bool = False
+) -> int:
     """Spawn the upstream stdio MCP server and pump bidirectionally.
 
     `argv` is the upstream command (e.g. `["npx", "@vendor/mcp-server"]`).
     Returns the upstream's exit code.
     """
-    config, injection, emitter, processor = _bootstrap(overlay_path)
+    config, injection, emitter, processor = _bootstrap(overlay_path, console_settings)
     logger.info(
         "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, upstream=%s)",
         config.session_id,
@@ -1907,7 +1951,9 @@ def run_proxy(argv: list[str], overlay_path: str | None = None) -> int:
     return rc
 
 
-def run_http_proxy(url: str, overlay_path: str | None = None) -> int:
+def run_http_proxy(
+    url: str, overlay_path: str | None = None, console_settings: bool = False
+) -> int:
     """Bridge a stdio-facing Claude client to an HTTPS Streamable-HTTP upstream.
 
     The proxy stays stdio-facing to Claude (reads JSON-RPC from stdin, writes to
@@ -1928,7 +1974,7 @@ def run_http_proxy(url: str, overlay_path: str | None = None) -> int:
     """
     from baton_proxy.transport_http import StreamableHttpClient
 
-    config, injection, emitter, processor = _bootstrap(overlay_path)
+    config, injection, emitter, processor = _bootstrap(overlay_path, console_settings)
     auth_token = os.environ.get("BATON_UPSTREAM_AUTH_TOKEN")
     logger.info(
         "baton-proxy starting (session=%s, emission=%s, tools=%s, intent_param=%s, "
@@ -2105,7 +2151,8 @@ def main(argv: list[str] | None = None) -> int:
             "Auth via BATON_UPSTREAM_AUTH_TOKEN (sent as `Authorization: Bearer`)."
         ),
     )
-    parser.add_argument(
+    changes = parser.add_mutually_exclusive_group()
+    changes.add_argument(
         "--overlay",
         default=None,
         metavar="PATH",
@@ -2114,6 +2161,7 @@ def main(argv: list[str] | None = None) -> int:
             "text the agent sees. The only way to load one; BATON_OVERLAY is ignored."
         ),
     )
+    changes.add_argument("--console-settings", action="store_true", help=CONSOLE_SETTINGS_HELP)
     parser.add_argument(
         "upstream",
         nargs=argparse.REMAINDER,
@@ -2128,14 +2176,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.url:
         if upstream:
             parser.error("--url and the `-- <command>` stdio form are mutually exclusive")
-        return run_http_proxy(args.url, args.overlay)
+        return run_http_proxy(args.url, args.overlay, args.console_settings)
 
     if not upstream:
         parser.error(
             "upstream command required (after `--`), or pass --url <url> for the HTTP bridge"
         )
 
-    return run_proxy(upstream, args.overlay)
+    return run_proxy(upstream, args.overlay, args.console_settings)
 
 
 if __name__ == "__main__":
