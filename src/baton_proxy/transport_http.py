@@ -139,8 +139,7 @@ class StreamableHttpClient:
         except urllib.error.HTTPError as e:
             # 4xx/5xx — surface as a failure so the bridge fails open. Read a
             # snippet of the body for the log/error message.
-            detail = _safe_read_snippet(e)
-            raise RuntimeError(f"upstream returned HTTP {e.code}: {detail}") from e
+            raise UpstreamHTTPError(e.code, _safe_read_snippet(e)) from e
         except urllib.error.URLError as e:
             raise RuntimeError(f"upstream connection failed: {e.reason}") from e
 
@@ -186,6 +185,18 @@ def env_timeout() -> float:
         )
         return _DEFAULT_TIMEOUT_S
     return val
+
+
+class UpstreamHTTPError(RuntimeError):
+    """A non-2xx from the wrapped server. Its body snippet is the server's own
+    output, so an event withholding results carries ``withheld_body()`` instead."""
+
+    def __init__(self, code: int, body_snippet: str) -> None:
+        super().__init__(f"upstream returned HTTP {code}: {body_snippet}")
+        self.status = code
+
+    def withheld_body(self) -> str:
+        return f"HTTP {self.status}"
 
 
 def _safe_read_snippet(resp: Any, limit: int = 500) -> str:

@@ -253,6 +253,10 @@ class _Event:
         return d
 
 
+# ``result_capture`` when results are withheld (SPEC §11.4).
+WITHHELD = "off"
+
+
 class Emitter:
     """Background-thread emitter. Construct, call .start(), enqueue from any
     thread, and call .stop() at shutdown.
@@ -484,20 +488,27 @@ class Emitter:
         self,
         *,
         tool_name: str,
-        result: Any,
+        result: Any = None,
         duration_ms: int,
         runtime_meta: Mapping[str, Any] | None = None,
         session_id: str | None = None,
         principal: Principal | Organization | None = None,
         call_id: str,
+        withheld: bool = False,
     ) -> None:
+        payload: dict[str, Any] = {"tool_name": tool_name, "duration_ms": duration_ms}
+        # SPEC §11.2 item 6: a withheld result never enters the event.
+        if withheld:
+            payload["result_capture"] = WITHHELD
+        else:
+            payload["result"] = result
         # session_id/principal are additive: the stdio proxy omits them (1-process-
         # per-user → _enqueue falls back to the process session). A hosted adapter
         # that serves many sessions from one process MUST pass the per-event session
         # so the end row attributes to the right timeline.
         self._enqueue(
             event_type="tool_call_end",
-            payload={"tool_name": tool_name, "result": result, "duration_ms": duration_ms},
+            payload=payload,
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
             session_id=session_id,
             principal=principal,
@@ -517,20 +528,14 @@ class Emitter:
         principal: Principal | Organization | None = None,
         call_id: str,
         failure_kind: str | None = None,
+        withheld: bool = False,
     ) -> None:
         """SPEC §11.4.3. ``result`` carries the full MCP envelope for a failure
         the tool RETURNED, and is None for a protocol fault, where there is no
-        result object to record.
-
-        ⚠ It DEFAULTS, and the first cut made it required — copying the SDK's
-        own choice (`baton` `c84f7ea`) without checking that the reason
-        transferred. It does not. There, nothing else imports the emitter, so
-        "required" genuinely forces each call site to declare its shape. Here
-        `_emit_call_error` already defaults it, so no in-repo caller was ever
-        forced to declare anything; the strictness applied only to
-        `baton-extmcp`, which imports this Emitter and calls the method without
-        `result` (`servicer.py:320`). A constraint that binds no caller it was
-        written for, and one it was not, is not a design — it is a copy.
+        result object to record. ``withheld`` leaves it out and marks the event;
+        the caller decides which ``error_body`` came from the result.
+        It defaults because another package imports this Emitter and calls the
+        method without it.
         """
         payload: dict[str, Any] = {
             "tool_name": tool_name,
@@ -541,7 +546,9 @@ class Emitter:
         # Omitted rather than null for the protocol-fault shape: §11.4.3 makes
         # the field OPTIONAL, and an explicit null asserts "there was a body
         # and it was empty" about a call that never had one.
-        if result is not None:
+        if withheld:
+            payload["result_capture"] = WITHHELD
+        elif result is not None:
             payload["result"] = result
         if failure_kind is not None:
             payload["failure_kind"] = failure_kind

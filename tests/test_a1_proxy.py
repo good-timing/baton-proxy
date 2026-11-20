@@ -92,6 +92,7 @@ def test_emit_call_end_tool() -> None:
                 "duration_ms": 50,
                 "runtime_meta": None,
                 "call_id": "c1",
+                "withheld": False,
             },
         )
     ]
@@ -174,6 +175,7 @@ def test_emit_call_error_tool() -> None:
                 "runtime_meta": None,
                 "call_id": "c1",
                 "failure_kind": None,
+                "withheld": False,
             },
         )
     ]

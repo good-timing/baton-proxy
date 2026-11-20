@@ -216,7 +216,7 @@ class _PendingCall:
     for keyed kinds, empty string for list kinds.
     """
 
-    __slots__ = ("kind", "subject", "started_ms", "runtime_meta", "call_id")
+    __slots__ = ("kind", "subject", "started_ms", "runtime_meta", "call_id", "withhold")
 
     def __init__(
         self,
@@ -225,12 +225,14 @@ class _PendingCall:
         started_ms: int,
         runtime_meta: dict[str, Any] | None,
         call_id: str | None = None,
+        withhold: bool = False,
     ) -> None:
         self.kind = kind
         self.subject = subject
         self.started_ms = started_ms
         self.runtime_meta = runtime_meta
         self.call_id = call_id
+        self.withhold = withhold
 
 
 def _is_request_id(value: Any) -> bool:
@@ -252,6 +254,7 @@ def _emit_call_end(
             duration_ms=duration_ms,
             runtime_meta=call.runtime_meta,
             call_id=call.call_id,
+            withheld=call.withhold,
         )
     elif call.kind == "tool_list":
         tools = result.get("tools") if isinstance(result, dict) else None
@@ -286,14 +289,20 @@ def _emit_call_error(
     error_body: str,
     duration_ms: int,
     result: Any = None,
+    withheld_body: str | None = None,
 ) -> None:
     """Dispatch the correct *_error event for any pending-call kind.
 
     ``result`` is the MCP envelope of a failure the tool RETURNED (SPEC
     §11.4.3) and rides the tool lane only — no other kind's result carries the
     flag, and the sibling ``*_error`` events have no such field.
+    ``withheld_body`` is what a tool call whose results are withheld sends
+    instead of ``error_body``; ``None`` when the proxy wrote that body itself.
     """
     if call.kind == "tool":
+        withheld = False
+        if call.withhold and withheld_body is not None:
+            error_body, withheld = withheld_body, True
         emitter.enqueue_tool_call_error(
             tool_name=call.subject,
             error_type=error_type,
@@ -303,6 +312,7 @@ def _emit_call_error(
             runtime_meta=call.runtime_meta,
             call_id=call.call_id,
             failure_kind="tool_hidden" if error_type == HIDDEN_TOOL_ERROR_TYPE else None,
+            withheld=withheld,
         )
     elif call.kind == "tool_list":
         emitter.enqueue_tool_list_error(
@@ -344,11 +354,20 @@ def _emit_call_error(
 
 
 def _close_unanswered(
-    emitter: Emitter, call: _PendingCall, error_type: str, error_body: str
+    emitter: Emitter,
+    call: _PendingCall,
+    error_type: str,
+    error_body: str,
+    withheld_body: str | None = None,
 ) -> None:
     try:
         _emit_call_error(
-            emitter, call, error_type, error_body, max(0, utc_now_ms() - call.started_ms)
+            emitter,
+            call,
+            error_type,
+            error_body,
+            max(0, utc_now_ms() - call.started_ms),
+            withheld_body=withheld_body,
         )
     except Exception:
         logger.exception("baton-proxy: enqueue %s error failed", error_type)
@@ -676,6 +695,7 @@ class MessageProcessor:
         self._overlay = overlay
         self._settings = settings
         self._client_name: str | None = None
+        self._warned_withhold = False
         # An overlay file serves every connection the same; Console settings
         # are taken on initialize and on each first page of tools.
         self._server_overlay = overlay
@@ -725,9 +745,10 @@ class MessageProcessor:
         subject: str,
         runtime_meta: dict[str, Any] | None,
         call_id: str | None = None,
+        withhold: bool = False,
     ) -> None:
         """Register an in-flight call whose start is already emitted."""
-        call = _PendingCall(kind, subject, utc_now_ms(), runtime_meta, call_id)
+        call = _PendingCall(kind, subject, utc_now_ms(), runtime_meta, call_id, withhold)
         if not _is_request_id(req_id):
             _close_unanswered(
                 self._emitter,
@@ -877,7 +898,9 @@ class MessageProcessor:
             except Exception:
                 logger.exception("baton-proxy: enqueue tool_call_start failed")
             else:
-                self._track(req_id, "tool", safe_tool_name, runtime_meta, call_id)
+                self._track(
+                    req_id, "tool", safe_tool_name, runtime_meta, call_id, self._withholds()
+                )
             if hidden_response is not None:
                 # SPEC §11.4.3: the body is the unknown-tool answer the agent got.
                 self.synthesize_pending_error(
@@ -1015,12 +1038,18 @@ class MessageProcessor:
                 duration_ms = max(0, utc_now_ms() - call.started_ms)
                 if "error" in msg:
                     err = msg["error"] if isinstance(msg["error"], dict) else {}
+                    code = err.get("code", "")
+                    if call.withhold and (isinstance(code, bool) or not isinstance(code, int)):
+                        code = ""
+                    # The upstream's message is its answer to the call, as
+                    # serve() reads a JSON-RPC error (SPEC §11.4.3).
                     _emit_call_error(
                         self._emitter,
                         call,
-                        str(err.get("code", "")) or "unknown",
+                        str(code) or "unknown",
                         str(err.get("message", "")),
                         duration_ms,
+                        withheld_body="",
                     )
                 else:
                     result = msg.get("result")
@@ -1040,6 +1069,7 @@ class MessageProcessor:
                             error_text(result),
                             duration_ms,
                             result,
+                            withheld_body="",
                         )
                     else:
                         _emit_call_end(self._emitter, call, result, duration_ms)
@@ -1185,6 +1215,22 @@ class MessageProcessor:
         except Exception:
             logger.exception("baton-proxy: overlay on tools/call failed")
         return None
+
+    def _withholds(self) -> bool:
+        """Whether this call's results are withheld: ``results`` applies at the
+        next call, from the document held now (SPEC §2.6)."""
+        try:
+            document = self._settings.document if self._settings is not None else None
+            if document is None or not document.withholds_results:
+                return False
+            return self._call_settings().result_capture_mode == "off"
+        except Exception:
+            if not self._warned_withhold:
+                self._warned_withhold = True
+                logger.exception(
+                    "baton-proxy: could not apply Console settings; results are withheld"
+                )
+            return self._settings is not None
 
     def _caller(self) -> CallSettings:
         """The settings a call runs under: those its connection's tools were
@@ -1357,7 +1403,9 @@ class MessageProcessor:
         served = build_user_goal_param_description(intent_param_mode=mode)
         return mode, overlaid(served, listed.overlay, "goal_param.description")
 
-    def synthesize_pending_error(self, req_id: Any, error_type: str, error_body: str) -> None:
+    def synthesize_pending_error(
+        self, req_id: Any, error_type: str, error_body: str, withheld_body: str | None = None
+    ) -> None:
         """Emit a synthetic *_error for a tracked call the upstream never answered.
 
         Used by the HTTP transport's fail-open path: when a POST times out or the
@@ -1368,7 +1416,7 @@ class MessageProcessor:
         self._take_listing(req_id)
         call = self._pop_pending(req_id)
         if call is not None:
-            _close_unanswered(self._emitter, call, error_type, error_body)
+            _close_unanswered(self._emitter, call, error_type, error_body, withheld_body)
 
     def drain_pending(self, error_type: str, error_body: str) -> None:
         """Emit a synthetic *_error for every still-pending call, then clear.
@@ -1834,6 +1882,7 @@ def run_http_proxy(url: str, overlay_path: str | None = None) -> int:
 
 def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injection) -> int:
     """Read stdin → POST upstream → write responses to stdout. Fail-open throughout."""
+    from baton_proxy.transport_http import UpstreamHTTPError
 
     def _degrade(forward: dict[str, Any], error_type: str, error_body: str) -> bool:
         """Serve a synthetic healthy response for a handshake method whose
@@ -1898,7 +1947,18 @@ def _run_http_loop(processor: MessageProcessor, client: Any, injection: _Injecti
             if _degrade(forward, UPSTREAM_UNREACHABLE_ERROR_TYPE, err):
                 continue
             if not is_notification:
-                processor.synthesize_pending_error(req_id, UPSTREAM_UNREACHABLE_ERROR_TYPE, err)
+                # The transport writes its own text for a failed connection; an
+                # HTTP error body, or any other exception's text, may quote the upstream.
+                withheld = (
+                    e.withheld_body()
+                    if isinstance(e, UpstreamHTTPError)
+                    else None
+                    if isinstance(e, RuntimeError | OSError)
+                    else type(e).__name__
+                )
+                processor.synthesize_pending_error(
+                    req_id, UPSTREAM_UNREACHABLE_ERROR_TYPE, err, withheld
+                )
                 _write_client(
                     rpc_error(req_id, -32001, f"baton-proxy: upstream request failed: {err}")
                 )

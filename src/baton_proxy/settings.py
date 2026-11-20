@@ -38,6 +38,12 @@ MAX_DOCUMENT_BYTES = 1024 * 1024
 
 _MATCH_KEYS = frozenset({"label", "client", "share"})
 RESULT_CAPTURE_MODES = frozenset({"full", "off"})
+# SPEC §11.4.4: the error legs whose messages survive withholding.
+RESULTS_OFF_WARNING = (
+    "baton-proxy: the Console withholds results for some callers. The messages of "
+    "tool_list_error, resource_read_error, resource_list_error, prompt_get_error "
+    "and prompt_list_error are still sent"
+)
 
 
 def share_bucket(vendor_id: str, key: str) -> int:
@@ -126,6 +132,10 @@ class SettingsDocument:
             if a.settings.overlay is not None
             for name in a.settings.overlay.hidden_tools
         )
+
+    @functools.cached_property
+    def withholds_results(self) -> bool:
+        return any(a.settings.result_capture_mode == "off" for a in self._reachable)
 
     def reports_on_for_anyone(self, code_value: str) -> bool:
         """Whether some caller can get reports, so the instructions point to the tool."""
@@ -348,5 +358,9 @@ class SettingsFetcher:
                         "baton-proxy: the Console sent capture settings this proxy cannot read"
                     )
                 return
+            # Once each time results go off (SPEC §11.4.4).
+            was_off = self._document is not None and self._document.withholds_results
+            if document.withholds_results and not was_off:
+                logger.warning(RESULTS_OFF_WARNING)
             self._document = document
             self._etag = answer.etag
