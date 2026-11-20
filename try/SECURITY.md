@@ -372,7 +372,7 @@ new destination is introduced.
 
 The proxy contains code that can open a network connection or start a process,
 because the same source serves production deployments. Here is the complete
-list, five call sites. All five are the proxy's; the kit contributes none.
+list, six call sites. All six are the proxy's; the kit contributes none.
 
 | # | site | what it does | why it is inert here |
 |---|---|---|---|
@@ -381,6 +381,7 @@ list, five call sites. All five are the proxy's; the kit contributes none.
 | 3 | `transport_http.py` · `StreamableHttpClient.post` | Speaks MCP over HTTPS to an upstream server, with `User-Agent` and `Via` headers that name the proxy (§2). It never follows a redirect, so the token is never sent to another host. | Only in `--url` mode. For a stdio wrap this is unreachable. For a remote wrap it is the path in use, and it connects to the URL your own config already named. Never to us. |
 | 4 | `proxy.py` · `subprocess.Popen` | Starts the upstream MCP server | Runs exactly the command your config already contained. Not reached for a remote wrap. |
 | 5 | `listen.py` · `_open` | Forwards a caller's MCP request to the `--url` server, never following a redirect. At startup it also sends that URL one `HEAD` with none of a caller's headers, to warn if it does not answer. `baton-proxy check` uses the same site to list tools from a running listener and from the server, with the headers it is given. The callers arrive on the `--listen` address, through the one `ThreadingHTTPServer` that `make_server` builds; §9's grep does not show that inbound socket, and the sweep named in §2 does. | Only under `baton-proxy listen` and `baton-proxy check`, which the kit never writes into a config or runs. A wrap does not import it. |
+| 6 | `settings.py` · `_get` | Reads capture settings from `/v0/settings` on the Console the DSN names, with the DSN's own key, never following a redirect, every minute while it runs. It sends no events and no caller's headers. | Nothing in this release starts it. |
 
 There is no telemetry, no version check, no crash reporting, no auto-update. The
 proxy does not phone home on startup, on failure, or on exit.
@@ -550,7 +551,7 @@ disk, and the backup above is what it was before.
 - Apache-2.0, source in this repository.
 - Zero runtime dependencies (`dependencies = []` in `pyproject.toml`). Pure
   standard library. Python 3.11 or newer.
-- Twelve source files under `src/baton_proxy/`, with a test suite you can run.
+- Nineteen source files under `src/baton_proxy/`, with a test suite you can run.
 - The `baton-spec` git submodule is used only by tests. A plain `git clone`
   without `--recurse-submodules` runs fine; two schema-conformance tests skip
   without it, and `pytest -rs` prints the reason.
@@ -564,8 +565,8 @@ The claims above are mechanical. Re-derive them:
 #    -3-gabc1234 means commits past the tag, which is not what you reviewed.
 git describe --tags
 
-# 1. Every network- or process-capable call site, proxy AND kit. Expect six
-#    matches: the five in the §4 table plus one comment line in
+# 1. Every network- or process-capable call site, proxy AND kit. Expect seven
+#    matches: the six in the §4 table plus one comment line in
 #    transport_http.py, and none of them under try/. The excludes are your own
 #    captured data, which can contain any string; drop them on a fresh clone.
 grep -rnE "urlopen\(|Popen\(|subprocess\.run\(|boto3\.client\(" --exclude=events.jsonl --exclude=state.json --exclude='config-backup.*' src/ try/

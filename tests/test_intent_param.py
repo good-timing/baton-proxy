@@ -38,8 +38,8 @@ from baton_proxy._llm_text import (
     build_user_goal_param_description,
 )
 from baton_proxy.config import (
-    _INTENT_PARAM_MODES,
     DEFAULT_INTENT_PARAM_MODE,
+    INTENT_PARAM_MODES,
     Config,
 )
 from baton_proxy.proxy import (
@@ -691,7 +691,7 @@ def test_intent_param_off_is_retired_and_cannot_stop_the_injection(
     monkeypatch.setenv("BATON_INTENT_PARAM", "off")
     cfg = Config.from_env()
     assert cfg.intent_param_mode == DEFAULT_INTENT_PARAM_MODE
-    assert "off" not in _INTENT_PARAM_MODES
+    assert "off" not in INTENT_PARAM_MODES
 
 
 def test_a_stale_expectation_rides_its_own_start_event() -> None:

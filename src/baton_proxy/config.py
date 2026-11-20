@@ -72,7 +72,7 @@ DEFAULT_INTENT_PARAM_MODE = "required"
 # ``off`` is NOT here. It was accepted until 2026-09-01 and is now coerced away
 # in ``from_env`` with a warning rather than rejected — see there for why the
 # retirement is not allowed to stop a wrapped server from starting.
-_INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required"})
+INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required"})
 
 # Valid values for BATON_ANNOTATE — whether the proxy serves `baton_annotate`
 # at all, as baton-sdk's ``VendorConfig.report_mode``. ``off`` (the default)
@@ -80,7 +80,7 @@ _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required"})
 # line) in the instructions; each call's goal still rides `user_goal`. ``on``
 # serves the tool and its instructions.
 DEFAULT_REPORT_MODE = "off"
-_REPORT_MODES: frozenset[str] = frozenset({"on", "off"})
+REPORT_MODES: frozenset[str] = frozenset({"on", "off"})
 
 
 @dataclass(frozen=True)
@@ -202,9 +202,9 @@ class Config:
                 + (f" {removal_hint}" if removal_hint else "")
             )
             intent_param_mode = DEFAULT_INTENT_PARAM_MODE
-        if intent_param_mode not in _INTENT_PARAM_MODES:
+        if intent_param_mode not in INTENT_PARAM_MODES:
             raise ValueError(
-                f"BATON_INTENT_PARAM must be one of {sorted(_INTENT_PARAM_MODES)}; "
+                f"BATON_INTENT_PARAM must be one of {sorted(INTENT_PARAM_MODES)}; "
                 f"got {intent_param_mode!r}."
             )
         if _env("BATON_PROACTIVE"):
@@ -212,9 +212,9 @@ class Config:
             # config entry must not stop the wrapped server from starting.
             warnings.append("baton-proxy: BATON_PROACTIVE is no longer read and has no effect.")
         report_mode = _env("BATON_ANNOTATE") or DEFAULT_REPORT_MODE
-        if report_mode not in _REPORT_MODES:
+        if report_mode not in REPORT_MODES:
             raise ValueError(
-                f"BATON_ANNOTATE must be one of {sorted(_REPORT_MODES)}; got {report_mode!r}."
+                f"BATON_ANNOTATE must be one of {sorted(REPORT_MODES)}; got {report_mode!r}."
             )
         return cls(
             session_id=str(uuid.uuid4()),

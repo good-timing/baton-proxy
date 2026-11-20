@@ -2470,7 +2470,7 @@ def test_setup_refusal_also_returns_one(tmp_path, kit_home, capsys):
 # the most load-bearing sentences in the document — they are the ones a
 # skeptical reader runs FIRST, and the whole point of the kit is that its
 # claims are mechanical rather than promised. Nothing enforced them, and one of
-# the six expected matches is a COMMENT line, so an ordinary reword falsifies a
+# the expected matches is a COMMENT line, so an ordinary reword falsifies a
 # published security document with every test still green.
 #
 # Asserted as a match SET rather than a count: a count survives a deleted call
@@ -2485,7 +2485,7 @@ NARROW_AUDIT_RE = r"urlopen\(|Popen\(|subprocess\.run\(|boto3\.client\("
 # trust our regex.
 WIDE_AUDIT_RE = r"urlopen|socket|http\.client|requests\.|boto3|subprocess"
 
-# The five call sites of §4's table, plus the one comment line §9 names. Stored
+# The six call sites of §4's table, plus the one comment line §9 names. Stored
 # as (path, lineno, substring-of-the-line) so a moved line fails loudly instead
 # of a bare count quietly absorbing a swap. Nothing under `try/` is in the set,
 # and `test_the_kit_contributes_no_audited_call_site` is the assertion of that.
@@ -2499,7 +2499,7 @@ WIDE_AUDIT_RE = r"urlopen|socket|http\.client|requests\.|boto3|subprocess"
 # ([[feedback_no_anchor_on_rebuilt_positional_key]]).
 #
 # What still makes this a real guard is the pair below it: every expected site
-# must be present, AND the total must be exactly six, so a seventh egress call
+# must be present, AND the total must equal the expected set, so a new egress call
 # anywhere under src|try reds here whatever its line.
 EXPECTED_AUDIT_HITS = {
     ("src/baton_proxy/proxy.py", "subprocess.Popen("),
@@ -2508,13 +2508,14 @@ EXPECTED_AUDIT_HITS = {
     ("src/baton_proxy/sinks.py", "no_redirect_urlopen(req"),
     ("src/baton_proxy/sinks.py", 'boto3.client("s3")'),
     ("src/baton_proxy/listen.py", "no_redirect_urlopen(req"),
+    ("src/baton_proxy/settings.py", "no_redirect_urlopen(req"),
 }
 
 
 # What §9's commands exclude, and what `try/.gitignore` lists: the trial's own
 # captured data. events.jsonl holds complete tool arguments and results, so a
 # reviewer who wrapped a server that talks about `subprocess.run(` has that text
-# sitting inside src|try — and the six-match promise is about OUR CODE, not
+# sitting inside src|try — and §9's match-count promise is about OUR CODE, not
 # about what their agent happened to say. Pinned against try/.gitignore below.
 TRIAL_ARTIFACTS = ("events.jsonl", "state.json", "config-backup.*")
 
@@ -2547,8 +2548,8 @@ def _grep(pattern: str, root: Path = REPO_ROOT):
     return hits
 
 
-def test_security_md_section_9_narrow_grep_returns_exactly_its_six():
-    """§9: "Six matches: the five in the §4 table, plus one comment line in
+def test_security_md_section_9_narrow_grep_returns_exactly_its_set():
+    """§9: "Seven matches: the six in the §4 table, plus one comment line in
     transport_http.py."
 
     The count moves in the same commit as the code, which is the whole point of
@@ -2566,10 +2567,10 @@ def test_security_md_section_9_narrow_grep_returns_exactly_its_six():
         assert any(p == path and needle in line for p, line in found), (
             f"§9's expected match is gone: {path} ({needle!r}). A match that MOVED "
             "within its file is fine; one that vanished means the document's "
-            "six-match promise no longer describes this tree."
+            "match-count promise no longer describes this tree."
         )
-    assert len(hits) == 6, (
-        "SECURITY.md §9 promises a reviewer SIX matches; this grep now returns "
+    assert len(hits) == len(EXPECTED_AUDIT_HITS), (
+        f"SECURITY.md §9 promises a reviewer {len(EXPECTED_AUDIT_HITS)} matches; this grep now returns "
         f"{len(hits)}:\n" + "\n".join(f"  {p}:{n}: {line.strip()}" for p, n, line in hits)
     )
 
@@ -2577,7 +2578,7 @@ def test_security_md_section_9_narrow_grep_returns_exactly_its_six():
 def test_the_audit_grep_ignores_the_trials_own_captured_data(tmp_path: Path):
     """A reviewer who RAN the kit has try/events.jsonl in the tree it tells them
     to grep, and that file is full of verbatim tool results. One payload quoting
-    `subprocess.run(` makes §9's six-match promise read as seven — green in CI,
+    `subprocess.run(` makes §9's match count read one too many — green in CI,
     red on the machine of the one person who actually used the thing.
 
     Built in a tmp tree on purpose: writing try/events.jsonl in this checkout
@@ -2776,9 +2777,9 @@ def test_section_8_names_the_two_tests_the_submodule_gates():
     assert claim in section_8, f"§8 does not account for the tests it makes skip: {claim!r}"
 
 
-def test_one_of_the_six_is_a_comment_not_a_call_site():
-    """§9 distinguishes "the five in the §4 table" from "one comment line". A
-    reviewer counting call sites and getting six would conclude the table is
+def test_one_expected_match_is_a_comment_not_a_call_site():
+    """§9 distinguishes "the six in the §4 table" from "one comment line". A
+    reviewer counting call sites and getting seven would conclude the table is
     incomplete — so the comment is part of the claim, not noise around it."""
     hits = _grep(NARROW_AUDIT_RE)
     comments = [(p, line.strip()) for p, _n, line in hits if line.strip().startswith("#")]
@@ -2789,9 +2790,7 @@ def test_one_of_the_six_is_a_comment_not_a_call_site():
 
 
 def test_the_kit_contributes_no_audited_call_site():
-    """§4: "All five are the proxy's; the kit contributes none." True, then made
-    false by `kit.py upload`, and true again in 0.6.0. The value of the sentence
-    is that it moved with the code every time.
+    """§4: "All six are the proxy's; the kit contributes none."
 
     The assertion is the whole of the kit's egress claim, so it is made over the
     directory rather than over a file list: a network call ANYWHERE under `try/`,
@@ -2823,7 +2822,7 @@ def test_the_widened_grep_introduces_no_new_call_site():
 
     So the widened set may grow freely with prose and imports — but any line in
     it that CALLS something network- or process-capable must already be one of
-    the six. This is the assertion that catches a `requests.post(` or a
+    the expected set. This is the assertion that catches a `requests.post(` or a
     `socket.socket(` the narrow regex was never written to see."""
     import re
 
