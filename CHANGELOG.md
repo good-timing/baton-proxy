@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **The schema pin** moves to baton-spec `80a46da`.
+- **The schema pin** moves to baton-spec `b7118b4`, which says how the proxy withholds results.
 
 ## [0.8.1] — 2026-11-17
 
