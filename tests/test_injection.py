@@ -509,3 +509,26 @@ def test_a_path_that_fits_logs_nothing() -> None:
     by_id = _run_proxy_with_env({"BATON_EVENT_SINK": "stderr:,file:///tmp/s.jsonl"})
     assert "did not fit the instructions length cap" not in by_id["stderr"]
     assert "/tmp/s.jsonl" in _instructions(by_id)
+
+
+@pytest.mark.parametrize("report_mode", ["off", "on"])
+def test_a_paged_tool_list_carries_the_proxy_tools_on_its_last_page_only(
+    report_mode: str,
+) -> None:
+    from baton_proxy.proxy import _inject_into_response, _Injection
+
+    injection = _Injection.create(None, report_mode=report_mode)
+    ours = [t["name"] for t in injection.tools]
+
+    def page(names: list[str], cursor: str | None) -> list[str]:
+        result: dict = {"tools": [{"name": n} for n in names]}
+        if cursor:
+            result["nextCursor"] = cursor
+        msg = {"jsonrpc": "2.0", "id": 1, "result": result}
+        out = _inject_into_response(msg, injection.instructions_suffix, injection.tools)
+        return [t["name"] for t in out["result"]["tools"]]
+
+    first, last = page(["a"], "c1"), page(["b"], None)
+    assert first == ["a"]
+    assert last == ["b", *ours]
+    assert page(["only"], None) == ["only", *ours]

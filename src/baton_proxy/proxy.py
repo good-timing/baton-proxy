@@ -477,7 +477,7 @@ def _inject_into_response(
             # The suffix opens with a separator, which has nothing above it here.
             result["instructions"] = combined if original else combined.lstrip()
 
-        if "tools" in result and isinstance(result["tools"], list):
+        if isinstance(result.get("tools"), list) and not result.get("nextCursor"):
             result["tools"].extend(tools)
     except Exception:
         logger.exception("baton-proxy: injection failed, forwarding response unmodified")

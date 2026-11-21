@@ -79,7 +79,7 @@ def test_each_page_of_a_listing_gets_its_own_pair() -> None:
         "tool_list_start",
         "tool_list_end",
     ]
-    assert [kwargs["count"] for _, kwargs in emitter.listings()[1::2]] == [3, 2]
+    assert [kwargs["count"] for _, kwargs in emitter.listings()[1::2]] == [2, 2]
 
 
 def test_a_listing_the_upstream_refuses_sends_an_error() -> None:
