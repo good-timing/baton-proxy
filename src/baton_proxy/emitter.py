@@ -473,7 +473,7 @@ class Emitter:
         session_id: str | None = None,
     ) -> None:
         # The vendor-true surface (pre-injection), emitted at most once per
-        # hash per process — see MessageProcessor._capture_surface for the
+        # hash per session — see MessageProcessor._capture_surface for the
         # trigger/dedupe rules. `seam_augmentations` records the as-served
         # delta Baton added, so a consumer can render both layers.
         self._enqueue(
@@ -789,13 +789,18 @@ class Emitter:
         *,
         count: int,
         duration_ms: int,
+        surface_hash: str | None,
         runtime_meta: Mapping[str, Any] | None = None,
         capture: Mapping[str, Any] | None = None,
     ) -> None:
         self._enqueue(
             capture=capture,
             event_type="tool_list_end",
-            payload={"count": count, "duration_ms": duration_ms},
+            payload={
+                "count": count,
+                "duration_ms": duration_ms,
+                **({} if surface_hash is None else {"surface_hash": surface_hash}),
+            },
             runtime_meta=dict(runtime_meta) if runtime_meta else None,
         )
 

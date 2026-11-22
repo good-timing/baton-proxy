@@ -224,7 +224,16 @@ class _PendingCall:
     for keyed kinds, empty string for list kinds.
     """
 
-    __slots__ = ("kind", "subject", "started_ms", "runtime_meta", "call_id", "withhold", "capture")
+    __slots__ = (
+        "kind",
+        "subject",
+        "started_ms",
+        "runtime_meta",
+        "call_id",
+        "withhold",
+        "capture",
+        "surface_hash",
+    )
 
     def __init__(
         self,
@@ -243,6 +252,7 @@ class _PendingCall:
         self.call_id = call_id
         self.withhold = withhold
         self.capture = capture
+        self.surface_hash: str | None = None
 
 
 def _is_request_id(value: Any) -> bool:
@@ -273,6 +283,7 @@ def _emit_call_end(
         emitter.enqueue_tool_list_end(
             count=count,
             duration_ms=duration_ms,
+            surface_hash=call.surface_hash,
             **envelope,
         )
     elif call.kind == "resource_read":
@@ -775,6 +786,7 @@ class MessageProcessor:
         # Open tools/list ids, apart from call tracking, so the overlay holds even
         # when tracking a listing failed. The value says whether it was a first page.
         self._toollist_ids: dict[Any, bool] = {}
+        self._toollist_lock = threading.Lock()
         # Hashes already emitted under the last server overlay sent: a lazy
         # re-list of an unchanged surface must not re-emit, and a changed one does.
         self._emitted_surface_hashes: set[str] = set()
@@ -868,7 +880,7 @@ class MessageProcessor:
             req_id = req.get("id")
             try:
                 if req_id is not None:
-                    with self._surface_lock:
+                    with self._toollist_lock:
                         self._toollist_ids.pop(req_id, None)
                         self._toollist_ids[req_id] = not params.get("cursor")
                         while len(self._toollist_ids) > MAX_PENDING_TOOLLISTS:
@@ -1169,7 +1181,9 @@ class MessageProcessor:
             overlaid_tools = self._overlay_tools(msg, overlay)
         # Surface capture runs BEFORE the overlay lands and both injections
         # below, so the snapshot records the vendor-true surface.
-        self._capture_surface(msg, first_page=listing is True)
+        surface_hash = self._capture_surface(msg, first_page=listing is True)
+        if call is not None:
+            call.surface_hash = surface_hash
         self._land_overlay(msg, overlaid_tools, overlay)
 
         self._inject_intent_params(msg)
@@ -1191,25 +1205,28 @@ class MessageProcessor:
         if not self._toollist_ids or msg_id is None:
             return None
         try:
-            with self._surface_lock:
+            with self._toollist_lock:
                 return self._toollist_ids.pop(msg_id, None)
         except TypeError:
             return None
 
-    def _capture_surface(self, msg: dict[str, Any], first_page: bool = False) -> None:
+    def _capture_surface(self, msg: dict[str, Any], first_page: bool = False) -> str | None:
         """Snapshot the upstream surface from initialize + tools/list responses.
 
         initialize responses stash serverInfo/capabilities/instructions;
         a COMPLETE first-page tools/list response (tracked id, no nextCursor)
-        emits one ``surface_snapshot`` event, deduped on the surface hash for
-        the process lifetime. Multi-page surfaces are skipped in v0 — a
+        emits one ``surface_snapshot`` event, deduped on the surface hash
+        until the server overlay changes. Multi-page surfaces are skipped — a
         partial page must never masquerade as the surface. Fail-open: any
         error is logged and the message flows on untouched.
+
+        Returns the hash of the snapshot this listing's ``tool_list_end``
+        names, sent now or before; None when none was sent.
         """
         try:
             result = msg.get("result")
             if not isinstance(result, dict):
-                return
+                return None
 
             if _is_initialize_result(result):
                 instructions = result.get("instructions")
@@ -1218,13 +1235,13 @@ class MessageProcessor:
                     "capabilities": copy.deepcopy(result.get("capabilities")),
                     "instructions": instructions if isinstance(instructions, str) else None,
                 }
-                return
+                return None
 
             tools = result.get("tools")
             if not isinstance(tools, list):
-                return
+                return None
             if not first_page or result.get("nextCursor"):
-                return
+                return None
 
             meta = self._server_meta or {}
             surface: dict[str, Any] = {
@@ -1238,15 +1255,6 @@ class MessageProcessor:
             }
             digest = _surface_hash(surface)
             server_overlay = self._server_overlay.id if self._server_overlay is not None else None
-            with self._surface_lock:
-                # Not in the hash, so a new server overlay sends the surface again (SPEC §11.4.2).
-                if server_overlay != self._snapshot_server_overlay:
-                    self._emitted_surface_hashes.clear()
-                    self._snapshot_server_overlay = server_overlay
-                if digest in self._emitted_surface_hashes:
-                    return
-                self._emitted_surface_hashes.add(digest)
-
             mode = self._injection.intent_param_mode
             augmentations: dict[str, Any] = {
                 "injected_tools": sorted(self._injection.names),
@@ -1264,16 +1272,28 @@ class MessageProcessor:
                     "hash": self._overlay.hash,
                     "unmatched_targets": self._overlay.unmatched(),
                 }
-            self._emitter.enqueue_surface_snapshot(
-                surface_hash=digest,
-                server_info=surface["server_info"],
-                capabilities=surface["capabilities"],
-                instructions=surface["instructions"],
-                tools=surface["tools"],
-                seam_augmentations=augmentations,
-            )
+            with self._surface_lock:
+                # Not in the hash, so a new server overlay sends the surface again (SPEC §11.4.2).
+                if server_overlay != self._snapshot_server_overlay:
+                    self._emitted_surface_hashes.clear()
+                    self._snapshot_server_overlay = server_overlay
+                if digest in self._emitted_surface_hashes:
+                    return digest
+                self._emitter.enqueue_surface_snapshot(
+                    surface_hash=digest,
+                    server_info=surface["server_info"],
+                    capabilities=surface["capabilities"],
+                    instructions=surface["instructions"],
+                    tools=surface["tools"],
+                    seam_augmentations=augmentations,
+                )
+                # One lock from check to mark, so a listing never names a snapshot
+                # not yet enqueued: ``test_two_listings_at_once_send_one_snapshot_before_either_end``.
+                self._emitted_surface_hashes.add(digest)
+            return digest
         except Exception:
             logger.exception("baton-proxy: surface snapshot capture failed")
+            return None
 
     def _apply_overlay_to_call(
         self,

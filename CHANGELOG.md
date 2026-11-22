@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`tool_list_end` carries `surface_hash`** (SPEC §11.4.5): the hash of the `surface_snapshot` describing that listing, so a consumer can tie a session to the vendor tool list it saw. The snapshot is sent first. The field is left out when no snapshot was sent for the listing: a paged list, or a snapshot that could not be queued.
+
+### Changed
+
+- **The schema pin** moves to baton-spec `ac2f5f1`, which allows `surface_hash` on `tool_list_end`.
+
 ## [0.9.1] — 2026-11-21
 
 ### Fixed

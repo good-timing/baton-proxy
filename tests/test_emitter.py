@@ -683,3 +683,20 @@ def test_each_bound_session_keeps_its_own_client_name(tmp_path: Path) -> None:
         ("b", "cursor"),
         ("test-session", "mcp-proxy"),
     ]
+
+
+def test_tool_list_end_omits_a_surface_hash_it_was_not_given() -> None:
+    server, url = _start_stub()
+    try:
+        e = Emitter(_config_http(url))
+        e.start()
+        e.enqueue_tool_list_end(count=1, duration_ms=5, surface_hash=None)
+        e.enqueue_tool_list_end(count=1, duration_ms=5, surface_hash="sha256:abc")
+        assert _wait_for(lambda: len(_StubReceiver.received) >= 2)
+        e.stop()
+    finally:
+        server.shutdown()
+
+    without, named = (event["payload"] for event in _StubReceiver.received)
+    assert without == {"count": 1, "duration_ms": 5}
+    assert named["surface_hash"] == "sha256:abc"
