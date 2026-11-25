@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **A call's end or error the collector refuses as too large (413) is sent again without its result** and with `error_body` cut to 2,000 characters, instead of being lost. A connection the collector cuts while a body over 1 MiB is uploading counts as the same refusal. It carries `result_capture: "too_large"` and `result_size_bytes`, the result's size, so the Console sees the call end and how large the reply was (SPEC §11.4). It is sent again once; any other refusal is not retried.
+- **The schema pin** moves to the baton-spec commit that registers `"too_large"`.
+
 ## [0.9.2] — 2026-11-23
 
 ### Added

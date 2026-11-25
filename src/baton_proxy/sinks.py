@@ -29,6 +29,7 @@ import io
 import json
 import logging
 import os
+import ssl
 import sys
 import urllib.error
 import urllib.parse
@@ -40,6 +41,11 @@ from baton_proxy._no_redirect import no_redirect_urlopen
 from baton_proxy._urls import shown_url
 
 logger = logging.getLogger(__name__)
+
+# ``result_capture`` on a call end sent again without its result (SPEC §11.4).
+TOO_LARGE = "too_large"
+_ERROR_BODY_CAP = 2000
+_SPEC_BODY_CAP = 1_048_576
 
 # Per-POST timeout — keep tight so the drain thread doesn't block forever
 # on a dead remote endpoint. The proxy I/O path is unaffected either way.
@@ -147,6 +153,21 @@ class HttpSink(Sink):
 
     def write(self, event: dict[str, Any]) -> None:
         body = json.dumps(event).encode("utf-8")
+        try:
+            self._post(body)
+        except OSError as e:
+            smaller = _without_result(event) if _refused_as_too_large(e, len(body)) else None
+            if smaller is None:
+                raise
+            logger.warning(
+                "baton-proxy: a %s event is over the collector's limit; it is sent "
+                "without its result (%d bytes).",
+                event["event_type"],
+                smaller["payload"]["result_size_bytes"],
+            )
+            self._post(json.dumps(smaller).encode("utf-8"))
+
+    def _post(self, body: bytes) -> None:
         url = f"{self._url}/v0/events"
         req = urllib.request.Request(
             url,
@@ -167,6 +188,54 @@ class HttpSink(Sink):
 
     def close(self) -> None:
         return
+
+
+def _refused_as_too_large(error: OSError, body_bytes: int) -> bool:
+    """A 413, or a body over the SPEC §2.5 cap whose upload the collector cut
+    or never finished reading, which is how an early 413 can arrive."""
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code == 413
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    return body_bytes > _SPEC_BODY_CAP and isinstance(
+        reason,
+        (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            TimeoutError,
+            ssl.SSLEOFError,
+            ssl.SSLZeroReturnError,
+        ),
+    )
+
+
+def _without_result(event: dict[str, Any]) -> dict[str, Any] | None:
+    """A call's end or error without its ``result`` and with ``error_body``
+    cut, marked ``"too_large"`` (SPEC §11.4); None for an event that has no
+    result to leave out."""
+    payload = event.get("payload")
+    if (
+        event.get("event_type") not in ("tool_call_end", "tool_call_error")
+        or not isinstance(payload, dict)
+        or payload.get("result") is None
+        or payload.get("result_capture") is not None
+    ):
+        return None
+    size = len(json.dumps(payload["result"]).encode("utf-8"))
+    return {
+        **event,
+        "payload": {
+            **payload,
+            "result": None,
+            "result_capture": TOO_LARGE,
+            "result_size_bytes": size,
+            **(
+                {"error_body": payload["error_body"][:_ERROR_BODY_CAP]}
+                if isinstance(payload.get("error_body"), str)
+                else {}
+            ),
+        },
+    }
 
 
 class S3Sink(Sink):

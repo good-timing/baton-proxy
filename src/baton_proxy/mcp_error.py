@@ -88,8 +88,8 @@ def error_text(result: Any) -> str:
     PII scrubbing, so a secret straddling the boundary reaches the scrubber as
     a fragment no pattern matches and the surviving half ships unredacted.
     That is the defect `baton`'s `33581cb` code review found in the SDK. The
-    proxy caps no payload anywhere — ``tool_call_end`` carries whole results —
-    so whole is both the safe answer and the consistent one.
+    proxy cuts only in ``HttpSink``, after scrubbing, for an event too large to
+    send (SPEC §11.4).
     """
     if not isinstance(result, dict):
         return ""

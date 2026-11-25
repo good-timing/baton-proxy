@@ -17,6 +17,7 @@ import pytest
 from baton_proxy.config import Config
 from baton_proxy.emitter import Emitter
 from baton_proxy.identity import Organization, Principal
+from baton_proxy.sinks import _without_result
 from tests.fixture_responses import BAD_CURSOR
 
 HERE = Path(__file__).parent
@@ -34,6 +35,12 @@ SCHEMA_PATH = REPO / "baton-spec" / "events.schema.json"
 # the tool listed; the subprocess sends its whole script at once, so that is a
 # race there. Driven through the emitter below instead.
 EXERCISED_BY_THE_EMITTER = {"tool_call_start": {"call_expected", "call_workflow"}}
+
+# Only the HTTP sink sends these, on a call end the collector refused as too large.
+SENT_BY_THE_HTTP_SINK = {
+    "tool_call_end": {"result_size_bytes"},
+    "tool_call_error": {"result_size_bytes"},
+}
 
 # Event types the schema declares and the proxy does not send: it counts no
 # lost events (SPEC §11.4.7).
@@ -212,11 +219,19 @@ def test_emitted_events_conform_to_shared_schema(event_schema: dict, tmp_path: P
             - produced
             - NEVER_SENT.get(event_type, set())
             - EXERCISED_BY_THE_EMITTER.get(event_type, set())
+            - SENT_BY_THE_HTTP_SINK.get(event_type, set())
         )
         if missing:
             unexercised[event_type] = sorted(missing)
         assert not produced & NEVER_SENT.get(event_type, set()), event_type
     assert not unexercised, f"schema properties no emitted payload carried: {unexercised}"
+    assert set(SENT_BY_THE_HTTP_SINK) <= seen_types
+    for event in events:
+        if event["event_type"] in SENT_BY_THE_HTTP_SINK:
+            smaller = _without_result({**event, "payload": {**event["payload"], "result": {}}})
+            assert smaller is not None
+            assert smaller["payload"]["result_capture"] == "too_large"
+            jsonschema.validate(smaller, event_schema)
 
     # The stdio scenario resolves no principal, so ``principal`` never
     # reaches the loop above. Drive the emitter with one, as baton-extmcp

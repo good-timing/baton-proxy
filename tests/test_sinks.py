@@ -7,16 +7,23 @@ surfaces with a precise failure.
 
 from __future__ import annotations
 
+import http.server
 import io
 import json
 import os
+import socket
 import stat
+import threading
+import urllib.error
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from baton_proxy.sinks import (
+    _ERROR_BODY_CAP,
+    _SPEC_BODY_CAP,
     FileSink,
     HttpSink,
     MultiSink,
@@ -360,3 +367,130 @@ def test_the_console_is_the_one_http_leg(spec, origin) -> None:
     from baton_proxy.sinks import console_origin
 
     assert console_origin(spec) == origin
+
+
+class _Collector:
+    """Answers ``refusal`` to a body over ``limit`` bytes, else 202; keeps every body."""
+
+    def __init__(self, limit: int, refusal: int = 413) -> None:
+        bodies: list[dict[str, Any]] = []
+        self.bodies = bodies
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_: Any) -> None:
+                pass
+
+            def do_POST(self) -> None:
+                raw = self.rfile.read(int(self.headers["Content-Length"]))
+                bodies.append(json.loads(raw))
+                self.send_response(refusal if len(raw) > limit else 202)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, args=(0.01,), daemon=True).start()
+        self.sink = HttpSink(f"http://127.0.0.1:{self.server.server_port}", api_key="k")
+
+
+@pytest.fixture
+def collector() -> Iterator[_Collector]:
+    c = _Collector(limit=10_000)
+    yield c
+    c.server.shutdown()
+
+
+def _ending(event_type: str, result: Any, **payload: Any) -> dict[str, Any]:
+    return {
+        "event_type": event_type,
+        "call_id": "c1",
+        "payload": {"tool_name": "t", "result": result, **payload},
+    }
+
+
+@pytest.mark.parametrize("event_type", ["tool_call_end", "tool_call_error"])
+def test_a_call_end_refused_as_too_large_is_sent_again_without_its_result(
+    collector: _Collector, event_type: str
+) -> None:
+    result = {"rows": "x" * 20_000}
+    collector.sink.write(_ending(event_type, result, error_body="failed"))
+    first, second = collector.bodies
+    assert first["payload"]["result"] == result
+    assert second["call_id"] == "c1"
+    assert second["payload"] == {
+        "tool_name": "t",
+        "result": None,
+        "error_body": "failed",
+        "result_capture": "too_large",
+        "result_size_bytes": len(json.dumps(result).encode()),
+    }
+
+
+def test_a_call_error_sent_again_has_its_error_body_cut(collector: _Collector) -> None:
+    collector.sink.write(_ending("tool_call_error", {"rows": "x"}, error_body="x" * 20_000))
+    assert collector.bodies[1]["payload"]["error_body"] == "x" * _ERROR_BODY_CAP
+
+
+def test_a_call_end_still_too_large_without_its_result_raises(collector: _Collector) -> None:
+    event = _ending("tool_call_end", {"rows": "x"}, padding="x" * 20_000)
+    with pytest.raises(urllib.error.HTTPError):
+        collector.sink.write(event)
+    assert len(collector.bodies) == 2
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"event_type": "tool_call_start", "payload": {"params": {"q": "x" * 20_000}}},
+        _ending("tool_call_end", None, error_body="x" * 20_000),
+        _ending("tool_call_error", {"rows": "x"}, error_body="x" * 20_000, result_capture="off"),
+    ],
+    ids=["not-a-call-end", "no-result", "already-withheld"],
+)
+def test_a_too_large_event_with_no_result_to_leave_out_is_not_sent_again(
+    collector: _Collector, event: dict[str, Any]
+) -> None:
+    with pytest.raises(urllib.error.HTTPError):
+        collector.sink.write(event)
+    assert len(collector.bodies) == 1
+
+
+def test_a_call_end_refused_for_another_reason_is_not_sent_again() -> None:
+    c = _Collector(limit=10_000, refusal=400)
+    try:
+        with pytest.raises(urllib.error.HTTPError):
+            c.sink.write(_ending("tool_call_end", {"rows": "x" * 20_000}))
+    finally:
+        c.server.shutdown()
+    assert len(c.bodies) == 1
+
+
+def test_a_connection_cut_while_a_large_body_uploads_is_read_as_too_large() -> None:
+    bodies: list[dict[str, Any]] = []
+    listener = socket.create_server(("127.0.0.1", 0))
+
+    def serve() -> None:
+        for _ in range(2):
+            conn, _addr = listener.accept()
+            with conn:
+                head = b""
+                while b"\r\n\r\n" not in head:
+                    head += conn.recv(65536)
+                length = int(head.split(b"Content-Length: ")[1].split(b"\r\n")[0])
+                if length > _SPEC_BODY_CAP:
+                    conn.sendall(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n")
+                    conn.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00"
+                    )
+                    continue
+                raw = head.split(b"\r\n\r\n", 1)[1]
+                while len(raw) < length:
+                    raw += conn.recv(65536)
+                bodies.append(json.loads(raw))
+                conn.sendall(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
+
+    threading.Thread(target=serve, daemon=True).start()
+    sink = HttpSink(f"http://127.0.0.1:{listener.getsockname()[1]}", api_key="k")
+    sink.write(_ending("tool_call_end", {"rows": "x" * 30_000_000}))
+    listener.close()
+    [event] = bodies
+    assert event["payload"]["result_capture"] == "too_large"
